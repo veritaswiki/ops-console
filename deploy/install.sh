@@ -227,7 +227,7 @@ if [[ "${WITH_SYSTEMD}" -eq 1 ]]; then
   cat > "${SYSTEMD_UNIT_FILE}" <<EOF
 [Unit]
 Description=Ops Console — Architecture, Service, Memory & Log Control Plane
-Documentation=https://github.com/ops-console/ops-console
+Documentation=https://github.com/veritaswiki/ops-console
 After=network-online.target
 Wants=network-online.target
 

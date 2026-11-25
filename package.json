@@ -4,6 +4,14 @@
   "type": "module",
   "description": "Self-hostable, zero-dependency control plane for services, AI memory engines, networks, and structured logs.",
   "license": "MIT",
+  "homepage": "https://github.com/veritaswiki/ops-console#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/veritaswiki/ops-console.git"
+  },
+  "bugs": {
+    "url": "https://github.com/veritaswiki/ops-console/issues"
+  },
   "engines": {
     "node": ">=20.0.0"
   },

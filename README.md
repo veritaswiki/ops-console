@@ -52,7 +52,7 @@ flowchart LR
 Run Ops Console on Linux, macOS, or Windows with built-in sandbox topology and simulated live SSE log streaming — no systemd or backend services required:
 
 ```bash
-git clone https://github.com/ops-console/ops-console.git
+git clone https://github.com/veritaswiki/ops-console.git
 cd ops-console
 npm run demo
 # Or invoke the CLI directly:
