@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!--
+  Ops Console Probe — macOS User LaunchAgent template (unprivileged).
+  Running deploy/probe/install-probe.sh automatically substitutes your home directory
+  and Node.js binary path into ~/Library/LaunchAgents/com.ops-console.probe.plist.
+  If installing manually, replace /Users/YOUR_USER with your actual $HOME path.
+-->
+<dict>
+  <key>Label</key>
+  <string>com.ops-console.probe</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>node</string>
+    <string>/Users/YOUR_USER/.local/lib/ops-probe/ops-probe.mjs</string>
+    <string>--config</string>
+    <string>/Users/YOUR_USER/.config/ops-probe/config.json</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOUR_USER/Library/Logs/ops-probe.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/YOUR_USER/Library/Logs/ops-probe.log</string>
+</dict>
+</plist>

@@ -170,6 +170,12 @@ export function validateConfig(raw) {
   if (raw.remotes !== undefined && !Array.isArray(raw.remotes)) {
     errors.push('remotes must be an array');
   }
+  if (raw.fleet?.declaredNodes !== undefined && !Array.isArray(raw.fleet.declaredNodes)) {
+    errors.push('fleet.declaredNodes must be an array');
+  }
+  if (raw.fleet?.meshLinks !== undefined && !Array.isArray(raw.fleet.meshLinks)) {
+    errors.push('fleet.meshLinks must be an array');
+  }
 
   return { valid: errors.length === 0, errors };
 }
@@ -308,6 +314,42 @@ export function loadConfig(options = {}) {
       sshKey: r.sshKey ? String(r.sshKey) : '',
       strictHostKeyChecking: r.strictHostKeyChecking === 'accept-new' ? 'accept-new' : 'yes',
     })) : [],
+    fleet: {
+      localNode: {
+        id: String(raw.fleet?.localNode?.id || 'hub-primary'),
+        name: String(raw.fleet?.localNode?.name || raw.console?.title || 'Hub Primary'),
+        role: String(raw.fleet?.localNode?.role || 'Primary Control Plane'),
+        region: String(raw.fleet?.localNode?.region || 'Primary Region'),
+        provider: String(raw.fleet?.localNode?.provider || 'Self-Hosted'),
+        tailscaleIp: String(raw.fleet?.localNode?.tailscaleIp || ''),
+        lat: Number.isFinite(Number(raw.fleet?.localNode?.lat)) ? Number(raw.fleet.localNode.lat) : 31.23,
+        lon: Number.isFinite(Number(raw.fleet?.localNode?.lon)) ? Number(raw.fleet.localNode.lon) : 121.47,
+      },
+      probeStaleSec: Math.max(20, Number(raw.fleet?.probeStaleSec || 90)),
+      probeOfflineSec: Math.max(45, Number(raw.fleet?.probeOfflineSec || 180)),
+      requireTailscaleCidr: raw.fleet?.requireTailscaleCidr !== undefined
+        ? Boolean(raw.fleet.requireTailscaleCidr)
+        : true,
+      historyPoints: Math.min(180, Math.max(15, Number(raw.fleet?.historyPoints || 60))),
+      declaredNodes: Array.isArray(raw.fleet?.declaredNodes) ? raw.fleet.declaredNodes.map((node) => ({
+        id: String(node.id || '').toLowerCase(),
+        name: String(node.name || node.id || ''),
+        deviceType: String(node.deviceType || 'server'),
+        probeMode: String(node.probeMode || (node.deviceType === 'mobile' ? 'checkin' : 'push')),
+        role: String(node.role || ''),
+        region: String(node.region || ''),
+        provider: String(node.provider || ''),
+        tailscaleIp: String(node.tailscaleIp || ''),
+        lat: Number.isFinite(Number(node.lat)) ? Number(node.lat) : null,
+        lon: Number.isFinite(Number(node.lon)) ? Number(node.lon) : null,
+      })).filter((node) => node.id) : [],
+      meshLinks: Array.isArray(raw.fleet?.meshLinks) ? raw.fleet.meshLinks.map((link) => ({
+        from: String(link.from || ''),
+        to: String(link.to || ''),
+        kind: String(link.kind || 'direct'),
+        label: String(link.label || ''),
+      })).filter((link) => link.from && link.to) : [],
+    },
     ops: {
       healthScript: raw.ops?.healthScript ? path.resolve(String(raw.ops.healthScript)) : '',
       backupScript: raw.ops?.backupScript ? path.resolve(String(raw.ops.backupScript)) : '',

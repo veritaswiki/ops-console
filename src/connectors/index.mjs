@@ -60,10 +60,11 @@ async function collectOpsStateFiles(config) {
 }
 
 export class ConnectorHub {
-  constructor({ config, cache, demoProvider = null }) {
+  constructor({ config, cache, demoProvider = null, probeRegistry = null }) {
     this.config = config;
     this.cache = cache;
     this.demoProvider = demoProvider;
+    this.probeRegistry = probeRegistry;
   }
 
   async collectMemory(force = false) {
@@ -113,10 +114,39 @@ export class ConnectorHub {
 
   async collectSnapshot(force = false) {
     if (this.config.demo && this.demoProvider) {
-      return this.demoProvider.getSnapshot(this.config);
+      const baseDemo = this.demoProvider.getSnapshot(this.config);
+      if (this.probeRegistry && this.probeRegistry.telemetry.size > 0) {
+        const mergedFleet = this.probeRegistry.buildFleetView({
+          snapshot: baseDemo,
+          remotes: this.demoProvider.getRemotes(),
+        });
+        const demoById = new Map((baseDemo.fleet?.nodes || []).map((node) => [node.id, node]));
+        for (const liveNode of mergedFleet.nodes) {
+          if (liveNode.probeLive || !demoById.has(liveNode.id)) {
+            demoById.set(liveNode.id, liveNode);
+          }
+        }
+        const nodes = [...demoById.values()];
+        return {
+          ...baseDemo,
+          fleet: {
+            ...baseDemo.fleet,
+            nodes,
+            summary: {
+              total: nodes.length,
+              online: nodes.filter((node) => node.status === 'healthy' || node.status === 'degraded').length,
+              probed: nodes.filter((node) => node.probeMode === 'local' || node.probeLive).length,
+              servers: nodes.filter((node) => node.deviceType === 'hub' || node.deviceType === 'server' || node.deviceType === 'edge').length,
+              laptops: nodes.filter((node) => node.deviceType === 'laptop').length,
+              mobiles: nodes.filter((node) => node.deviceType === 'mobile').length,
+            },
+          },
+        };
+      }
+      return baseDemo;
     }
 
-    return this.cache.getOrLoad(
+    const baseSnapshot = await this.cache.getOrLoad(
       'snapshot',
       5_000,
       async () => {
@@ -150,6 +180,18 @@ export class ConnectorHub {
       },
       { force, staleOnError: true },
     );
+
+    if (!this.probeRegistry) return baseSnapshot;
+    if (this.config.remotes?.length > 0 && !this.cache.entries?.has('remotes')) {
+      collectRemoteNodes(this.config, this.cache, false).catch(() => {});
+    }
+    const cachedRemotesEntry = this.cache.entries?.get('remotes');
+    const cachedRemotes = Array.isArray(cachedRemotesEntry?.value) ? cachedRemotesEntry.value : [];
+    const fleet = this.probeRegistry.buildFleetView({
+      snapshot: baseSnapshot,
+      remotes: cachedRemotes,
+    });
+    return { ...baseSnapshot, fleet };
   }
 
   async collectRemotes(force = false) {

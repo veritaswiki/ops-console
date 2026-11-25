@@ -4,7 +4,7 @@
 
 [English](./README.md) | 简体中文
 
-[![Version](https://img.shields.io/badge/version-2.0.0-0f172a?style=flat-square)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.1.0-0f172a?style=flat-square)](./CHANGELOG.md)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20%20LTS-16a34a?style=flat-square)](https://nodejs.org/)
 [![Dependencies](https://img.shields.io/badge/runtime%20deps-0-2563eb?style=flat-square)](#核心特性)
 [![License: MIT](https://img.shields.io/badge/license-MIT-475569?style=flat-square)](./LICENSE)
@@ -56,7 +56,7 @@ npm run demo
 node bin/ops-console.mjs --demo --port 4320
 ```
 
-浏览器打开 `http://127.0.0.1:4320` 即可体验全部 7 个功能视图。
+浏览器打开 `http://127.0.0.1:4320` 即可体验全部 8 个功能视图（含离线全球节点地图与推送探针管理）。
 
 ---
 
@@ -64,7 +64,8 @@ node bin/ops-console.mjs --demo --port 4320
 
 | 模块 | 能力说明 |
 | --- | --- |
-| **精密仪表台 UI** | 支持浅色/深色主题切换、桌面与移动端响应式布局，包含 7 个核心视图：**总览与拓扑**、**服务管理**、**记忆与上下文**、**Agent 与网关**、**网络与节点**、**日志检索**、**运维与审计**。 |
+| **精密仪表台 UI** | 零外部 CDN 的浅色/深色响应式 Web UI，包含 8 个核心视图：**总览与拓扑**、**全球节点与探针**、**服务管理**、**记忆与上下文**、**Agent 与网关**、**网络**、**日志检索**、**运维与审计**。 |
+| **多端全球舰队与 `ops-probe`** | 内置离线 Natural Earth 1:110m 矢量世界地图与实时 SVG 趋势折线图；提供零依赖只推送探针（Linux `systemd` / macOS `LaunchAgent`）与手机一键签到，不采集 GPS、无反向控制通道。 |
 | **官方协议连接器** | 插件化架构，仅调用各组件官方 HTTP API 与结构化 CLI JSON（`nmem`、`ov`、`magpie`、`tailscale`、`systemctl`、`journalctl`、Mihomo REST、Syncthing REST、Symbiote、Rerank/Embedding、SSH），无硬编码密钥。 |
 | **生产级统一日志系统** | 结构化 `journalctl --output=json` 查询（按单元、级别 `err`/`warn`/`info`/`debug`、时间范围 `15m..7d`、关键词/正则过滤及级别分布直方图）；基于 `realpath` 路径防逃逸的文件日志读取；自日志轮转（`5 MB x 5`）与内存环形缓冲；SSE 实时追踪及一键导出 `jsonl`/`text`。 |
 | **运维操作与审计追踪** | 严格白名单控制服务/定时器启停与重载、高风险服务确认提示、只读模式（`--read-only`）、巡检与备份触发，以及记录操作者、IP、请求 ID、目标、动作、耗时与结果的 `audit.jsonl`。 |
@@ -106,7 +107,22 @@ node bin/ops-console.mjs --check-config --config ./config.local.json
 | — | `MIHOMO_API_SECRET` | — | Mihomo REST API 鉴权密钥（可选）。 |
 | — | `SYNCTHING_API_KEY` | — | Syncthing API 密钥（可选）。 |
 | `--check-config` | — | — | 校验配置文件有效性后退出（成功返回 `0`）。 |
-| `--version` | — | — | 输出版本号（`2.0.0`）并退出。 |
+| `--version` | — | — | 输出版本号（`2.1.0`）并退出。 |
+
+### 探针管理子命令
+
+```bash
+# 为远端服务器/笔记本/手机签发一次性 ops_prb_* 推送令牌与安装命令
+ops-console probe enroll --id edge-tokyo-01 --name "Tokyo Edge" --type server --region "Tokyo, JP" --lat 35.68 --lon 139.69
+
+# 列出已注册探针（仅元数据，绝不回显明文令牌）
+ops-console probe list
+
+# 立即吊销指定节点的探针凭据
+ops-console probe revoke --id edge-tokyo-01
+```
+
+Linux `systemd`、macOS `LaunchAgent` 与手机端签到说明详见 [`probe/README.md`](./probe/README.md) 与 [`deploy/probe/mobile-checkin.md`](./deploy/probe/mobile-checkin.md)。
 | `--help` | — | — | 显示命令行帮助信息。 |
 
 ---
@@ -193,6 +209,13 @@ tailscale serve --bg --https=8444 http://127.0.0.1:4320
 | --- | --- | --- |
 | `GET /api/ping` | 公开 | 轻量级存活探针（`200 OK`），供 Docker/systemd 健康检查使用。 |
 | `GET /api/snapshot` | 只读 | 获取架构拓扑、宿主机资源、服务/定时器、连接器状态与运行中任务快照。 |
+| `GET /api/fleet`（`GET /api/nodes`） | 只读 | 获取融合本地中心、推送探针、SSH 远端主机与 Tailscale 设备的全网节点视图。 |
+| `GET /api/nodes/:id` | 只读 | 获取单节点完整遥测与有界时序历史曲线数据。 |
+| `GET /api/probes` | 只读 | 列出已签发探针的元数据与权限范围（不含明文令牌）。 |
+| `POST /api/probes/ingest` | 探针令牌 | 只推送遥测写入接口，采用 `Bearer ops_prb_*` + `X-Ops-Probe-Id` 鉴权，默认限定 Tailnet/回环来源网段。 |
+| `POST /api/probes/checkin` | 会话 / 只读 | 移动端 Web 一键签到（RTT、可选电量与网络制式，零 GPS 权限）。 |
+| `POST /api/probes/enroll` | 变更 | 签发一次性探针令牌与各平台安装命令，`--read-only` 下禁用。 |
+| `DELETE /api/probes/:id` | 变更 | 立即吊销探针令牌，`--read-only` 下禁用。 |
 | `GET /api/remotes?refresh=1` | 只读 | 远端 SSH 节点状态汇总（默认缓存 60 秒，`refresh=1` 强制刷新）。 |
 | `GET /api/logs` | 只读 | 结构化日志查询（支持 `source`、`unit`、`file`、`severity`、`since`、`q`、`regex`、`limit`）。 |
 | `GET /api/logs/stream` | 只读（SSE） | 实时 `text/event-stream` 日志流，带心跳保活、并发数上限与子进程退出回收。 |
@@ -214,6 +237,7 @@ tailscale serve --bg --https=8444 http://127.0.0.1:4320
 - **路径防穿越**：文件日志读取先执行 `fs.realpath` 解析符号链接并校验路径前缀，仅以尾部块读取。
 - **CSRF 与限流防护**：所有 `POST` 变更请求校验 `Origin`/`Referer` 并受每 IP 滑动窗口限流保护。
 - **只读观测模式**：通过 `--read-only` 或 `OPS_CONSOLE_READ_ONLY=1` 一键关闭全部变更入口。
+- **零外链 CSP 与单向推送边界**：严格 `default-src 'self'` 策略与离线地图资产；远端探针仅具备单向遥测写入权限，默认限制 Tailnet/回环来源网段，彻底消除反向控制攻击面。
 
 完整威胁模型与部署加固清单请查阅 [SECURITY.md](./SECURITY.md)。
 

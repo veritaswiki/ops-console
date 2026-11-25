@@ -1,0 +1,32 @@
+{
+  "name": "@ops-console/probe",
+  "version": "2.1.0",
+  "type": "module",
+  "description": "Lightweight, zero-dependency, push-only telemetry probe for Ops Console.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "ops-probe": "./ops-probe.mjs"
+  },
+  "files": [
+    "ops-probe.mjs",
+    "probe.config.example.json",
+    "README.md"
+  ],
+  "scripts": {
+    "start": "node ./ops-probe.mjs",
+    "dry-run": "node ./ops-probe.mjs --dry-run --once",
+    "check": "node --check ./ops-probe.mjs"
+  },
+  "keywords": [
+    "ops-console",
+    "probe",
+    "telemetry",
+    "monitoring",
+    "tailscale",
+    "zero-dependency"
+  ],
+  "dependencies": {}
+}

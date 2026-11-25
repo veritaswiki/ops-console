@@ -9,6 +9,8 @@ import { createDemoProvider } from './connectors/demo.mjs';
 import { ConnectorHub } from './connectors/index.mjs';
 import { StructuredLogger } from './logger.mjs';
 import { LogService } from './logs.mjs';
+import { isTailscaleOrLoopbackIp, ProbeRegistry, validateNodeId } from './probes.mjs';
+import { TimeSeriesStore } from './timeseries.mjs';
 import {
   buildClearSessionCookie,
   buildSessionCookie,
@@ -36,6 +38,7 @@ const MIME_TYPES = {
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_PROBE_BODY_BYTES = 32 * 1024;
 
 function extractClientIp(req, trustProxy = false) {
   if (trustProxy) {
@@ -148,7 +151,12 @@ export function createOpsConsole(options = {}) {
     silentStdout: Boolean(options.silentStdout),
   });
   const cache = options.cache || new SingleFlightCache();
-  const hub = options.hub || new ConnectorHub({ config, cache, demoProvider });
+  const timeseries = options.timeseries || new TimeSeriesStore({
+    maxPoints: config.fleet?.historyPoints || 60,
+    minIntervalMs: 3000,
+  });
+  const probeRegistry = options.probeRegistry || new ProbeRegistry({ config, logger, timeseries });
+  const hub = options.hub || new ConnectorHub({ config, cache, demoProvider, probeRegistry });
   const logs = options.logs || new LogService({ config, logger, demoProvider });
   const actions = options.actions || new ActionController({ config, logger, cache, demoProvider });
 
@@ -159,6 +167,10 @@ export function createOpsConsole(options = {}) {
   const mutatingLimiter = new SlidingWindowRateLimiter({
     windowMs: 60_000,
     maxRequests: config.security.mutatingRateLimitPerMinute || 30,
+  });
+  const probeLimiter = new SlidingWindowRateLimiter({
+    windowMs: 60_000,
+    maxRequests: 30,
   });
 
   async function serveStatic(req, res, pathname) {
@@ -242,6 +254,45 @@ export function createOpsConsole(options = {}) {
           uptimeSec: Math.floor(process.uptime()),
           ts: new Date().toISOString(),
         });
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/probes/ingest') {
+        if (config.fleet?.requireTailscaleCidr && !isTailscaleOrLoopbackIp(clientIp)) {
+          logger.warn('probe_cidr_rejected', { requestId, ip: clientIp });
+          sendJson(res, 403, { ok: false, error: 'Probe ingestion restricted to Tailscale or loopback addresses' });
+          return;
+        }
+        const authHeader = String(req.headers.authorization || '');
+        const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
+        const headerNodeId = String(req.headers['x-ops-probe-id'] || '').trim().toLowerCase();
+        const pRate = probeLimiter.allow(headerNodeId || clientIp);
+        if (!pRate.allowed) {
+          sendJson(res, 429, { ok: false, error: 'Probe telemetry rate limit exceeded' }, { 'Retry-After': String(pRate.retryAfterSec) });
+          return;
+        }
+        if (!bearerToken || !headerNodeId) {
+          sendJson(res, 401, { ok: false, error: 'Missing Authorization Bearer token or X-Ops-Probe-Id header' });
+          return;
+        }
+        const record = probeRegistry.authenticateProbe(headerNodeId, bearerToken);
+        if (!record) {
+          logger.warn('probe_auth_failed', { requestId, nodeId: headerNodeId, ip: clientIp });
+          sendJson(res, 401, { ok: false, error: 'Invalid or revoked probe token' });
+          return;
+        }
+        const { data } = await readBody(req, MAX_PROBE_BODY_BYTES);
+        try {
+          const ingestResult = await probeRegistry.ingest({
+            nodeId: record.id,
+            payload: data,
+            sourceIp: clientIp,
+            via: 'probe-token',
+          });
+          sendJson(res, 200, ingestResult);
+        } catch (ingestErr) {
+          sendJson(res, 400, { ok: false, error: ingestErr.message });
+        }
         return;
       }
 
@@ -354,6 +405,9 @@ export function createOpsConsole(options = {}) {
           demo: config.demo,
           readOnly: config.console.readOnly,
           authEnabled: Boolean(config.auth.webKey),
+          requireTailscaleCidr: config.fleet?.requireTailscaleCidr !== false,
+          localNodeId: config.fleet?.localNode?.id || 'hub-primary',
+          enrolledProbesCount: probeRegistry.records.size,
           hosts: config.console.hosts,
           port: config.console.port,
           layers: config.layers,
@@ -363,6 +417,138 @@ export function createOpsConsole(options = {}) {
             backup: Boolean(config.ops.backupScript || config.demo),
           },
         });
+        return;
+      }
+
+      if (method === 'GET' && (pathname === '/api/nodes' || pathname === '/api/fleet')) {
+        const force = url.searchParams.get('refresh') === '1';
+        const snapshot = await hub.collectSnapshot(force);
+        sendJson(res, 200, { ok: true, fleet: snapshot.fleet || null });
+        return;
+      }
+
+      if (method === 'GET' && pathname.startsWith('/api/nodes/')) {
+        const nodeId = decodeURIComponent(pathname.slice('/api/nodes/'.length)).trim().toLowerCase();
+        if (!validateNodeId(nodeId)) {
+          sendJson(res, 400, { ok: false, error: 'Invalid node ID' });
+          return;
+        }
+        const snapshot = await hub.collectSnapshot(false);
+        const node = (snapshot.fleet?.nodes || []).find((item) => item.id === nodeId);
+        if (!node) {
+          sendJson(res, 404, { ok: false, error: `Node not found: ${nodeId}` });
+          return;
+        }
+        const fullHistory = timeseries.get(`node:${nodeId}`, config.fleet?.historyPoints || 60);
+        sendJson(res, 200, { ok: true, node, history: fullHistory.length ? fullHistory : (node.history || []) });
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/probes') {
+        sendJson(res, 200, {
+          ok: true,
+          probes: probeRegistry.listEnrolled(),
+          requireTailscaleCidr: config.fleet?.requireTailscaleCidr !== false,
+        });
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/probes/enroll') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Probe enrollment disabled in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        try {
+          const enrolled = await probeRegistry.enroll({
+            id: data.id,
+            name: data.name,
+            deviceType: data.deviceType,
+            probeMode: data.probeMode,
+            role: data.role,
+            region: data.region,
+            provider: data.provider,
+            lat: data.lat,
+            lon: data.lon,
+            tailscaleIp: data.tailscaleIp,
+          });
+          await logger.appendAudit({
+            category: 'probe',
+            action: 'probe_enroll',
+            target: enrolled.node.id,
+            actor: 'web',
+            ip: clientIp,
+            requestId,
+            ok: true,
+            output: `deviceType=${enrolled.node.deviceType} scopes=${enrolled.node.scopes.join(',')}`,
+          });
+          sendJson(res, 200, { ok: true, ...enrolled });
+        } catch (enrollErr) {
+          sendJson(res, 400, { ok: false, error: enrollErr.message });
+        }
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/probes/checkin') {
+        const { data } = await readBody(req, MAX_PROBE_BODY_BYTES);
+        const targetId = String(data.nodeId || '').trim().toLowerCase();
+        if (!validateNodeId(targetId)) {
+          sendJson(res, 400, { ok: false, error: 'Invalid mobile check-in nodeId' });
+          return;
+        }
+        try {
+          const result = await probeRegistry.ingest({
+            nodeId: targetId,
+            payload: {
+              schemaVersion: 1,
+              probeVersion: APP_VERSION,
+              nodeId: targetId,
+              deviceType: data.deviceType || 'mobile',
+              platform: data.platform || 'mobile-web',
+              region: data.region || '',
+              battery: data.battery || null,
+              network: data.network || null,
+              note: data.note || 'Web UI check-in',
+              hubRttMs: data.hubRttMs ?? null,
+            },
+            sourceIp: clientIp,
+            via: 'web-checkin',
+          });
+          await logger.appendAudit({
+            category: 'probe',
+            action: 'mobile_checkin',
+            target: targetId,
+            actor: 'web',
+            ip: clientIp,
+            requestId,
+            ok: true,
+            output: `region=${data.region || 'default'}`,
+          });
+          sendJson(res, 200, result);
+        } catch (errCheckin) {
+          sendJson(res, 400, { ok: false, error: errCheckin.message });
+        }
+        return;
+      }
+
+      if (method === 'DELETE' && pathname.startsWith('/api/probes/')) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Probe revocation disabled in read-only mode' });
+          return;
+        }
+        const targetId = decodeURIComponent(pathname.slice('/api/probes/'.length)).trim().toLowerCase();
+        const revoked = await probeRegistry.revoke(targetId);
+        await logger.appendAudit({
+          category: 'probe',
+          action: 'probe_revoke',
+          target: targetId,
+          actor: 'web',
+          ip: clientIp,
+          requestId,
+          ok: revoked.ok,
+          output: revoked.ok ? 'revoked' : revoked.error,
+        });
+        sendJson(res, revoked.ok ? 200 : 404, revoked);
         return;
       }
 
@@ -593,6 +779,8 @@ export function createOpsConsole(options = {}) {
     config,
     logger,
     cache,
+    timeseries,
+    probeRegistry,
     hub,
     logs,
     actions,

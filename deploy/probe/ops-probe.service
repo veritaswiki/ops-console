@@ -1,0 +1,37 @@
+[Unit]
+Description=Ops Console Probe — Lightweight Push-Only Telemetry Agent
+Documentation=https://github.com/ops-console/ops-console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ops-probe
+Group=ops-probe
+Environment=NODE_ENV=production
+Environment=OPS_PROBE_CONFIG=/etc/ops-probe/config.json
+ExecStart=/usr/bin/env node /opt/ops-probe/ops-probe.mjs --config /etc/ops-probe/config.json
+
+Restart=always
+RestartSec=5
+MemoryMax=128M
+TimeoutStopSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ops-probe
+
+# Strict least-privilege sandboxing (push-only telemetry; zero disk writes needed)
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectControlGroups=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+CapabilityBoundingSet=
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

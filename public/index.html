@@ -5,9 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Ops Console</title>
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
@@ -20,12 +17,13 @@
       </div>
       <nav class="nav" id="mainNav" aria-label="主导航">
         <button type="button" class="nav-item is-active" data-view="overview">总览</button>
+        <button type="button" class="nav-item" data-view="fleet">全球节点</button>
         <button type="button" class="nav-item" data-view="services">服务</button>
         <button type="button" class="nav-item" data-view="memory">记忆</button>
         <button type="button" class="nav-item" data-view="agents">网关与 Agent</button>
-        <button type="button" class="nav-item" data-view="network">网络与节点</button>
+        <button type="button" class="nav-item" data-view="network">网络</button>
         <button type="button" class="nav-item" data-view="logs">日志</button>
-        <button type="button" class="nav-item" data-view="ops">运维与审计</button>
+        <button type="button" class="nav-item" data-view="ops">运维</button>
       </nav>
       <div class="topbar-actions">
         <span class="sync-stamp mono" id="syncStamp">正在同步...</span>
@@ -73,9 +71,9 @@
           <div class="kpi-sub" id="kpiMemorySub">官方接口直连状态</div>
         </div>
         <div class="kpi-cell">
-          <div class="kpi-label">组网与模型路由</div>
+          <div class="kpi-label">全球节点与组网</div>
           <div class="kpi-value mono" id="kpiNetwork">-</div>
-          <div class="kpi-sub" id="kpiNetworkSub">Tailnet 节点与可用模型</div>
+          <div class="kpi-sub" id="kpiNetworkSub">多设备在线状态与可用模型</div>
         </div>
       </div>
       <div class="panel">
@@ -127,6 +125,235 @@
           <div class="subsection">
             <h3 class="sub-title">最近告警与活跃任务</h3>
             <div id="overviewAlerts"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="view" data-panel="fleet" id="view-fleet" hidden>
+      <div class="view-head">
+        <div>
+          <h1>全球节点与探针</h1>
+          <p class="view-desc">融合 Tailscale 组网、只推送探针与移动端签到，实时观测跨地域服务器、笔记本与手机状态。</p>
+        </div>
+        <div class="view-head-meta mono" id="fleetSummaryMeta">等待采集...</div>
+      </div>
+      <div class="kpi-strip">
+        <div class="kpi-cell">
+          <div class="kpi-label">纳管设备总数</div>
+          <div class="kpi-value mono" id="fleetKpiTotal">-</div>
+          <div class="kpi-sub" id="fleetKpiTotalSub">服务器 · 笔记本 · 移动端</div>
+        </div>
+        <div class="kpi-cell">
+          <div class="kpi-label">在线与健康节点</div>
+          <div class="kpi-value mono" id="fleetKpiOnline">-</div>
+          <div class="kpi-sub" id="fleetKpiOnlineSub">含本地中心与推送探针</div>
+        </div>
+        <div class="kpi-cell">
+          <div class="kpi-label">探针实采覆盖</div>
+          <div class="kpi-value mono" id="fleetKpiProbed">-</div>
+          <div class="kpi-sub" id="fleetKpiProbedSub">秒级上报 CPU、内存与电量</div>
+        </div>
+        <div class="kpi-cell">
+          <div class="kpi-label">上报安全边界</div>
+          <div class="kpi-value mono" id="fleetKpiSecurity">-</div>
+          <div class="kpi-sub" id="fleetKpiSecuritySub">单向推送、无反向执行指令</div>
+        </div>
+      </div>
+      <div class="fleet-stage">
+        <div class="panel map-panel">
+          <div class="panel-head">
+            <div>
+              <h2>全球节点分布图</h2>
+              <p class="panel-desc">离线 Natural Earth 矢量底图，支持区域切换、拖拽平移与点击节点检视详情。</p>
+            </div>
+            <div class="map-controls">
+              <div class="segmented" id="mapRegionSegment" role="tablist" aria-label="地图视角区域">
+                <button type="button" class="seg-item is-active" data-region="fit">自适应</button>
+                <button type="button" class="seg-item" data-region="world">全球</button>
+                <button type="button" class="seg-item" data-region="apac">亚太</button>
+                <button type="button" class="seg-item" data-region="eurasia">欧亚</button>
+                <button type="button" class="seg-item" data-region="americas">美洲</button>
+              </div>
+              <div class="zoom-group" aria-label="地图缩放">
+                <button type="button" class="icon-btn" id="mapZoomOut" title="缩小地图" aria-label="缩小地图">-</button>
+                <button type="button" class="icon-btn" id="mapZoomIn" title="放大地图" aria-label="放大地图">+</button>
+              </div>
+            </div>
+          </div>
+          <div class="world-map-wrap" id="worldMapWrap"></div>
+          <div class="map-footer">
+            <div class="legend" aria-label="链路与节点图例">
+              <span class="legend-item"><i class="dot dot-ok"></i>探针健康</span>
+              <span class="legend-item"><i class="dot dot-warn"></i>延迟或降级</span>
+              <span class="legend-item"><i class="dot dot-muted"></i>仅组网在线</span>
+              <span class="legend-item"><i class="dot dot-err"></i>离线</span>
+            </div>
+            <div class="legend map-arc-legend">
+              <span class="legend-item"><i class="arc-swatch arc-swatch-direct"></i>Tailnet 直连</span>
+              <span class="legend-item"><i class="arc-swatch arc-swatch-relay"></i>DERP 中继</span>
+              <span class="legend-item"><i class="arc-swatch arc-swatch-checkin"></i>签到 / SSH</span>
+            </div>
+          </div>
+        </div>
+        <div class="panel inspector-panel" id="nodeInspectorPanel">
+          <div class="panel-head">
+            <div>
+              <h2 id="inspectorTitle">节点实时详情</h2>
+              <p class="panel-desc" id="inspectorSubtitle">点击左侧地图或下方列表中的任意设备查看遥测趋势。</p>
+            </div>
+            <div id="inspectorStatusSlot"></div>
+          </div>
+          <div class="inspector-body" id="inspectorBody">
+            <div class="empty-state">正在加载节点数据...</div>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>全网设备清单</h2>
+            <p class="panel-desc">自动融合本地控制面、已注册推送探针、SSH 远端主机与 Tailscale 发现设备。</p>
+          </div>
+          <div class="segmented" id="fleetTypeFilter" role="tablist" aria-label="按设备类型筛选">
+            <button type="button" class="seg-item is-active" data-type="all">全部</button>
+            <button type="button" class="seg-item" data-type="server">服务器</button>
+            <button type="button" class="seg-item" data-type="laptop">笔记本</button>
+            <button type="button" class="seg-item" data-type="mobile">移动端</button>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>节点名称</th>
+                <th>类型与地区</th>
+                <th>状态</th>
+                <th>采集模式</th>
+                <th>CPU / 内存 / 电量</th>
+                <th>Tailscale / 链路</th>
+                <th>最近上报</th>
+                <th class="col-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody id="fleetTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+      <div class="grid-two">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>移动端一键签到</h2>
+              <p class="panel-desc">在手机浏览器经 Tailnet 打开本页后，可一键上报当前电量、网络类型与往返延迟，不读取任何 GPS 定位。</p>
+            </div>
+          </div>
+          <form class="form-stack" id="mobileCheckinForm">
+            <div class="form-row-two">
+              <label class="field-group">
+                <span class="field-label">移动节点 ID</span>
+                <input type="text" class="input-field mono" id="checkinNodeId" list="mobileNodeOptions" placeholder="mobile-ops" required />
+                <datalist id="mobileNodeOptions"></datalist>
+              </label>
+              <label class="field-group">
+                <span class="field-label">所在城市（可选）</span>
+                <input type="text" class="input-field" id="checkinRegion" placeholder="例如 Shanghai, CN" />
+              </label>
+            </div>
+            <label class="field-group">
+              <span class="field-label">状态备注（可选）</span>
+              <input type="text" class="input-field" id="checkinNote" placeholder="例如 移动端值守在线" />
+            </label>
+            <div class="form-actions">
+              <button type="submit" class="btn-primary" id="mobileCheckinBtn">上报本机状态</button>
+              <span class="form-hint" id="mobileCheckinHint">自动采集往返延迟、电量与网络制式（无定位权限）。</span>
+            </div>
+            <div class="inline-notice" id="mobileCheckinResult" hidden></div>
+          </form>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>签发与管理推送探针</h2>
+              <p class="panel-desc">为 Linux 服务器、macOS 笔记本或移动端生成独立只写令牌（单向推送，零反向执行权限）。</p>
+            </div>
+          </div>
+          <form class="form-stack" id="enrollProbeForm">
+            <div class="form-row-two">
+              <label class="field-group">
+                <span class="field-label">节点 ID</span>
+                <input type="text" class="input-field mono" id="enrollNodeId" placeholder="例如 edge-tokyo-01" required />
+              </label>
+              <label class="field-group">
+                <span class="field-label">显示名称</span>
+                <input type="text" class="input-field" id="enrollNodeName" placeholder="例如 Tokyo Edge Node" required />
+              </label>
+            </div>
+            <div class="form-row-two">
+              <label class="field-group">
+                <span class="field-label">设备类型</span>
+                <select class="select-field" id="enrollDeviceType">
+                  <option value="server">Linux 服务器 (server)</option>
+                  <option value="edge">边缘 / 灾备节点 (edge)</option>
+                  <option value="laptop">笔记本电脑 (laptop)</option>
+                  <option value="mobile">移动终端 (mobile)</option>
+                </select>
+              </label>
+              <label class="field-group">
+                <span class="field-label">城市坐标预设</span>
+                <select class="select-field" id="enrollCityPreset">
+                  <option value="">自定义地区与坐标</option>
+                  <option value="Beijing, CN|39.90|116.40">北京 (39.90, 116.40)</option>
+                  <option value="Shanghai, CN|31.23|121.47">上海 (31.23, 121.47)</option>
+                  <option value="Shenzhen, CN|22.54|114.06">深圳 (22.54, 114.06)</option>
+                  <option value="Hong Kong, HK|22.32|114.17">香港 (22.32, 114.17)</option>
+                  <option value="Tokyo, JP|35.68|139.69">东京 (35.68, 139.69)</option>
+                  <option value="Singapore, SG|1.35|103.82">新加坡 (1.35, 103.82)</option>
+                  <option value="Frankfurt, DE|50.11|8.68">法兰克福 (50.11, 8.68)</option>
+                  <option value="San Francisco, US|37.77|-122.42">旧金山 (37.77, -122.42)</option>
+                </select>
+              </label>
+            </div>
+            <div class="form-row-three">
+              <label class="field-group">
+                <span class="field-label">地区标签</span>
+                <input type="text" class="input-field" id="enrollRegion" placeholder="Tokyo, JP" />
+              </label>
+              <label class="field-group">
+                <span class="field-label">纬度 (Lat)</span>
+                <input type="number" step="0.01" class="input-field mono" id="enrollLat" placeholder="35.68" />
+              </label>
+              <label class="field-group">
+                <span class="field-label">经度 (Lon)</span>
+                <input type="number" step="0.01" class="input-field mono" id="enrollLon" placeholder="139.69" />
+              </label>
+            </div>
+            <div class="form-actions">
+              <button type="submit" class="btn-primary" id="enrollProbeBtn">签发探针令牌</button>
+              <span class="form-hint" id="enrollProbeHint">令牌仅显示一次，服务端只保存加盐 SHA-256 哈希。</span>
+            </div>
+          </form>
+          <div class="enroll-result" id="enrollResultBox" hidden>
+            <div class="enroll-result-head">
+              <div>
+                <strong id="enrollResultTitle">探针令牌已签发</strong>
+                <p class="panel-desc">请立即复制保存，关闭或刷新页面后无法再次查看明文令牌。</p>
+              </div>
+              <div class="segmented" id="enrollSnippetTabs" role="tablist" aria-label="安装命令平台">
+                <button type="button" class="seg-item is-active" data-snippet="linuxSystemd">Linux</button>
+                <button type="button" class="seg-item" data-snippet="macosLaunchAgent">macOS</button>
+                <button type="button" class="seg-item" data-snippet="mobileCheckinCurl">移动端 cURL</button>
+              </div>
+            </div>
+            <div class="token-row mono">
+              <span id="enrollTokenValue"></span>
+              <button type="button" class="btn-subtle" id="copyEnrollSnippetBtn">复制安装命令</button>
+            </div>
+            <pre class="code-output mono" id="enrollSnippetCode"></pre>
+          </div>
+          <div class="divider"></div>
+          <div class="subsection">
+            <h3 class="sub-title">已注册探针凭据</h3>
+            <div id="enrolledProbesList"></div>
           </div>
         </div>
       </div>

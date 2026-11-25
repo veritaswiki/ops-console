@@ -1,6 +1,6 @@
 # Architecture
 
-Ops Console v2.0.0 is designed as a self-contained, zero-dependency Node.js (>= 20 LTS ESM) control plane. Every subsystem favors explicit allowlists, bounded resource usage, official upstream protocols, and graceful degradation when optional components are absent.
+Ops Console v2.1.0 is designed as a self-contained, zero-dependency Node.js (>= 20 LTS ESM) control plane and multi-device telemetry hub. Every subsystem favors explicit allowlists, bounded resource usage, official upstream protocols, push-only remote observability, and graceful degradation when optional components are absent.
 
 ---
 
@@ -18,6 +18,8 @@ ops-console/
 │   ├── logger.mjs               # StructuredLogger: JSONL file sink with 5 MB x 5 rotation, in-memory ring buffer, EventEmitter live fan-out
 │   ├── logs.mjs                 # Unified log query (journalctl JSON + allowlisted files + self-log), severity histogram, export, SSE live tail
 │   ├── actions.mjs              # Allowlisted systemd/timer controls, health & backup job runner with overlap guards, audit.jsonl recorder
+│   ├── probes.mjs               # ProbeRegistry: salted SHA-256 token store (0600), Tailnet CIDR guard, payload sanitizer, multi-source fleet fusion
+│   ├── timeseries.mjs           # Bounded in-memory ring buffer for per-node and fleet telemetry sparklines
 │   ├── demo.mjs                 # Deterministic sandbox snapshot generator + simulated SSE log emitter for --demo mode
 │   ├── server.mjs               # HTTP/SSE request router, static asset handler, multi-host binding lifecycle
 │   └── connectors/              # Pluggable official-protocol telemetry adapters
@@ -29,9 +31,14 @@ ops-console/
 │       ├── memory-rerank.mjs    # Rerank / Embedding `/health` gateway probes
 │       └── ...                  # Gateway (Magpie), mesh/network (Tailscale, Mihomo, Syncthing), remote SSH nodes, custom HTTP probes
 ├── public/
-│   ├── index.html               # Single-page architectural instrument shell (7 views)
+│   ├── index.html               # Single-page architectural instrument shell (8 views, zero external CDN links)
 │   ├── styles.css               # Design tokens, light/dark themes, responsive desktop & mobile grids
+│   ├── world-map.js             # Offline Natural Earth 1:110m vector map, geodesic arcs, pan/zoom, SVG sparklines
 │   └── app.js                   # Zero-build ESM frontend: state store, topology renderer, SSE log stream client
+├── probe/
+│   ├── ops-probe.mjs            # Zero-dependency push-only telemetry agent for Linux & macOS (execFile only, zero RCE)
+│   ├── probe.config.example.json# Annotated example probe configuration
+│   └── README.md                # Probe security model, CLI flags, and schema v1 contract
 ├── deploy/
 │   ├── install.sh               # Portable POSIX/bash installer & config scaffolder
 │   └── systemd/                 # User & hardened system service unit templates

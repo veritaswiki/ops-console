@@ -5,6 +5,22 @@ All notable changes to **Ops Console** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-11-25
+
+### Added
+- **Global Fleet & World Map View**: Offline, zero-CDN Natural Earth 1:110m vector map (`public/world-map.js`) with region presets (`fit`, `world`, `apac`, `eurasia`, `americas`), zoom/pan, co-location de-cluttering, geodesic mesh arcs, live node inspector, and inline SVG telemetry sparklines.
+- **Zero-Dependency Push-Only Agent (`ops-probe`)**: Portable subpackage under `probe/` (`@ops-console/probe`) for Linux (`systemd` hardened service) and macOS (`LaunchAgent`), collecting CPU, memory, disk, battery, network delta, Tailscale status, watched services, and aggregate agent counts with zero shell execution and zero reverse command channel.
+- **Probe Enrollment & Security Boundaries**: Per-node `ops_prb_*` write-only tokens stored as salted SHA-256 hashes (`0600`), Tailnet CGNAT (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`) + loopback CIDR enforcement (`fleet.requireTailscaleCidr`), bounded payload sanitization, CLI management (`ops-console probe enroll|list|revoke`), and Web UI enrollment/revocation with copyable install commands.
+- **Mobile One-Tap Check-in**: Privacy-first browser check-in (`POST /api/probes/checkin`) and mobile guide (`deploy/probe/mobile-checkin.md`) reporting hub RTT, optional battery, and network type without GPS or background location tracking.
+- **In-Memory Ring Time-Series Store**: `src/timeseries.mjs` records bounded per-node and fleet telemetry history served via `GET /api/nodes/:id` and `GET /api/fleet`.
+- **Auditable Probe Installer**: `deploy/probe/install-probe.sh` supporting Linux `systemd`, macOS `LaunchAgent`, `--dry-run`, and `--uninstall` with token redaction and `0600` config permissions.
+
+### Changed
+- **Zero External CDN CSP**: Removed external font CDN entries (`fonts.googleapis.com` / `fonts.gstatic.com`) from `Content-Security-Policy` and `public/index.html` for 100% air-gapped and Tailnet-only operation.
+- **8-View Navigation**: Added dedicated **Fleet / Global Nodes** view alongside Overview, Services, Memory, Agents & Gateway, Network, Logs, and Ops & Audit.
+
+---
+
 ## [2.0.0] - 2026-11-25
 
 ### Added

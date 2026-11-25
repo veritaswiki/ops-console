@@ -4,7 +4,7 @@
 
 English | [简体中文](./README.zh-CN.md)
 
-[![Version](https://img.shields.io/badge/version-2.0.0-0f172a?style=flat-square)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-2.1.0-0f172a?style=flat-square)](./CHANGELOG.md)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20%20LTS-16a34a?style=flat-square)](https://nodejs.org/)
 [![Dependencies](https://img.shields.io/badge/runtime%20deps-0-2563eb?style=flat-square)](#feature-matrix)
 [![License: MIT](https://img.shields.io/badge/license-MIT-475569?style=flat-square)](./LICENSE)
@@ -56,7 +56,7 @@ npm run demo
 node bin/ops-console.mjs --demo --port 4320
 ```
 
-Open `http://127.0.0.1:4320` in your browser to explore all 7 views immediately.
+Open `http://127.0.0.1:4320` in your browser to explore all 8 views immediately (including the offline Global Fleet Map and Probe Manager).
 
 ---
 
@@ -64,7 +64,8 @@ Open `http://127.0.0.1:4320` in your browser to explore all 7 views immediately.
 
 | Area | Capabilities |
 | --- | --- |
-| **Web Instrument UI** | Light & dark themes, responsive desktop + mobile layout, 7 dedicated views: **Overview & Topology**, **Services**, **Memory & Context**, **Agents & Gateway**, **Network & Nodes**, **Log Explorer**, and **Ops & Audit**. |
+| **Web Instrument UI** | Zero-CDN light & dark themes, responsive desktop + mobile layout, 8 dedicated views: **Overview & Topology**, **Global Fleet & Probes**, **Services**, **Memory & Context**, **Agents & Gateway**, **Network**, **Log Explorer**, and **Ops & Audit**. |
+| **Multi-Device Fleet & `ops-probe`** | Offline Natural Earth 1:110m vector world map, per-node SVG sparklines, push-only Linux/macOS probe (`probe/`), and privacy-first mobile one-tap check-in with zero GPS tracking and zero reverse command channel. |
 | **Official Connectors** | Pluggable connectors speaking official HTTP APIs and structured CLI JSON (`nmem`, `ov`, `magpie`, `tailscale`, `systemctl`, `journalctl`, Mihomo REST, Syncthing REST, Symbiote, Rerank/Embedding, SSH). |
 | **Unified Log System** | Structured `journalctl --output=json` queries (unit, severity `err`/`warn`/`info`/`debug`, range `15m..7d`, keyword/regex, severity histogram), allowlisted file logs with `realpath` containment, rotating self-logs (`5 MB x 5`), live SSE tail, and one-click `jsonl`/`text` export. |
 | **Operations & Audit** | Safe allowlisted service/timer actions, critical-service risk prompts, Read-Only mode, health & backup triggers, and structured `audit.jsonl` recording actor, IP, request ID, target, action, duration, and result. |
@@ -106,7 +107,22 @@ node bin/ops-console.mjs --check-config --config ./config.local.json
 | — | `MIHOMO_API_SECRET` | — | Bearer secret for Mihomo REST API connector (optional). |
 | — | `SYNCTHING_API_KEY` | — | API key for Syncthing connector (optional). |
 | `--check-config` | — | — | Validates resolved configuration and exits `0` on success. |
-| `--version` | — | — | Prints version (`2.0.0`) and exits. |
+| `--version` | — | — | Prints version (`2.1.0`) and exits. |
+
+### Probe Management Subcommands
+
+```bash
+# Enroll a Linux/macOS/mobile node and print a one-time ops_prb_* token + install command
+ops-console probe enroll --id edge-tokyo-01 --name "Tokyo Edge" --type server --region "Tokyo, JP" --lat 35.68 --lon 139.69
+
+# List enrolled probe tokens (metadata only; never exposes plaintext tokens)
+ops-console probe list
+
+# Immediately revoke a node's push token
+ops-console probe revoke --id edge-tokyo-01
+```
+
+See [`probe/README.md`](./probe/README.md) and [`deploy/probe/mobile-checkin.md`](./deploy/probe/mobile-checkin.md) for Linux `systemd`, macOS `LaunchAgent`, and Android/iOS setup.
 | `--help` | — | — | Displays CLI usage summary. |
 
 ---
@@ -193,6 +209,13 @@ All connectors are optional, gracefully degrade when disabled or unreachable, an
 | --- | --- | --- |
 | `GET /api/ping` | Public | Lightweight liveness probe (`200 OK`) for Docker/systemd healthchecks. |
 | `GET /api/snapshot` | Read | Aggregated topology, host metrics, services, timers, connectors, and running jobs. |
+| `GET /api/fleet` (`GET /api/nodes`) | Read | Unified multi-device fleet view fusing local hub, `ops-probe` push telemetry, SSH nodes, and Tailscale peers. |
+| `GET /api/nodes/:id` | Read | Detailed node state plus bounded time-series history for sparkline rendering. |
+| `GET /api/probes` | Read | Enrolled probe metadata (scopes, type, region; never exposes tokens). |
+| `POST /api/probes/ingest` | Probe Token | Push-only telemetry ingest authenticated by per-node `Bearer ops_prb_*` + `X-Ops-Probe-Id` (restricted to Tailnet/loopback CIDR by default). |
+| `POST /api/probes/checkin` | Session / Read | Privacy-first mobile Web UI check-in (RTT, optional battery/network; zero GPS). |
+| `POST /api/probes/enroll` | Mutate | Issue a one-time `ops_prb_*` token and install snippets. Blocked in `--read-only`. |
+| `DELETE /api/probes/:id` | Mutate | Revoke an enrolled probe token immediately. Blocked in `--read-only`. |
 | `GET /api/remotes?refresh=1` | Read | Remote SSH node health summary (cached 60s unless `refresh=1`). |
 | `GET /api/logs` | Read | Structured log query (`source`, `unit`, `file`, `severity`, `since`, `q`, `regex`, `limit`). |
 | `GET /api/logs/stream` | Read (SSE) | Real-time `text/event-stream` tail with heartbeat, concurrency cap, and child-process cleanup. |
@@ -214,6 +237,7 @@ All connectors are optional, gracefully degrade when disabled or unreachable, an
 - **Path Containment**: File log readers resolve symlinks via `fs.realpath` and verify strict prefix containment before reading tail chunks.
 - **CSRF & Rate Limiting**: Mutating `POST` requests validate `Origin`/`Referer` against `security.allowedOrigins` and pass through a per-IP sliding-window rate limiter.
 - **Read-Only Mode**: Run with `--read-only` or `OPS_CONSOLE_READ_ONLY=1` for purely observational dashboards.
+- **Zero External CDN & Push-Only Telemetry**: Strict `default-src 'self'` CSP with offline vector maps; remote probes hold write-only telemetry tokens restricted to Tailnet/loopback CIDRs with zero remote command execution capability.
 
 See [SECURITY.md](./SECURITY.md) for the complete threat model and hardening checklist.
 

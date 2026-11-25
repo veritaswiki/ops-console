@@ -1,9 +1,18 @@
+import { createWorldMapController, renderSparklineSvg } from '/world-map.js';
+
 const state = {
   meta: null,
   snapshot: null,
   remotes: null,
   audit: [],
   activeView: 'overview',
+  fleetTypeFilter: 'all',
+  selectedNodeId: '',
+  selectedNodeHistory: [],
+  enrolledProbes: [],
+  lastEnrollResult: null,
+  enrollSnippetTab: 'linuxSystemd',
+  mapController: null,
   serviceLayer: 'all',
   serviceStatus: 'all',
   serviceQuery: '',
@@ -163,6 +172,10 @@ function switchView(viewName) {
   if (viewName === 'ops') {
     loadAudit();
   }
+  if (viewName === 'fleet') {
+    loadEnrolledProbes();
+    if (state.snapshot) renderFleet(state.snapshot);
+  }
   if (viewName === 'logs' && state.logEntries.length === 0) {
     runLogQuery();
   }
@@ -318,9 +331,15 @@ function renderOverview(snap) {
 
   const tsOnline = net.tailscale?.onlineCount ?? 0;
   const tsTotal = net.tailscale?.devices?.length ?? 0;
+  const fleetSummary = snap.fleet?.summary || null;
   const modelsTotal = magpie.totalModels ?? 0;
-  $('kpiNetwork').textContent = `${tsOnline}/${tsTotal} · ${modelsTotal}`;
-  $('kpiNetworkSub').textContent = `Tailscale 在线设备 · Magpie 路由模型数`;
+  if (fleetSummary) {
+    $('kpiNetwork').textContent = `${fleetSummary.online}/${fleetSummary.total} 节点`;
+    $('kpiNetworkSub').textContent = `探针实采 ${fleetSummary.probed} 台 · Tailnet ${tsOnline}/${tsTotal} · ${modelsTotal} 模型`;
+  } else {
+    $('kpiNetwork').textContent = `${tsOnline}/${tsTotal} · ${modelsTotal}`;
+    $('kpiNetworkSub').textContent = 'Tailscale 在线设备 · Magpie 路由模型数';
+  }
 
   renderTopology(snap);
 
@@ -431,6 +450,366 @@ function renderOverview(snap) {
     alertsHtml += '<p class="panel-desc">当前无未处理告警记录。</p>';
   }
   $('overviewAlerts').innerHTML = alertsHtml;
+}
+
+function formatAgeSec(ageSec) {
+  if (ageSec === null || ageSec === undefined || !Number.isFinite(Number(ageSec))) return '-';
+  const s = Math.max(0, Math.round(Number(ageSec)));
+  if (s < 10) return '刚刚';
+  if (s < 60) return `${s}s 前`;
+  if (s < 3600) return `${Math.floor(s / 60)}m 前`;
+  if (s < 86400) return `${Math.floor(s / 3600)}h 前`;
+  return `${Math.floor(s / 86400)}d 前`;
+}
+
+function deviceTypeLabel(type) {
+  const map = { hub: '中心 Hub', server: '服务器', edge: '边缘节点', laptop: '笔记本', mobile: '移动端' };
+  return map[type] || type || '节点';
+}
+
+function probeModeLabel(mode) {
+  const map = {
+    local: '本地直采',
+    push: '推送探针',
+    checkin: '移动签到',
+    ssh: 'SSH 探测',
+    'tailscale-only': '仅 Tailscale',
+  };
+  return map[mode] || mode || '-';
+}
+
+function nodeStatusLabel(node) {
+  if (node.status === 'healthy') return node.probeMode === 'checkin' ? '已签到' : '在线';
+  if (node.status === 'degraded') return '上报延迟';
+  if (node.status === 'standby') {
+    if (node.deviceType === 'mobile') return '待签到';
+    return node.transport && node.transport !== 'offline' ? '仅组网在线' : '待机';
+  }
+  return '离线';
+}
+
+function ensureMapController() {
+  if (!state.mapController) {
+    state.mapController = createWorldMapController($('worldMapWrap'), {
+      onSelectNode: (nodeId) => selectFleetNode(nodeId),
+    });
+  }
+  return state.mapController;
+}
+
+async function selectFleetNode(nodeId, { focusOnMap = false } = {}) {
+  state.selectedNodeId = nodeId;
+  const nodes = state.snapshot?.fleet?.nodes || [];
+  const target = nodes.find((n) => n.id === nodeId);
+  state.selectedNodeHistory = target?.history || [];
+  if (state.snapshot) {
+    renderFleet(state.snapshot);
+    if (focusOnMap && target) {
+      ensureMapController().focusNode(target);
+    }
+  }
+  try {
+    const data = await apiFetch(`/api/nodes/${encodeURIComponent(nodeId)}`);
+    if (state.selectedNodeId === nodeId && Array.isArray(data.history)) {
+      state.selectedNodeHistory = data.history;
+      renderNodeInspector(data.node || target);
+    }
+  } catch {
+    // fall back to snapshot history cleanly
+  }
+}
+
+function renderProgressBarRow(label, valueText, pct) {
+  const n = Number(pct);
+  const clamped = Number.isFinite(n) ? Math.max(0, Math.min(100, n)) : 0;
+  const tone = clamped >= 90 ? 'is-err' : clamped >= 78 ? 'is-warn' : '';
+  return `
+    <div class="disk-row">
+      <div class="disk-meta">
+        <span>${esc(label)}</span>
+        <span class="mono">${esc(valueText)}</span>
+      </div>
+      <div class="bar-track"><div class="bar-fill ${tone}" style="width:${clamped}%"></div></div>
+    </div>
+  `;
+}
+
+function renderNodeInspector(node) {
+  const body = $('inspectorBody');
+  const titleEl = $('inspectorTitle');
+  const subEl = $('inspectorSubtitle');
+  const statusSlot = $('inspectorStatusSlot');
+
+  if (!node) {
+    titleEl.textContent = '节点实时详情';
+    subEl.textContent = '点击左侧地图或下方列表中的任意设备查看遥测趋势。';
+    statusSlot.innerHTML = '';
+    body.innerHTML = '<div class="empty-state">暂无可展示的节点信息。</div>';
+    return;
+  }
+
+  titleEl.textContent = node.name || node.id;
+  subEl.textContent = [deviceTypeLabel(node.deviceType), node.region, node.provider, node.os && node.arch ? `${node.os}/${node.arch}` : node.os]
+    .filter(Boolean)
+    .join(' · ');
+  statusSlot.innerHTML = renderStatusCell(node.status, nodeStatusLabel(node));
+
+  const history = state.selectedNodeHistory.length ? state.selectedNodeHistory : (node.history || []);
+  const primaryDisk = Array.isArray(node.disks) && node.disks[0] ? node.disks[0] : null;
+
+  const bars = [];
+  if (node.cpu && (node.cpu.usagePct !== null && node.cpu.usagePct !== undefined || node.cpu.load1 !== null && node.cpu.load1 !== undefined)) {
+    const cpuPct = node.cpu.usagePct ?? (node.cpu.cores ? Math.min(100, (node.cpu.load1 / node.cpu.cores) * 100) : 0);
+    const cpuText = node.cpu.usagePct != null
+      ? `${Number(node.cpu.usagePct).toFixed(1)}%${node.cpu.load1 != null ? ` (load ${node.cpu.load1})` : ''}`
+      : `load ${node.cpu.load1}`;
+    bars.push(renderProgressBarRow('CPU 占用', cpuText, cpuPct));
+  }
+  if (node.memory && node.memory.usedPct != null) {
+    const memSub = node.memory.totalBytes ? ` (${formatBytes(node.memory.usedBytes)} / ${formatBytes(node.memory.totalBytes)})` : '';
+    bars.push(renderProgressBarRow('内存占用', `${Number(node.memory.usedPct).toFixed(1)}%${memSub}`, node.memory.usedPct));
+  }
+  if (primaryDisk && (primaryDisk.usedPct != null || primaryDisk.summary)) {
+    const diskText = primaryDisk.usedPct != null
+      ? `${Number(primaryDisk.usedPct).toFixed(0)}%${primaryDisk.totalBytes ? ` (${formatBytes(primaryDisk.usedBytes)} / ${formatBytes(primaryDisk.totalBytes)})` : (primaryDisk.summary ? ` ${primaryDisk.summary}` : '')}`
+      : primaryDisk.summary;
+    bars.push(renderProgressBarRow(`磁盘 (${primaryDisk.mount || '/'})`, diskText, primaryDisk.usedPct ?? 0));
+  }
+  if (node.battery && node.battery.percent != null) {
+    const chg = node.battery.charging ? '充电中' : (node.battery.source || '电池供电');
+    bars.push(renderProgressBarRow('电池电量', `${Math.round(node.battery.percent)}% · ${chg}`, node.battery.percent));
+  }
+
+  const sparks = [];
+  if (node.deviceType === 'mobile') {
+    sparks.push(renderSparklineSvg(history, { field: 'batteryPct', label: '电量趋势', unit: '%', min: 0, max: 100, tone: 'ok' }));
+    sparks.push(renderSparklineSvg(history, { field: 'rttMs', label: '往返延迟', unit: 'ms', min: 0, tone: 'info' }));
+  } else {
+    sparks.push(renderSparklineSvg(history, { field: 'cpuPct', label: 'CPU 趋势', unit: '%', min: 0, max: 100, tone: 'accent' }));
+    sparks.push(renderSparklineSvg(history, { field: 'memPct', label: '内存趋势', unit: '%', min: 0, max: 100, tone: 'info' }));
+  }
+
+  const transportText = node.transport === 'local'
+    ? '本地回环'
+    : node.transport === 'relay'
+      ? `DERP 中继 (${node.relay || 'auto'})`
+      : node.transport === 'direct'
+        ? 'Tailnet 直连'
+        : node.transport === 'checkin'
+          ? 'Web / API 签到'
+          : node.transport === 'ssh'
+            ? 'SSH 探测'
+            : '离线';
+
+  const netText = node.network?.rxBytesPerSec != null
+    ? `RX ${formatBytes(node.network.rxBytesPerSec)}/s · TX ${formatBytes(node.network.txBytesPerSec)}/s`
+    : (node.network?.type || '-');
+
+  const kvItems = [
+    { k: 'Tailscale IP', v: node.tailscaleIp || '-' },
+    { k: '连接路径', v: node.rttMs != null && node.rttMs > 0 ? `${transportText} · ${node.rttMs}ms` : transportText },
+    { k: '采集方式', v: `${probeModeLabel(node.probeMode)}${node.probeAgeSec != null ? ` · ${formatAgeSec(node.probeAgeSec)}` : ''}` },
+    { k: '运行与负载', v: node.uptimeSec != null ? formatUptime(node.uptimeSec) : (node.note || '-') },
+  ];
+  if (netText !== '-') kvItems.push({ k: '网络吞吐 / 制式', v: netText });
+  if (node.agentsCount > 0 || node.servicesSummary) {
+    kvItems.push({
+      k: '服务与 Agent',
+      v: node.servicesSummary
+        ? `${node.servicesSummary.healthy}/${node.servicesSummary.total} 服务 · ${node.agentsCount || 0} Agent`
+        : `${node.agentsCount} 个活跃 Agent`,
+    });
+  }
+  if (node.backupDisk) {
+    kvItems.push({ k: '异机备份快照', v: node.backupDisk });
+  }
+
+  const watched = Array.isArray(node.watchedServices) ? node.watchedServices.slice(0, 6) : [];
+  const watchedHtml = watched.length
+    ? `
+      <div>
+        <div class="field-label" style="margin-bottom:6px">受观测服务</div>
+        <ul class="plain-list">
+          ${watched.map((s) => `<li><strong>${esc(s.name)}</strong> <span class="mono" style="color:var(--muted)">· ${esc(s.status)}</span></li>`).join('')}
+        </ul>
+      </div>
+    `
+    : '';
+
+  body.innerHTML = `
+    <div class="inspector-kv">
+      ${kvItems.map((it) => `<div class="kv-item"><div class="kv-key">${esc(it.k)}</div><div class="kv-val mono" title="${esc(it.v)}">${esc(it.v)}</div></div>`).join('')}
+    </div>
+    ${bars.length ? `<div>${bars.join('')}</div>` : '<div class="form-hint">该节点尚未上报系统资源指标，可在下方签发推送探针获取完整遥测。</div>'}
+    <div class="spark-grid-two">${sparks.join('')}</div>
+    ${watchedHtml}
+  `;
+}
+
+function renderFleet(snap) {
+  const fleet = snap?.fleet;
+  if (!fleet) return;
+
+  const nodes = Array.isArray(fleet.nodes) ? fleet.nodes : [];
+  const links = Array.isArray(fleet.links) ? fleet.links : [];
+  const sum = fleet.summary || {};
+
+  if (!state.selectedNodeId || !nodes.some((n) => n.id === state.selectedNodeId)) {
+    state.selectedNodeId = fleet.localNodeId || nodes[0]?.id || '';
+    const defNode = nodes.find((n) => n.id === state.selectedNodeId);
+    state.selectedNodeHistory = defNode?.history || [];
+  }
+
+  $('fleetSummaryMeta').textContent = `${sum.total ?? nodes.length} 台设备 · ${sum.probed ?? 0} 台实时探针 · ${fleet.requireTailscaleCidr ? 'Tailnet 源白名单已开启' : '内网写入模式'}`;
+  $('fleetKpiTotal').textContent = `${sum.total ?? nodes.length}`;
+  $('fleetKpiTotalSub').textContent = `服务器 ${sum.servers ?? 0} · 笔记本 ${sum.laptops ?? 0} · 移动端 ${sum.mobiles ?? 0}`;
+  $('fleetKpiOnline').textContent = `${sum.online ?? 0} / ${sum.total ?? nodes.length}`;
+  $('fleetKpiOnlineSub').textContent = `${links.filter((l) => l.active).length} 条活跃组网链路`;
+  $('fleetKpiProbed').textContent = `${sum.probed ?? 0} / ${sum.total ?? nodes.length}`;
+  $('fleetKpiProbedSub').textContent = '支持 ops-probe 单向推送与移动端签到';
+  $('fleetKpiSecurity').textContent = fleet.requireTailscaleCidr ? 'Tailnet 仅限' : '受控内网';
+  $('fleetKpiSecuritySub').textContent = '仅允许遥测写入，零反向命令通道';
+
+  const controller = ensureMapController();
+  controller.setData({ nodes, links, selectedNodeId: state.selectedNodeId });
+
+  const selectedNode = nodes.find((n) => n.id === state.selectedNodeId) || nodes[0] || null;
+  renderNodeInspector(selectedNode);
+
+  // Populate mobile check-in suggestions
+  const mobileNodes = nodes.filter((n) => n.deviceType === 'mobile');
+  const dl = $('mobileNodeOptions');
+  if (dl) {
+    dl.innerHTML = mobileNodes.map((n) => `<option value="${esc(n.id)}">${esc(n.name)}</option>`).join('');
+  }
+  const checkinInput = $('checkinNodeId');
+  if (checkinInput && !checkinInput.value) {
+    checkinInput.value = mobileNodes[0]?.id || 'mobile-ops';
+  }
+
+  // Filter fleet table
+  const filtered = nodes.filter((n) => {
+    if (state.fleetTypeFilter === 'all') return true;
+    if (state.fleetTypeFilter === 'server') {
+      return n.deviceType === 'hub' || n.deviceType === 'server' || n.deviceType === 'edge';
+    }
+    return n.deviceType === state.fleetTypeFilter;
+  });
+
+  const readOnly = Boolean(state.meta?.readOnly);
+  const tbody = $('fleetTableBody');
+  if (filtered.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">当前类型下暂无节点。</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = filtered.map((n) => {
+    const isSel = n.id === state.selectedNodeId;
+    const metricParts = [];
+    if (n.cpu?.usagePct != null) metricParts.push(`CPU ${Math.round(n.cpu.usagePct)}%`);
+    else if (n.cpu?.load1 != null) metricParts.push(`Load ${n.cpu.load1}`);
+    if (n.memory?.usedPct != null) metricParts.push(`Mem ${Math.round(n.memory.usedPct)}%`);
+    if (n.battery?.percent != null) metricParts.push(`电量 ${Math.round(n.battery.percent)}%${n.battery.charging ? '+' : ''}`);
+    const metricText = metricParts.length ? metricParts.join(' · ') : '-';
+    const netSub = n.relay ? `DERP ${n.relay}` : (n.transport || '-');
+    const canRevoke = !readOnly && n.probeEnrolled && n.probeMode !== 'local';
+    return `
+      <tr class="${isSel ? 'fleet-row-selected' : ''}">
+        <td>
+          <strong>${esc(n.name)}</strong>
+          <span class="cell-sub mono">${esc(n.id)}</span>
+        </td>
+        <td>
+          ${esc(deviceTypeLabel(n.deviceType))}
+          <span class="cell-sub">${esc(n.region || '-')}</span>
+        </td>
+        <td>${renderStatusCell(n.status, nodeStatusLabel(n))}</td>
+        <td class="mono">${esc(probeModeLabel(n.probeMode))}</td>
+        <td class="mono">${esc(metricText)}</td>
+        <td>
+          <span class="mono">${esc(n.tailscaleIp || '-')}</span>
+          <span class="cell-sub mono">${esc(netSub)}${n.rttMs ? ` · ${n.rttMs}ms` : ''}</span>
+        </td>
+        <td class="mono">${esc(n.probeMode === 'local' ? '实时' : (n.probeAgeSec != null ? formatAgeSec(n.probeAgeSec) : (n.probeMode === 'ssh' && n.status === 'healthy' ? 'SSH 实时' : '-')))}</td>
+        <td class="col-actions">
+          <div class="cell-actions">
+            <button type="button" class="link-action" data-inspect-node="${esc(n.id)}">详情</button>
+            ${canRevoke ? `<button type="button" class="link-action" data-revoke-probe="${esc(n.id)}" data-revoke-name="${esc(n.name)}">吊销</button>` : ''}
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+async function loadEnrolledProbes() {
+  try {
+    const data = await apiFetch('/api/probes');
+    state.enrolledProbes = Array.isArray(data.probes) ? data.probes : [];
+    renderEnrolledProbes();
+  } catch {
+    // ignore non-critical error
+  }
+}
+
+function renderEnrolledProbes() {
+  const container = $('enrolledProbesList');
+  if (!container) return;
+  const readOnly = Boolean(state.meta?.readOnly);
+  const enrollBtn = $('enrollProbeBtn');
+  if (enrollBtn) {
+    enrollBtn.disabled = readOnly;
+    $('enrollProbeHint').textContent = readOnly
+      ? '当前为只读模式，探针签发与吊销功能已禁用。'
+      : '令牌仅显示一次，服务端只保存加盐 SHA-256 哈希。';
+  }
+  if (!state.enrolledProbes.length) {
+    container.innerHTML = '<div class="empty-state">尚未通过控制台签发独立探针令牌。</div>';
+    return;
+  }
+  container.innerHTML = state.enrolledProbes.map((p) => `
+    <div class="probe-row">
+      <div class="probe-row-meta">
+        <div class="probe-row-title">${esc(p.name || p.id)} <span class="mono" style="font-size:13px;color:var(--muted)">(${esc(p.id)})</span></div>
+        <div class="probe-row-sub mono">${esc(deviceTypeLabel(p.deviceType))} · ${esc(p.region || 'Tailnet')} · 权限 ${(p.scopes || []).join(', ')}</div>
+      </div>
+      <div>
+        ${readOnly
+          ? '<span class="form-hint">只读</span>'
+          : `<button type="button" class="btn-subtle" data-revoke-probe="${esc(p.id)}" data-revoke-name="${esc(p.name || p.id)}">吊销令牌</button>`}
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderEnrollSnippet() {
+  const res = state.lastEnrollResult;
+  const box = $('enrollResultBox');
+  if (!res || !box) return;
+  box.hidden = false;
+  $('enrollResultTitle').textContent = `节点 ${res.node?.id || ''} 探针凭据已签发`;
+  $('enrollTokenValue').textContent = `Token: ${res.token || ''}`;
+  const hints = res.installHints || {};
+  const snippet = hints[state.enrollSnippetTab] || hints.linuxSystemd || '';
+  $('enrollSnippetCode').textContent = snippet;
+  document.querySelectorAll('#enrollSnippetTabs .seg-item').forEach((btn) => {
+    btn.classList.toggle('is-active', btn.dataset.snippet === state.enrollSnippetTab);
+  });
+}
+
+async function copyText(text) {
+  if (navigator.clipboard && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  document.execCommand('copy');
+  ta.remove();
 }
 
 function renderServices(snap) {
@@ -1059,6 +1438,7 @@ async function loadSnapshot(force = false) {
     state.snapshot = snap;
     $('syncStamp').textContent = `已同步 ${formatClock(snap.collectedAt)}`;
     renderOverview(snap);
+    renderFleet(snap);
     renderServices(snap);
     renderMemory(snap);
     renderAgents(snap);
@@ -1353,6 +1733,185 @@ function bindEvents() {
   });
 
   $('refreshAuditBtn').addEventListener('click', () => loadAudit());
+
+  // Fleet map & probe controls
+  $('mapRegionSegment').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.seg-item');
+    if (!btn || !btn.dataset.region) return;
+    document.querySelectorAll('#mapRegionSegment .seg-item').forEach((b) => {
+      b.classList.toggle('is-active', b === btn);
+    });
+    ensureMapController().setRegion(btn.dataset.region);
+  });
+
+  $('mapZoomIn').addEventListener('click', () => ensureMapController().zoom(0.75));
+  $('mapZoomOut').addEventListener('click', () => ensureMapController().zoom(1.33));
+
+  $('fleetTypeFilter').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.seg-item');
+    if (!btn || !btn.dataset.type) return;
+    state.fleetTypeFilter = btn.dataset.type;
+    document.querySelectorAll('#fleetTypeFilter .seg-item').forEach((b) => {
+      b.classList.toggle('is-active', b === btn);
+    });
+    if (state.snapshot) renderFleet(state.snapshot);
+  });
+
+  const handleRevokeClick = (btn) => {
+    const id = btn.dataset.revokeProbe;
+    const name = btn.dataset.revokeName || id;
+    openConfirm({
+      title: `确认吊销探针 ${name}`,
+      body: `节点 ${id} 的推送令牌将立即失效，后续上报请求会被服务端拒绝。`,
+      onConfirm: async () => {
+        try {
+          await apiFetch(`/api/probes/${encodeURIComponent(id)}`, { method: 'DELETE' });
+          showToast(`已吊销 ${id} 的探针令牌`);
+          await Promise.all([loadEnrolledProbes(), loadSnapshot(true)]);
+        } catch (err) {
+          showToast(`吊销失败：${err.message}`, true);
+        }
+      },
+    });
+  };
+
+  $('fleetTableBody').addEventListener('click', (ev) => {
+    const inspectBtn = ev.target.closest('[data-inspect-node]');
+    if (inspectBtn) {
+      selectFleetNode(inspectBtn.dataset.inspectNode, { focusOnMap: true });
+      return;
+    }
+    const revokeBtn = ev.target.closest('[data-revoke-probe]');
+    if (revokeBtn) handleRevokeClick(revokeBtn);
+  });
+
+  $('enrolledProbesList').addEventListener('click', (ev) => {
+    const revokeBtn = ev.target.closest('[data-revoke-probe]');
+    if (revokeBtn) handleRevokeClick(revokeBtn);
+  });
+
+  $('enrollCityPreset').addEventListener('change', (ev) => {
+    const raw = ev.target.value;
+    if (!raw) return;
+    const [region, lat, lon] = raw.split('|');
+    $('enrollRegion').value = region || '';
+    $('enrollLat').value = lat || '';
+    $('enrollLon').value = lon || '';
+  });
+
+  $('enrollProbeForm').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const btn = $('enrollProbeBtn');
+    btn.disabled = true;
+    try {
+      const deviceType = $('enrollDeviceType').value;
+      const payload = {
+        id: $('enrollNodeId').value.trim().toLowerCase(),
+        name: $('enrollNodeName').value.trim(),
+        deviceType,
+        probeMode: deviceType === 'mobile' ? 'checkin' : 'push',
+        region: $('enrollRegion').value.trim(),
+      };
+      if ($('enrollLat').value !== '') payload.lat = Number($('enrollLat').value);
+      if ($('enrollLon').value !== '') payload.lon = Number($('enrollLon').value);
+
+      const data = await apiFetch('/api/probes/enroll', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+      state.lastEnrollResult = data;
+      state.enrollSnippetTab = deviceType === 'laptop'
+        ? 'macosLaunchAgent'
+        : (deviceType === 'mobile' ? 'mobileCheckinCurl' : 'linuxSystemd');
+      renderEnrollSnippet();
+      $('enrollProbeForm').reset();
+      showToast(`已为 ${data.node.id} 签发一次性探针令牌`);
+      await Promise.all([loadEnrolledProbes(), loadSnapshot(true)]);
+      selectFleetNode(data.node.id, { focusOnMap: true });
+    } catch (err) {
+      showToast(`签发失败：${err.message}`, true);
+    } finally {
+      btn.disabled = Boolean(state.meta?.readOnly);
+    }
+  });
+
+  $('enrollSnippetTabs').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('.seg-item');
+    if (!btn || !btn.dataset.snippet) return;
+    state.enrollSnippetTab = btn.dataset.snippet;
+    renderEnrollSnippet();
+  });
+
+  $('copyEnrollSnippetBtn').addEventListener('click', async () => {
+    const text = $('enrollSnippetCode').textContent || '';
+    if (!text) return;
+    try {
+      await copyText(text);
+      showToast('安装命令已复制到剪贴板');
+    } catch {
+      showToast('剪贴板复制失败，请手动选中复制', true);
+    }
+  });
+
+  $('mobileCheckinForm').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    const btn = $('mobileCheckinBtn');
+    const notice = $('mobileCheckinResult');
+    btn.disabled = true;
+    notice.hidden = true;
+    try {
+      const t0 = performance.now();
+      await fetch('/api/ping', { credentials: 'same-origin', cache: 'no-store' });
+      const rttMs = Math.max(1, Math.round(performance.now() - t0));
+
+      let battery = null;
+      if (typeof navigator.getBattery === 'function') {
+        try {
+          const b = await navigator.getBattery();
+          battery = {
+            percent: Math.round((b.level || 0) * 100),
+            charging: Boolean(b.charging),
+            source: b.charging ? 'AC Power' : 'Battery',
+          };
+        } catch {
+          // Battery API unavailable
+        }
+      }
+
+      const conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      const network = conn?.effectiveType ? { type: String(conn.effectiveType).toUpperCase() } : null;
+      const ua = navigator.userAgent || '';
+      const platform = /Android/i.test(ua) ? 'android' : (/iPhone|iPad|iOS/i.test(ua) ? 'ios' : 'mobile-web');
+
+      const nodeId = $('checkinNodeId').value.trim().toLowerCase();
+      const data = await apiFetch('/api/probes/checkin', {
+        method: 'POST',
+        body: JSON.stringify({
+          nodeId,
+          deviceType: 'mobile',
+          platform,
+          region: $('checkinRegion').value.trim(),
+          note: $('checkinNote').value.trim() || '移动端 Web 签到',
+          battery,
+          network,
+          hubRttMs: rttMs,
+        }),
+      });
+      notice.className = 'inline-notice';
+      notice.textContent = `节点 ${data.nodeId} 签到成功（RTT ${rttMs}ms${battery ? `，电量 ${battery.percent}%` : ''}，时间 ${formatClock(data.receivedAt)}）`;
+      notice.hidden = false;
+      showToast(`移动端节点 ${data.nodeId} 已签到`);
+      await loadSnapshot(true);
+      selectFleetNode(data.nodeId, { focusOnMap: true });
+    } catch (err) {
+      notice.className = 'inline-notice is-error';
+      notice.textContent = `签到失败：${err.message}`;
+      notice.hidden = false;
+      showToast(`签到失败：${err.message}`, true);
+    } finally {
+      btn.disabled = false;
+    }
+  });
 
   $('confirmCancel').addEventListener('click', () => {
     state.pendingConfirm = null;

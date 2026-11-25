@@ -1,0 +1,24 @@
+{
+  "_comment": "Ops Console Probe configuration (chmod 600). Replace hubUrl, nodeId, and token before starting.",
+  "hubUrl": "https://hub.example.ts.net",
+  "nodeId": "edge-node-01",
+  "token": "REPLACE_WITH_PER_NODE_TOKEN",
+  "deviceType": "server",
+  "intervalSec": 30,
+  "mounts": [
+    "/"
+  ],
+  "watchServices": [
+    "docker.service",
+    "tailscaled.service"
+  ],
+  "_notes": {
+    "hubUrl": "Base URL of your Ops Console hub (e.g. https://hub.example.ts.net or http://100.64.0.10:4320). Probe sends POST <hubUrl>/api/probes/ingest.",
+    "nodeId": "Unique node identifier registered on the hub (e.g. edge-node-01, macbook-pro-01).",
+    "token": "Per-node scoped bearer token issued by the hub. Can also be provided via OPS_PROBE_TOKEN.",
+    "deviceType": "Device role: hub, server, edge, laptop, mobile, or auto.",
+    "intervalSec": "Telemetry push interval in seconds (5 to 3600, default 30).",
+    "mounts": "Filesystem mount paths to measure via df (each must start with '/').",
+    "watchServices": "Explicit allowlist of services to check. Linux accepts unit names ('docker.service') or { name, scope: 'system'|'user' }. macOS accepts { name: 'Tailscale', port: 41641 } (localhost TCP probe) or { name: 'com.example.agent', launchd: true }."
+  }
+}

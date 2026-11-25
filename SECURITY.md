@@ -4,8 +4,9 @@
 
 | Version | Supported |
 | --- | --- |
-| `2.0.x` | Yes |
-| `< 2.0.0` | No (upgrade to `2.0.x`) |
+| `2.1.x` | Yes |
+| `2.0.x` | Security fixes (upgrade to `2.1.x`) |
+| `< 2.0.0` | No (upgrade to `2.1.x`) |
 
 ---
 

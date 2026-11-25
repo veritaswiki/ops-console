@@ -334,6 +334,78 @@
       "strictHostKeyChecking": "yes"
     }
   ],
+  "fleet": {
+    "localNode": {
+      "id": "hub-primary",
+      "name": "Primary Hub",
+      "role": "Primary Control Plane & Memory Hub",
+      "region": "San Francisco, US",
+      "provider": "Self-Hosted VM",
+      "tailscaleIp": "100.64.0.10",
+      "lat": 37.77,
+      "lon": -122.42
+    },
+    "probeStaleSec": 90,
+    "probeOfflineSec": 180,
+    "requireTailscaleCidr": true,
+    "historyPoints": 60,
+    "declaredNodes": [
+      {
+        "id": "edge-relay-01",
+        "name": "Edge Relay 01",
+        "deviceType": "server",
+        "probeMode": "push",
+        "role": "Ingress relay and jump node",
+        "region": "Tokyo, JP",
+        "provider": "Cloud VPS",
+        "tailscaleIp": "100.64.0.11",
+        "lat": 35.68,
+        "lon": 139.69
+      },
+      {
+        "id": "backup-node-02",
+        "name": "Backup Node 02",
+        "deviceType": "edge",
+        "probeMode": "push",
+        "role": "Off-site encrypted backup and standby node",
+        "region": "Frankfurt, DE",
+        "provider": "Cloud VPS",
+        "tailscaleIp": "100.64.0.12",
+        "lat": 50.11,
+        "lon": 8.68
+      },
+      {
+        "id": "workstation-mac",
+        "name": "Developer Laptop",
+        "deviceType": "laptop",
+        "probeMode": "push",
+        "role": "Primary engineering workstation",
+        "region": "San Francisco, US",
+        "provider": "macOS",
+        "tailscaleIp": "100.64.0.21",
+        "lat": 37.77,
+        "lon": -122.42
+      },
+      {
+        "id": "mobile-ops",
+        "name": "On-Call Mobile",
+        "deviceType": "mobile",
+        "probeMode": "checkin",
+        "role": "On-call Web UI and check-in device",
+        "region": "San Francisco, US",
+        "provider": "Mobile",
+        "tailscaleIp": "100.64.0.31",
+        "lat": 37.77,
+        "lon": -122.42
+      }
+    ],
+    "meshLinks": [
+      { "from": "hub-primary", "to": "edge-relay-01", "kind": "direct", "label": "Tailscale" },
+      { "from": "hub-primary", "to": "backup-node-02", "kind": "backup", "label": "Off-site DR" },
+      { "from": "workstation-mac", "to": "hub-primary", "kind": "direct", "label": "Workstation" },
+      { "from": "mobile-ops", "to": "hub-primary", "kind": "checkin", "label": "Mobile" }
+    ]
+  },
   "ops": {
     "healthScript": "/opt/ops-console/scripts/health-check.sh",
     "backupScript": "/opt/ops-console/scripts/backup.sh",

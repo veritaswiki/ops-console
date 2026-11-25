@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { APP_VERSION, loadConfig, parseCliArgs } from '../src/config.mjs';
+import { StructuredLogger } from '../src/logger.mjs';
+import { ProbeRegistry } from '../src/probes.mjs';
 import { createOpsConsole } from '../src/server.mjs';
 
 function printHelp() {
@@ -8,6 +10,7 @@ Self-hostable, zero-dependency operational control plane for services, AI memory
 
 Usage:
   ops-console [options]
+  ops-console probe <enroll|list|revoke> [options]
 
 Options:
   -c, --config <path>     Path to JSON configuration file
@@ -21,6 +24,12 @@ Options:
   -v, --version           Show version number
   -h, --help              Show this help message
 
+Probe subcommands:
+  ops-console probe enroll --id <id> [--name <name>] [--type server|laptop|mobile]
+                           [--region <label>] [--lat <deg>] [--lon <deg>] [--tailscale-ip <ip>] [--json]
+  ops-console probe list   [--json]
+  ops-console probe revoke --id <id>
+
 Environment variables:
   OPS_CONSOLE_CONFIG      Config file path
   OPS_CONSOLE_HOSTS       Comma-separated bind hosts
@@ -33,7 +42,109 @@ Environment variables:
 `);
 }
 
+async function handleProbeSubcommand(args) {
+  const action = args[0] || '';
+  const rest = args.slice(1);
+  const opts = {
+    configPath: '',
+    id: '',
+    name: '',
+    type: 'server',
+    mode: '',
+    role: '',
+    region: '',
+    provider: '',
+    lat: null,
+    lon: null,
+    tailscaleIp: '',
+    json: false,
+  };
+  for (let idx = 0; idx < rest.length; idx += 1) {
+    const arg = rest[idx];
+    if (arg === '--json') opts.json = true;
+    else if ((arg === '-c' || arg === '--config') && rest[idx + 1]) opts.configPath = rest[++idx];
+    else if (arg === '--id' && rest[idx + 1]) opts.id = rest[++idx];
+    else if (arg === '--name' && rest[idx + 1]) opts.name = rest[++idx];
+    else if (arg === '--type' && rest[idx + 1]) opts.type = rest[++idx];
+    else if (arg === '--mode' && rest[idx + 1]) opts.mode = rest[++idx];
+    else if (arg === '--role' && rest[idx + 1]) opts.role = rest[++idx];
+    else if (arg === '--region' && rest[idx + 1]) opts.region = rest[++idx];
+    else if (arg === '--provider' && rest[idx + 1]) opts.provider = rest[++idx];
+    else if (arg === '--lat' && rest[idx + 1]) opts.lat = Number(rest[++idx]);
+    else if (arg === '--lon' && rest[idx + 1]) opts.lon = Number(rest[++idx]);
+    else if (arg === '--tailscale-ip' && rest[idx + 1]) opts.tailscaleIp = rest[++idx];
+  }
+
+  const config = loadConfig({ cli: { configPath: opts.configPath } });
+  const logger = new StructuredLogger({ dataDir: config.console.dataDir, silentStdout: true });
+  const registry = new ProbeRegistry({ config, logger });
+
+  if (action === 'list') {
+    const list = registry.listEnrolled();
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify({ ok: true, probes: list }, null, 2)}\n`);
+    } else if (list.length === 0) {
+      process.stdout.write('No probes enrolled.\n');
+    } else {
+      for (const item of list) {
+        process.stdout.write(`${item.id}\t${item.deviceType}\t${item.probeMode}\t${item.region}\t${item.tailscaleIp || '-'}\tlastSeen=${item.lastSeenAt || 'never'}\n`);
+      }
+    }
+    process.exit(0);
+  }
+
+  if (action === 'enroll') {
+    if (!opts.id) {
+      process.stderr.write('Missing required --id <node-id>\n');
+      process.exit(1);
+    }
+    const result = await registry.enroll({
+      id: opts.id,
+      name: opts.name || opts.id,
+      deviceType: opts.type,
+      probeMode: opts.mode || (opts.type === 'mobile' ? 'checkin' : 'push'),
+      role: opts.role,
+      region: opts.region,
+      provider: opts.provider,
+      lat: opts.lat,
+      lon: opts.lon,
+      tailscaleIp: opts.tailscaleIp,
+    });
+    await logger.appendAudit({ category: 'probe', action: 'probe_enroll', target: result.node.id, actor: 'cli', ip: '127.0.0.1', ok: true, output: `deviceType=${result.node.deviceType}` });
+    if (opts.json) {
+      process.stdout.write(`${JSON.stringify({ ok: true, ...result }, null, 2)}\n`);
+    } else {
+      process.stdout.write(`Enrolled probe: ${result.node.id} (${result.node.deviceType})\n`);
+      process.stdout.write(`Token (shown once): ${result.token}\n`);
+      process.stdout.write(`Hub URL: ${result.hubUrl}\n`);
+    }
+    process.exit(0);
+  }
+
+  if (action === 'revoke') {
+    if (!opts.id) {
+      process.stderr.write('Missing required --id <node-id>\n');
+      process.exit(1);
+    }
+    const res = await registry.revoke(opts.id);
+    if (!res.ok) {
+      process.stderr.write(`${res.error}\n`);
+      process.exit(1);
+    }
+    await logger.appendAudit({ category: 'probe', action: 'probe_revoke', target: opts.id, actor: 'cli', ip: '127.0.0.1', ok: true, output: 'revoked via cli' });
+    process.stdout.write(`Revoked probe: ${opts.id}\n`);
+    process.exit(0);
+  }
+
+  process.stderr.write(`Unknown probe subcommand: ${action || '(empty)'}. Use enroll, list, or revoke.\n`);
+  process.exit(1);
+}
+
 async function main() {
+  if (process.argv[2] === 'probe') {
+    await handleProbeSubcommand(process.argv.slice(3));
+    return;
+  }
   const cli = parseCliArgs(process.argv.slice(2));
   if (cli.showHelp) {
     printHelp();

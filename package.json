@@ -1,6 +1,6 @@
 {
   "name": "ops-console",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "type": "module",
   "description": "Self-hostable, zero-dependency control plane for services, AI memory engines, networks, and structured logs.",
   "license": "MIT",
@@ -8,12 +8,14 @@
     "node": ">=20.0.0"
   },
   "bin": {
-    "ops-console": "./bin/ops-console.mjs"
+    "ops-console": "./bin/ops-console.mjs",
+    "ops-probe": "./probe/ops-probe.mjs"
   },
   "files": [
     "bin/",
     "src/",
     "public/",
+    "probe/",
     "deploy/",
     "ops-console.config.example.json",
     "LICENSE",
