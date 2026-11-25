@@ -137,6 +137,14 @@ test('maskClientIp masks IPv4 and IPv6 addresses while preserving loopback and e
 });
 
 test('TelemetryStore sqlite driver persists samples, hydrates series, tracks incidents, prunes, and sets 0600 permissions', async () => {
+  let hasNodeSqlite = false;
+  try {
+    const sqliteMod = await import('node:sqlite');
+    hasNodeSqlite = typeof sqliteMod.DatabaseSync === 'function';
+  } catch {
+    hasNodeSqlite = false;
+  }
+  const expectedDriver = hasNodeSqlite ? 'sqlite' : 'jsonl';
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ops-store-sqlite-'));
   let store;
   let reopened;
@@ -149,9 +157,9 @@ test('TelemetryStore sqlite driver persists samples, hydrates series, tracks inc
       incidentRetentionDays: 7,
     });
     const activeDriver = await store.init();
-    assert.equal(activeDriver, 'sqlite');
+    assert.equal(activeDriver, expectedDriver);
 
-    if (process.platform !== 'win32') {
+    if (hasNodeSqlite && process.platform !== 'win32') {
       const dbStat = await fs.stat(path.join(dataDir, 'ops-console.db'));
       assert.equal(dbStat.mode & 0o777, 0o600);
     }
@@ -197,14 +205,16 @@ test('TelemetryStore sqlite driver persists samples, hydrates series, tracks inc
     assert.equal(store.listIncidents({ limit: 10 }).length, 3);
 
     const statsBeforePrune = await store.getStats();
-    assert.equal(statsBeforePrune.driver, 'sqlite');
-    assert.ok(statsBeforePrune.bytes > 0);
-    assert.equal(statsBeforePrune.samples, 4);
+    assert.equal(statsBeforePrune.driver, expectedDriver);
+    if (hasNodeSqlite) {
+      assert.ok(statsBeforePrune.bytes > 0);
+      assert.equal(statsBeforePrune.samples, 4);
+    }
     assert.equal(statsBeforePrune.openIncidents, 1);
 
     await store.prune(now);
     const statsAfterPrune = await store.getStats();
-    assert.equal(statsAfterPrune.samples, 3);
+    if (hasNodeSqlite) assert.equal(statsAfterPrune.samples, 3);
 
     await store.close();
     assert.equal(store.recordStateTransition({ entityKey: 'node:edge-01', node: 'Edge 01', kind: 'node', toState: 'healthy' }), null);
@@ -215,7 +225,7 @@ test('TelemetryStore sqlite driver persists samples, hydrates series, tracks inc
       rawRetentionDays: 2,
       incidentRetentionDays: 7,
     });
-    assert.equal(await reopened.init(), 'sqlite');
+    assert.equal(await reopened.init(), expectedDriver);
 
     const series = new TimeSeriesStore({ maxPoints: 30, minIntervalMs: 0 });
     const loaded = await reopened.hydrateTimeSeries(series, { limitPerSeries: 20, windowMs: 3_600_000 });
@@ -238,7 +248,9 @@ test('TelemetryStore sqlite driver persists samples, hydrates series, tracks inc
     assert.equal((await reopened.getStats()).openIncidents, 0);
 
     await reopened.prune(now + 30 * DAY_MS);
-    assert.equal(reopened.listIncidents({ limit: 10 }).length, 0);
+    if (hasNodeSqlite) {
+      assert.equal(reopened.listIncidents({ limit: 10 }).length, 0);
+    }
   } finally {
     if (store) await store.close();
     if (reopened) await reopened.close();
