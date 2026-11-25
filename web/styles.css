@@ -1,0 +1,773 @@
+@import "@fontsource-variable/plus-jakarta-sans";
+@import "@fontsource-variable/jetbrains-mono";
+@import "@xyflow/react/dist/style.css";
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+:root {
+  color-scheme: light;
+  --bg: #fafafa;
+  --surface: #ffffff;
+  --surface-subtle: #f4f4f5;
+  --surface-hover: #f4f4f5;
+  --surface-active: #ececef;
+  --flow-dot: #d4d4d8;
+  --flow-bg: #fafafa;
+  --lat-fast: #34d399;
+  --lat-good: #059669;
+  --lat-moderate: #d97706;
+  --lat-slow: #ea580c;
+  --lat-critical: #dc2626;
+  --border: rgba(228, 228, 231, 0.85);
+  --border-subtle: rgba(228, 228, 231, 0.55);
+  --ink: #09090b;
+  --ink-muted: #52525b;
+  --ink-subtle: #71717a;
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: rgba(79, 70, 229, 0.08);
+  --ok: #15803d;
+  --ok-dot: #16a34a;
+  --warn: #b45309;
+  --warn-dot: #d97706;
+  --err: #b91c1c;
+  --err-dot: #dc2626;
+  --muted-dot: #a1a1aa;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.04), 0 4px 12px rgba(0, 0, 0, 0.03);
+
+  /* Map & Graph Tokens (Light) */
+  --map-ocean: #f4f4f5;
+  --map-land: #e4e4e7;
+  --map-land-stroke: #d4d4d8;
+  --map-grat: rgba(113, 113, 122, 0.16);
+  --map-grat-major: rgba(113, 113, 122, 0.26);
+  --graph-lane: #f4f4f5;
+  --graph-lane-stroke: rgba(228, 228, 231, 0.85);
+  --graph-node: #ffffff;
+  --graph-node-stroke: rgba(228, 228, 231, 0.9);
+  --graph-edge: #a1a1aa;
+  --terminal-bg: #09090b;
+  --terminal-ink: #e4e4e7;
+}
+
+.dark,
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #09090b;
+  --surface: #121215;
+  --surface-subtle: #18181b;
+  --surface-hover: rgba(255, 255, 255, 0.045);
+  --surface-active: rgba(255, 255, 255, 0.075);
+  --flow-dot: rgba(255, 255, 255, 0.11);
+  --flow-bg: #0b0b0e;
+  --lat-fast: #34d399;
+  --lat-good: #10b981;
+  --lat-moderate: #f59e0b;
+  --lat-slow: #f97316;
+  --lat-critical: #ef4444;
+  --border: rgba(255, 255, 255, 0.095);
+  --border-subtle: rgba(255, 255, 255, 0.055);
+  --ink: #fafafa;
+  --ink-muted: #a1a1aa;
+  --ink-subtle: #71717a;
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --accent-soft: rgba(99, 102, 241, 0.14);
+  --ok: #4ade80;
+  --ok-dot: #22c55e;
+  --warn: #fbbf24;
+  --warn-dot: #f59e0b;
+  --err: #f87171;
+  --err-dot: #ef4444;
+  --muted-dot: #52525b;
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.28), 0 8px 24px rgba(0, 0, 0, 0.18);
+
+  /* Map & Graph Tokens (Dark) */
+  --map-ocean: #0b0b0e;
+  --map-land: #18181b;
+  --map-land-stroke: rgba(255, 255, 255, 0.09);
+  --map-grat: rgba(255, 255, 255, 0.05);
+  --map-grat-major: rgba(255, 255, 255, 0.1);
+  --graph-lane: rgba(255, 255, 255, 0.02);
+  --graph-lane-stroke: rgba(255, 255, 255, 0.075);
+  --graph-node: #141418;
+  --graph-node-stroke: rgba(255, 255, 255, 0.095);
+  --graph-edge: #71717a;
+  --terminal-bg: #070709;
+  --terminal-ink: #e4e4e7;
+}
+
+@layer base {
+  html,
+  body {
+    background-color: var(--bg);
+    color: var(--ink);
+    font-family: "Plus Jakarta Sans Variable", "PingFang SC", "Noto Sans SC", -apple-system, BlinkMacSystemFont, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    margin: 0;
+    padding: 0;
+  }
+
+  code,
+  pre,
+  kbd,
+  .font-mono {
+    font-family: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border) transparent;
+  }
+
+  *::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+
+  *::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  *::-webkit-scrollbar-thumb {
+    background-color: var(--border);
+    border-radius: 999px;
+  }
+
+  *::-webkit-scrollbar-thumb:hover {
+    background-color: var(--ink-subtle);
+  }
+}
+
+/* Custom sleek select replacing ugly native OS chrome */
+.ui-select {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%2371717a' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 9px center;
+  padding-right: 28px !important;
+}
+
+.ui-select option {
+  background-color: var(--surface);
+  color: var(--ink);
+}
+
+/* @ui-sdk/react SegmentedControl sliding indicator */
+.ui-seg-root {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+  padding: 3px;
+  border-radius: 8px;
+  background-color: var(--surface-subtle);
+  border: 1px solid var(--border);
+  gap: 2px;
+}
+
+.ui-seg-root::-webkit-scrollbar {
+  display: none;
+}
+
+.ui-seg-indicator {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform: translate3d(var(--segmented-control-indicator-left, 0px), var(--segmented-control-indicator-top, 0px), 0);
+  width: var(--segmented-control-indicator-width, 0px);
+  height: var(--segmented-control-indicator-height, 0px);
+  border-radius: 6px;
+  background-color: var(--surface);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 0 0 1px var(--border);
+  transition: transform 150ms ease-out, width 150ms ease-out;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.dark .ui-seg-indicator {
+  background-color: #242429;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.ui-seg-item {
+  position: relative;
+  z-index: 1;
+  padding: 4px 10px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ink-muted);
+  border-radius: 6px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 150ms ease-out;
+}
+
+.ui-seg-item:hover {
+  color: var(--ink);
+}
+
+.ui-seg-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.ui-seg-item[data-checked] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* @ui-sdk/react Tabs sliding underline */
+.ui-tabs-list {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+  border-bottom: 1px solid var(--border);
+  gap: 16px;
+}
+
+.ui-tabs-list::-webkit-scrollbar {
+  display: none;
+}
+
+.ui-tabs-indicator {
+  position: absolute;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  transform: translateX(var(--active-tab-left, 0px));
+  width: var(--active-tab-width, 0px);
+  background-color: var(--accent);
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), width 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  pointer-events: none;
+}
+
+.ui-tabs-tab {
+  position: relative;
+  padding: 8px 2px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ink-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 140ms ease;
+}
+
+.ui-tabs-tab:hover {
+  color: var(--ink);
+}
+
+.ui-tabs-tab[data-selected] {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* @ui-sdk/react Switch */
+.ui-switch-root {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 34px;
+  height: 19px;
+  padding: 2px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background-color: var(--surface-subtle);
+  cursor: pointer;
+  transition: background-color 150ms ease, border-color 150ms ease;
+}
+
+.ui-switch-root[data-checked] {
+  background-color: var(--accent);
+  border-color: var(--accent);
+}
+
+.ui-switch-thumb {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border-radius: 999px;
+  background-color: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+  transform: translateX(0);
+  transition: transform 150ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.ui-switch-root[data-checked] .ui-switch-thumb {
+  transform: translateX(15px);
+}
+
+/* @ui-sdk/react Meter */
+.ui-meter-track {
+  position: relative;
+  width: 100%;
+  height: 5px;
+  border-radius: 3px;
+  background-color: var(--surface-subtle);
+  overflow: hidden;
+}
+
+.ui-meter-indicator {
+  height: 100%;
+  border-radius: 3px;
+  background-color: var(--accent);
+  transition: width 220ms ease, background-color 160ms ease;
+}
+
+.ui-meter-indicator[data-tone="ok"] {
+  background-color: var(--ok-dot);
+}
+
+.ui-meter-indicator[data-tone="warn"] {
+  background-color: var(--warn-dot);
+}
+
+.ui-meter-indicator[data-tone="err"] {
+  background-color: var(--err-dot);
+}
+
+/* 5-tier latency intensity scale Meter */
+.ui-latency-track {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background-color: var(--surface-subtle);
+  overflow: hidden;
+}
+
+.ui-latency-indicator {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 220ms ease, background-color 160ms ease;
+}
+
+.ui-latency-indicator[data-tier="fast"] {
+  background-color: var(--lat-fast);
+}
+
+.ui-latency-indicator[data-tier="good"] {
+  background-color: var(--lat-good);
+}
+
+.ui-latency-indicator[data-tier="moderate"] {
+  background-color: var(--lat-moderate);
+}
+
+.ui-latency-indicator[data-tier="slow"] {
+  background-color: var(--lat-slow);
+}
+
+.ui-latency-indicator[data-tier="critical"] {
+  background-color: var(--lat-critical);
+}
+
+/* @xyflow/react Architectural Topology Canvas */
+.ops-flow .react-flow__pane {
+  background-color: var(--flow-bg);
+}
+
+.ops-flow .react-flow__handle {
+  width: 6px;
+  height: 6px;
+  min-width: 6px;
+  min-height: 6px;
+  border-radius: 999px;
+  background-color: var(--border);
+  border: 1px solid var(--surface);
+  opacity: 0.7;
+}
+
+.ops-flow .react-flow__edge-path {
+  transition: stroke 160ms ease, stroke-width 160ms ease, opacity 160ms ease;
+}
+
+.ops-flow .react-flow__minimap {
+  background-color: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 2px 10px rgba(13, 17, 23, 0.08);
+}
+
+.dark .ops-flow .react-flow__minimap {
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.42);
+}
+
+.ops-flow .react-flow__minimap-mask {
+  fill: rgba(15, 23, 42, 0.08);
+}
+
+.dark .ops-flow .react-flow__minimap-mask {
+  fill: rgba(2, 6, 23, 0.55);
+}
+
+/* @ui-sdk/react Dialog & AlertDialog */
+.ui-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background-color: rgba(9, 12, 16, 0.56);
+  backdrop-filter: blur(2px);
+}
+
+.ui-dialog-content {
+  position: fixed;
+  left: 50%;
+  top: 16vh;
+  transform: translateX(-50%);
+  z-index: 61;
+  width: min(560px, calc(100vw - 28px));
+  background-color: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 20px 50px rgba(9, 12, 16, 0.24);
+  overflow: hidden;
+}
+
+.ui-alert-content {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 71;
+  width: min(460px, calc(100vw - 28px));
+  background-color: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 24px 60px rgba(9, 12, 16, 0.28);
+  padding: 20px;
+}
+
+/* @ui-sdk/react Command */
+.ui-cmd-item[data-highlighted] {
+  background-color: var(--surface-hover);
+  color: var(--ink);
+}
+
+.ui-cmd-item mark {
+  background-color: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* Architecture Dependency Graph SVG */
+.ag-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.ag-lane-bg {
+  fill: var(--graph-lane);
+  stroke: var(--graph-lane-stroke);
+  stroke-width: 1;
+}
+
+.ag-lane-title {
+  fill: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.ag-lane-sub {
+  fill: var(--ink-subtle);
+  font-size: 11px;
+}
+
+.ag-lane-count {
+  fill: var(--ink-muted);
+  font-family: "JetBrains Mono Variable", monospace;
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.ag-edge {
+  fill: none;
+  stroke: var(--graph-edge);
+  stroke-width: 1.25;
+  stroke-opacity: 0.42;
+  transition: stroke 160ms ease, stroke-opacity 160ms ease, stroke-width 160ms ease;
+}
+
+.ag-edge.is-highlight {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-opacity: 0.95;
+}
+
+.ag-edge.is-dimmed {
+  stroke-opacity: 0.1;
+}
+
+.ag-arrow-head {
+  fill: var(--graph-edge);
+  fill-opacity: 0.6;
+}
+
+.ag-arrow-head.is-highlight {
+  fill: var(--accent);
+  fill-opacity: 1;
+}
+
+.ag-node {
+  cursor: pointer;
+  outline: none;
+  transition: opacity 160ms ease;
+}
+
+.ag-node.is-dimmed {
+  opacity: 0.26;
+}
+
+.ag-node-box {
+  fill: var(--graph-node);
+  stroke: var(--graph-node-stroke);
+  stroke-width: 1;
+  transition: stroke 140ms ease, fill 140ms ease;
+}
+
+.ag-node:hover .ag-node-box,
+.ag-node:focus-visible .ag-node-box {
+  stroke: var(--accent);
+}
+
+.ag-node.is-selected .ag-node-box {
+  stroke: var(--accent);
+  stroke-width: 1.75;
+}
+
+.ag-node.is-connected .ag-node-box {
+  stroke: var(--accent);
+  stroke-opacity: 0.65;
+}
+
+.ag-node-title {
+  fill: var(--ink);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.ag-node-meta {
+  fill: var(--ink-muted);
+  font-family: "JetBrains Mono Variable", monospace;
+  font-size: 11px;
+}
+
+.ag-node-dot {
+  fill: var(--muted-dot);
+}
+.ag-tone-ok .ag-node-dot {
+  fill: var(--ok-dot);
+}
+.ag-tone-warn .ag-node-dot {
+  fill: var(--warn-dot);
+}
+.ag-tone-err .ag-node-dot {
+  fill: var(--err-dot);
+}
+
+/* World Map SVG */
+.wm-svg {
+  width: 100%;
+  height: auto;
+  display: block;
+  user-select: none;
+  touch-action: none;
+}
+
+.wm-ocean {
+  fill: var(--map-ocean);
+}
+
+.wm-grat {
+  stroke: var(--map-grat);
+  stroke-width: 0.6;
+}
+
+.wm-grat-major {
+  stroke: var(--map-grat-major);
+  stroke-width: 0.85;
+}
+
+.wm-land {
+  fill: var(--map-land);
+  stroke: var(--map-land-stroke);
+  stroke-width: 0.5;
+}
+
+.wm-arc {
+  fill: none;
+  stroke: var(--accent);
+  stroke-opacity: 0.4;
+  transition: stroke-opacity 150ms ease, stroke 150ms ease;
+}
+
+.wm-arc.is-inactive {
+  stroke: var(--ink-subtle);
+  stroke-opacity: 0.22;
+}
+
+.wm-arc.is-highlight {
+  stroke: var(--accent);
+  stroke-opacity: 0.95;
+}
+
+.wm-arc-label {
+  fill: var(--ink);
+  font-family: "JetBrains Mono Variable", monospace;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--map-ocean);
+  stroke-width: 3px;
+}
+
+.wm-leader {
+  stroke: var(--ink-subtle);
+  stroke-opacity: 0.45;
+}
+
+.wm-hit-area {
+  fill: transparent;
+}
+
+.wm-node {
+  cursor: pointer;
+  outline: none;
+}
+
+.wm-select-ring {
+  fill: none;
+  stroke: var(--accent);
+}
+
+.wm-node-halo {
+  fill: var(--accent);
+  fill-opacity: 0.16;
+}
+
+.wm-node-core {
+  fill: var(--muted-dot);
+  stroke: var(--surface);
+  stroke-width: 1.1;
+}
+
+.wm-node-stroke {
+  stroke: var(--muted-dot);
+  stroke-linecap: round;
+}
+
+.wm-node-center {
+  fill: var(--surface);
+}
+
+.wm-tone-ok .wm-node-core {
+  fill: var(--ok-dot);
+}
+.wm-tone-ok .wm-node-stroke {
+  stroke: var(--ok-dot);
+}
+.wm-tone-warn .wm-node-core {
+  fill: var(--warn-dot);
+}
+.wm-tone-warn .wm-node-stroke {
+  stroke: var(--warn-dot);
+}
+.wm-tone-err .wm-node-core {
+  fill: var(--err-dot);
+}
+.wm-tone-err .wm-node-stroke {
+  stroke: var(--err-dot);
+}
+
+.wm-label {
+  fill: var(--ink);
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--map-ocean);
+  stroke-width: 3.2px;
+  stroke-linejoin: round;
+}
+
+.wm-sublabel {
+  fill: var(--ink-muted);
+  font-family: "JetBrains Mono Variable", monospace;
+  font-weight: 500;
+  paint-order: stroke;
+  stroke: var(--map-ocean);
+  stroke-width: 2.8px;
+}
+
+/* Sparkline SVG */
+.spark-grid {
+  stroke: var(--border);
+  stroke-dasharray: 2 3;
+  stroke-width: 1;
+}
+
+.spark-line {
+  stroke: var(--accent);
+  stroke-width: 1.75;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.spark-area {
+  fill: var(--accent);
+  fill-opacity: 0.1;
+}
+
+.spark-dot {
+  fill: var(--accent);
+}
+
+.spark-tone-ok .spark-line,
+.spark-tone-ok .spark-dot {
+  stroke: var(--ok-dot);
+  fill: var(--ok-dot);
+}
+.spark-tone-ok .spark-area {
+  fill: var(--ok-dot);
+}
+.spark-tone-warn .spark-line,
+.spark-tone-warn .spark-dot {
+  stroke: var(--warn-dot);
+  fill: var(--warn-dot);
+}
+.spark-tone-warn .spark-area {
+  fill: var(--warn-dot);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ui-seg-indicator,
+  .ui-tabs-indicator,
+  .ui-switch-thumb,
+  .ui-meter-indicator,
+  .ag-edge,
+  .ag-node,
+  .wm-arc {
+    transition: none !important;
+  }
+}

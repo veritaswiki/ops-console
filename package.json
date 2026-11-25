@@ -43,9 +43,29 @@
     "self-hosted"
   ],
   "scripts": {
+    "dev": "node bin/ops-console.mjs --demo --host 0.0.0.0 --port 3000",
     "start": "node bin/ops-console.mjs",
     "demo": "node bin/ops-console.mjs --demo",
+    "build": "vite build",
+    "lint": "tsc --noEmit && node scripts/check.mjs",
     "test": "node --test test/*.test.mjs",
     "check": "node scripts/check.mjs"
+  },
+  "dependencies": {
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource-variable/plus-jakarta-sans": "^5.3.0",
+    "@tailwindcss/vite": "^4.3.5",
+    "@types/react": "^19.3.2",
+    "@types/react-dom": "^19.3.0",
+    "@ui-sdk/core": "^0.1.0-beta.17",
+    "@ui-sdk/react": "^0.1.0-beta.17",
+    "@vitejs/plugin-react": "^6.3.0",
+    "@xyflow/react": "^13.0.3",
+    "lucide-react": "^1.80.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "tailwindcss": "^4.3.5",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
   }
 }
