@@ -1,0 +1,61 @@
+name: Feature Request
+description: Suggest a new capability or UX improvement for Ops Console
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Have an idea that fits a zero-dependency, self-hostable control plane? Tell us about the problem you want to solve!
+        If you are proposing a new service or memory telemetry integration, please use the **Connector Request** template instead.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem Statement
+      description: What operational workflow or gap does this feature address?
+      placeholder: Explain the pain point or missing capability...
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed Solution
+      description: Describe the expected UI, CLI flag, configuration field, or API behavior.
+      placeholder: Describe how you envision this working...
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Target Area
+      options:
+        - Web UI / Topology / Views
+        - Unified Log System / SSE
+        - CLI & Configuration
+        - Security / Auth / Audit
+        - Deployment (Docker / Systemd / Installer)
+        - Documentation
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any workarounds or alternative approaches you considered.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Design Alignment
+      options:
+        - label: This feature can be implemented without adding external npm runtime dependencies.
+          required: false
+        - label: I am willing to help test or open a PR for this feature.
+          required: false

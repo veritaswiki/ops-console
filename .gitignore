@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Runtime data & local state
+data/
+*.log
+*.jsonl
+
+# Local configuration & secrets
+config.local.json
+.env
+.env.*
+
+# Backups & temporary files
+*.bak
+.DS_Store
+
+# Test coverage
+coverage/

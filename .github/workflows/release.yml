@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Verify, Package & Publish Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run static checks
+        run: npm run check
+
+      - name: Run test suite
+        run: npm test
+
+      - name: Package release tarball and checksums
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+        run: |
+          mkdir -p dist/stage/ops-console
+          cp -R \
+            package.json \
+            LICENSE \
+            README.md \
+            README.zh-CN.md \
+            ARCHITECTURE.md \
+            SECURITY.md \
+            CHANGELOG.md \
+            ops-console.config.example.json \
+            Dockerfile \
+            docker-compose.yml \
+            bin \
+            src \
+            public \
+            deploy \
+            dist/stage/ops-console/
+          tar -czf "dist/ops-console-${TAG_NAME}.tar.gz" -C dist/stage ops-console
+          (cd dist && sha256sum "ops-console-${TAG_NAME}.tar.gz" > SHA256SUMS.txt)
+          cat dist/SHA256SUMS.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/ops-console-${{ github.ref_name }}.tar.gz
+            dist/SHA256SUMS.txt

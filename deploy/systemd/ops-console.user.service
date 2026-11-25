@@ -1,0 +1,26 @@
+[Unit]
+Description=Ops Console — Architecture, Service, Memory & Log Control Plane
+Documentation=https://github.com/ops-console/ops-console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust WorkingDirectory and ExecStart if installed to a different directory.
+WorkingDirectory=%h/.local/share/ops-console
+Environment=NODE_ENV=production
+Environment=OPS_CONSOLE_CONFIG=%h/.config/ops-console/config.json
+Environment=OPS_CONSOLE_DATA_DIR=%h/.local/share/ops-console/data
+# Optional secrets/overrides (chmod 600): OPS_CONSOLE_WEB_KEY, OPS_CONSOLE_HOSTS, OPS_CONSOLE_READ_ONLY
+EnvironmentFile=-%h/.config/ops-console/env
+ExecStart=/usr/bin/env node %h/.local/share/ops-console/bin/ops-console.mjs
+Restart=always
+RestartSec=2
+MemoryMax=512M
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ops-console
+
+[Install]
+WantedBy=default.target

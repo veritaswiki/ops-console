@@ -1,0 +1,7 @@
+# Default owners for everything in the repository
+* @ops-console/maintainers
+
+# Security-critical modules & policies
+/src/security.mjs @ops-console/maintainers
+/SECURITY.md @ops-console/maintainers
+/.github/workflows/ @ops-console/maintainers

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security Vulnerability Report
+    url: https://github.com/ops-console/ops-console/security/advisories/new
+    about: Privately report security vulnerabilities without exposing them in public issues.
+  - name: Community Discussions & Q&A
+    url: https://github.com/ops-console/ops-console/discussions
+    about: Ask deployment questions, share custom topologies, or discuss connector ideas.

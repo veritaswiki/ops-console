@@ -1,0 +1,450 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Ops Console</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar" id="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <img class="brand-mark" src="/favicon.svg" width="24" height="24" alt="" />
+        <span class="brand-title" id="brandTitle">Ops Console</span>
+        <span class="brand-mode" id="brandMode" hidden></span>
+      </div>
+      <nav class="nav" id="mainNav" aria-label="主导航">
+        <button type="button" class="nav-item is-active" data-view="overview">总览</button>
+        <button type="button" class="nav-item" data-view="services">服务</button>
+        <button type="button" class="nav-item" data-view="memory">记忆</button>
+        <button type="button" class="nav-item" data-view="agents">网关与 Agent</button>
+        <button type="button" class="nav-item" data-view="network">网络与节点</button>
+        <button type="button" class="nav-item" data-view="logs">日志</button>
+        <button type="button" class="nav-item" data-view="ops">运维与审计</button>
+      </nav>
+      <div class="topbar-actions">
+        <span class="sync-stamp mono" id="syncStamp">正在同步...</span>
+        <select class="select-compact" id="pollInterval" aria-label="自动刷新周期">
+          <option value="0">手动刷新</option>
+          <option value="10000" selected>每 10 秒</option>
+          <option value="30000">每 30 秒</option>
+        </select>
+        <button type="button" class="icon-btn" id="themeToggle" aria-label="切换明暗主题" title="切换明暗主题">
+          <svg id="themeIcon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+          </svg>
+        </button>
+        <button type="button" class="btn-primary" id="refreshBtn">刷新</button>
+        <button type="button" class="btn-subtle" id="logoutBtn" hidden>退出</button>
+      </div>
+    </div>
+  </header>
+  <div class="banner" id="modeBanner" hidden>
+    <div class="banner-inner" id="modeBannerText"></div>
+  </div>
+  <main class="shell" id="appRoot">
+    <section class="view" data-panel="overview" id="view-overview">
+      <div class="view-head">
+        <div>
+          <h1>系统总览</h1>
+          <p class="view-desc" id="overviewSubtitle">全栈服务健康度、主机负载、记忆引擎与组网连接状态。</p>
+        </div>
+        <div class="view-head-meta mono" id="hostSummaryMeta"></div>
+      </div>
+      <div class="kpi-strip" id="kpiStrip">
+        <div class="kpi-cell">
+          <div class="kpi-label">受管服务</div>
+          <div class="kpi-value mono" id="kpiServices">-</div>
+          <div class="kpi-sub" id="kpiServicesSub">等待采集</div>
+        </div>
+        <div class="kpi-cell">
+          <div class="kpi-label">主机资源</div>
+          <div class="kpi-value mono" id="kpiHost">-</div>
+          <div class="kpi-sub" id="kpiHostSub">CPU 负载与内存占用</div>
+        </div>
+        <div class="kpi-cell">
+          <div class="kpi-label">记忆与上下文引擎</div>
+          <div class="kpi-value mono" id="kpiMemory">-</div>
+          <div class="kpi-sub" id="kpiMemorySub">官方接口直连状态</div>
+        </div>
+        <div class="kpi-cell">
+          <div class="kpi-label">组网与模型路由</div>
+          <div class="kpi-value mono" id="kpiNetwork">-</div>
+          <div class="kpi-sub" id="kpiNetworkSub">Tailnet 节点与可用模型</div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>系统分层拓扑</h2>
+            <p class="panel-desc">按入口编排、记忆智能、组网隧道与基础设施四层展示实时状态，点击任意节点可直接查看日志。</p>
+          </div>
+          <div class="legend" aria-label="状态图例">
+            <span class="legend-item"><i class="dot dot-ok"></i>健康</span>
+            <span class="legend-item"><i class="dot dot-warn"></i>降级</span>
+            <span class="legend-item"><i class="dot dot-err"></i>故障</span>
+            <span class="legend-item"><i class="dot dot-muted"></i>待机</span>
+          </div>
+        </div>
+        <div class="topology-wrap" id="topologyWrap"></div>
+      </div>
+      <div class="grid-two">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>官方连接器状态</h2>
+              <p class="panel-desc">通过各组件官方 REST API 或结构化 CLI 实时采集。</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>组件</th>
+                  <th>状态</th>
+                  <th>延迟</th>
+                  <th>核心指标</th>
+                </tr>
+              </thead>
+              <tbody id="connectorsTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>主机存储与近期告警</h2>
+              <p class="panel-desc">挂载点容量使用率与最近运维事件记录。</p>
+            </div>
+          </div>
+          <div class="subsection" id="overviewDisks"></div>
+          <div class="divider"></div>
+          <div class="subsection">
+            <h3 class="sub-title">最近告警与活跃任务</h3>
+            <div id="overviewAlerts"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="view" data-panel="services" id="view-services" hidden>
+      <div class="view-head">
+        <div>
+          <h1>核心服务管理</h1>
+          <p class="view-desc">按白名单纳管的 systemd 服务，支持实时健康探测、日志跳转与受控启停操作。</p>
+        </div>
+        <div class="view-head-meta mono" id="servicesCountMeta"></div>
+      </div>
+      <div class="toolbar">
+        <div class="segmented" id="serviceLayerFilter" role="tablist" aria-label="按架构层级筛选"></div>
+        <div class="toolbar-right">
+          <select class="select-field" id="serviceStatusFilter" aria-label="按服务状态筛选">
+            <option value="all">全部状态</option>
+            <option value="healthy">仅健康</option>
+            <option value="attention">异常或降级</option>
+            <option value="standby">可选待机</option>
+          </select>
+          <input type="search" class="input-field" id="serviceSearch" placeholder="筛选名称、unit 或端口" aria-label="搜索服务" />
+        </div>
+      </div>
+      <div class="panel">
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>服务</th>
+                <th>Unit 与作用域</th>
+                <th>状态</th>
+                <th>健康探测</th>
+                <th>内存 / PID</th>
+                <th>重启</th>
+                <th class="col-actions">操作</th>
+              </tr>
+            </thead>
+            <tbody id="servicesTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    <section class="view" data-panel="memory" id="view-memory" hidden>
+      <div class="view-head">
+        <div>
+          <h1>记忆与上下文引擎</h1>
+          <p class="view-desc">基于官方协议直连 Nowledge Mem、OpenViking、Symbiote 与 Rerank，支持跨引擎联合检索与官方诊断。</p>
+        </div>
+        <button type="button" class="btn-subtle" id="memoryDoctorBtn">运行官方诊断</button>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>跨引擎官方检索</h2>
+            <p class="panel-desc">调用 nmem --json m search 与 ov -o json find 实时召回跨库记忆与上下文节点。</p>
+          </div>
+          <div class="segmented" id="memoryProviderSelect" role="tablist" aria-label="选择记忆引擎">
+            <button type="button" class="seg-item is-active" data-provider="all">全部引擎</button>
+            <button type="button" class="seg-item" data-provider="nmem">Nowledge Mem</button>
+            <button type="button" class="seg-item" data-provider="openviking">OpenViking</button>
+          </div>
+        </div>
+        <form class="search-row" id="memorySearchForm">
+          <input type="search" class="input-field input-grow" id="memorySearchInput" placeholder="输入关键词检索跨库记忆、经验或上下文（例如：tailscale、备份、架构）" aria-label="记忆检索关键词" />
+          <button type="submit" class="btn-primary" id="memorySearchBtn">检索</button>
+        </form>
+        <div id="memorySearchResults" class="results-area" hidden></div>
+        <div id="memoryDoctorOutput" class="doctor-area" hidden></div>
+      </div>
+      <div class="grid-two" id="memoryEnginesGrid"></div>
+    </section>
+    <section class="view" data-panel="agents" id="view-agents" hidden>
+      <div class="view-head">
+        <div>
+          <h1>网关与 Agent 运行态</h1>
+          <p class="view-desc">Magpie 模型路由目录、桥接注册状态、共享 Library 摘要以及主机活跃编排进程。</p>
+        </div>
+        <div class="view-head-meta mono" id="agentsCountMeta"></div>
+      </div>
+      <div class="panel" id="magpiePanel">
+        <div class="panel-head">
+          <div>
+            <h2>Magpie 模型网关</h2>
+            <p class="panel-desc" id="magpieMetaDesc">官方 OpenAI /v1/models 与 magpie CLI 采集。</p>
+          </div>
+          <a class="btn-subtle" id="magpieWebLink" href="#" target="_blank" rel="noopener noreferrer" hidden>打开 Magpie Web</a>
+        </div>
+        <div class="magpie-grid" id="magpieContent"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>活跃 Agent 与运行时进程</h2>
+            <p class="panel-desc">自动识别编排器、模型网关、记忆引擎与 Agent 进程，命令行中的敏感参数已脱敏。</p>
+          </div>
+          <select class="select-field" id="agentCategoryFilter" aria-label="按进程类别筛选">
+            <option value="all">全部类别</option>
+          </select>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>PID</th>
+                <th>类别</th>
+                <th>进程</th>
+                <th>CPU</th>
+                <th>内存</th>
+                <th>运行时长</th>
+                <th>命令行</th>
+              </tr>
+            </thead>
+            <tbody id="agentsTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+    <section class="view" data-panel="network" id="view-network" hidden>
+      <div class="view-head">
+        <div>
+          <h1>网络拓扑与远程节点</h1>
+          <p class="view-desc">Tailscale Mesh 节点、Serve 映射路由、Mihomo 代理内核、Syncthing 同步状态与受管远程主机。</p>
+        </div>
+        <button type="button" class="btn-subtle" id="refreshRemotesBtn">探测远程节点</button>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Tailscale Mesh 节点</h2>
+            <p class="panel-desc" id="tailscaleMetaDesc">官方 tailscale status --json 输出。</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>设备名</th>
+                <th>Tailscale IP</th>
+                <th>系统</th>
+                <th>状态</th>
+                <th>连接路径 / 中继</th>
+                <th>流量 RX / TX</th>
+              </tr>
+            </thead>
+            <tbody id="tailscaleDevicesBody"></tbody>
+          </table>
+        </div>
+        <div class="divider"></div>
+        <div class="subsection">
+          <h3 class="sub-title">Tailscale Serve 映射规则</h3>
+          <div id="tailscaleServesList"></div>
+        </div>
+      </div>
+      <div class="grid-two">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Mihomo 代理核心</h2>
+              <p class="panel-desc" id="mihomoMetaDesc">官方 Mihomo REST Controller 状态。</p>
+            </div>
+          </div>
+          <div id="mihomoContent"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Syncthing 与远程 SSH 节点</h2>
+              <p class="panel-desc">本地文件同步引擎与跨节点 SSH 健康探测（默认 60 秒缓存）。</p>
+            </div>
+          </div>
+          <div id="syncthingContent"></div>
+          <div class="divider"></div>
+          <div class="subsection">
+            <h3 class="sub-title">远程 SSH 主机</h3>
+            <div id="remotesContent"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+    <section class="view" data-panel="logs" id="view-logs" hidden>
+      <div class="view-head">
+        <div>
+          <h1>结构化日志中心</h1>
+          <p class="view-desc">统一检索 systemd journald、受控日志文件、控制台运行日志与操作审计流，支持 SSE 实时追踪与导出。</p>
+        </div>
+        <div class="stream-status mono" id="streamStatusText">静态查询模式</div>
+      </div>
+      <div class="panel">
+        <div class="log-controls">
+          <div class="segmented" id="logSourceSegment" role="tablist" aria-label="日志来源">
+            <button type="button" class="seg-item is-active" data-source="journald">Systemd</button>
+            <button type="button" class="seg-item" data-source="file">应用文件</button>
+            <button type="button" class="seg-item" data-source="self">控制台</button>
+            <button type="button" class="seg-item" data-source="audit">审计日志</button>
+          </div>
+          <select class="select-field" id="logTargetSelect" aria-label="目标服务或文件"></select>
+          <select class="select-field" id="logSinceSelect" aria-label="时间范围">
+            <option value="15m">最近 15 分钟</option>
+            <option value="1h" selected>最近 1 小时</option>
+            <option value="6h">最近 6 小时</option>
+            <option value="24h">最近 24 小时</option>
+            <option value="7d">最近 7 天</option>
+          </select>
+          <select class="select-field" id="logLevelSelect" aria-label="日志级别">
+            <option value="all">全部级别</option>
+            <option value="error">仅 ERROR</option>
+            <option value="warn">WARN 及以上</option>
+            <option value="info">INFO 及以上</option>
+            <option value="debug">DEBUG 及以上</option>
+          </select>
+        </div>
+        <div class="log-controls log-controls-row2">
+          <input type="search" class="input-field input-grow mono" id="logQueryInput" placeholder="过滤关键字（勾选正则或使用 /pattern/ 语法）" aria-label="过滤日志关键字" />
+          <label class="checkbox-inline">
+            <input type="checkbox" id="logRegexToggle" />
+            <span>正则</span>
+          </label>
+          <label class="checkbox-inline">
+            <input type="checkbox" id="logAutoScroll" checked />
+            <span>自动滚底</span>
+          </label>
+          <button type="button" class="btn-subtle" id="logQueryBtn">查询</button>
+          <button type="button" class="btn-primary" id="logStreamBtn">开启实时流</button>
+          <select class="select-field" id="logExportSelect" aria-label="导出日志">
+            <option value="">导出日志...</option>
+            <option value="jsonl">下载 JSONL</option>
+            <option value="text">下载纯文本 LOG</option>
+          </select>
+        </div>
+        <div class="severity-bar-wrap">
+          <div class="severity-stats mono" id="logSeverityStats">总计 0 条</div>
+          <div class="severity-track" id="logSeverityTrack" aria-hidden="true"></div>
+        </div>
+        <div class="log-viewport" id="logViewport" role="log" aria-live="polite">
+          <div class="log-empty">选择来源并点击查询，或开启实时流查看日志。</div>
+        </div>
+      </div>
+    </section>
+    <section class="view" data-panel="ops" id="view-ops" hidden>
+      <div class="view-head">
+        <div>
+          <h1>运维任务与审计</h1>
+          <p class="view-desc">定时任务调度状态、一键健康巡检、后台备份触发器与全量操作审计记录。</p>
+        </div>
+      </div>
+      <div class="grid-two">
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>巡检与备份控制</h2>
+              <p class="panel-desc">执行预设运维脚本并将结果自动写入轮转审计日志。</p>
+            </div>
+          </div>
+          <div class="ops-action-list" id="opsActionPanel"></div>
+          <pre class="code-output mono" id="opsCommandOutput" hidden></pre>
+        </div>
+        <div class="panel">
+          <div class="panel-head">
+            <div>
+              <h2>Systemd 定时任务</h2>
+              <p class="panel-desc">白名单定时器的调度周期、上次执行与下次触发时间。</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>任务</th>
+                  <th>状态</th>
+                  <th>下次触发</th>
+                  <th class="col-actions">操作</th>
+                </tr>
+              </thead>
+              <tbody id="timersTableBody"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>操作审计流水</h2>
+            <p class="panel-desc">记录所有服务控制、定时器变更与运维作业的耗时、结果与来源 IP。</p>
+          </div>
+          <button type="button" class="btn-subtle" id="refreshAuditBtn">刷新审计</button>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>类别 / 动作</th>
+                <th>目标</th>
+                <th>结果</th>
+                <th>耗时</th>
+                <th>来源</th>
+                <th>输出摘要</th>
+              </tr>
+            </thead>
+            <tbody id="auditTableBody"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+  <dialog class="modal" id="confirmModal">
+    <div class="modal-box">
+      <h2 id="confirmTitle">确认执行操作</h2>
+      <p class="modal-body" id="confirmBody"></p>
+      <p class="modal-risk" id="confirmRisk" hidden></p>
+      <div class="modal-actions">
+        <button type="button" class="btn-subtle" id="confirmCancel">取消</button>
+        <button type="button" class="btn-danger" id="confirmOk">确认执行</button>
+      </div>
+    </div>
+  </dialog>
+  <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

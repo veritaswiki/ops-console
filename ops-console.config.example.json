@@ -1,0 +1,366 @@
+{
+  "console": {
+    "title": "Ops Console",
+    "subtitle": "Self-Hostable Architecture, Service, Memory & Log Control Plane",
+    "hosts": [
+      "127.0.0.1"
+    ],
+    "port": 4320,
+    "readOnly": false,
+    "dataDir": "./data"
+  },
+  "auth": {
+    "webKey": ""
+  },
+  "security": {
+    "allowedOrigins": [
+      "http://127.0.0.1:4320",
+      "http://localhost:4320",
+      "https://node.example.ts.net"
+    ],
+    "rateLimitPerMinute": 240,
+    "mutatingRateLimitPerMinute": 30,
+    "maxSseStreams": 8
+  },
+  "host": {
+    "mounts": [
+      "/",
+      "/var",
+      "/home"
+    ]
+  },
+  "layers": [
+    {
+      "id": "entry",
+      "label": "Entry & Orchestration",
+      "desc": "Control planes, LLM gateways, and multi-agent orchestrators"
+    },
+    {
+      "id": "memory",
+      "label": "Memory & Intelligence",
+      "desc": "Long-term memory engines, context stores, and rerank/embedding services"
+    },
+    {
+      "id": "network",
+      "label": "Network & Mesh",
+      "desc": "Tailscale mesh, proxy routing, and egress boundaries"
+    },
+    {
+      "id": "infra",
+      "label": "Infrastructure & Data",
+      "desc": "Databases, container runtimes, and continuous file synchronization"
+    }
+  ],
+  "services": [
+    {
+      "id": "ops-console",
+      "name": "Ops Console",
+      "unit": "ops-console.service",
+      "scope": "user",
+      "layer": "entry",
+      "role": "Architecture, service, memory, and log control plane",
+      "ports": [
+        "127.0.0.1:4320"
+      ],
+      "healthUrl": "http://127.0.0.1:4320/api/ping",
+      "risk": "standard",
+      "riskNote": "Restarting interrupts this control plane UI for 1-2 seconds."
+    },
+    {
+      "id": "magpie",
+      "name": "Magpie Gateway",
+      "unit": "magpie.service",
+      "scope": "system",
+      "layer": "entry",
+      "role": "Unified LLM router, MCP Hub, and model gateway",
+      "ports": [
+        "127.0.0.1:3426",
+        "127.0.0.1:3430"
+      ],
+      "healthUrl": "http://127.0.0.1:3426/v1/models",
+      "risk": "critical",
+      "riskNote": "Stopping or restarting interrupts active model inference and MCP sessions."
+    },
+    {
+      "id": "orchestrator",
+      "name": "Agent Orchestrator",
+      "unit": "agent-orchestrator.service",
+      "scope": "user",
+      "layer": "entry",
+      "role": "Primary coding-agent workspace and thread orchestrator",
+      "ports": [
+        "127.0.0.1:3773"
+      ],
+      "healthUrl": "http://127.0.0.1:3773/",
+      "tailnetUrl": "https://node.example.ts.net",
+      "risk": "critical",
+      "riskNote": "Restarting drops active client connections to running orchestrator sessions."
+    },
+    {
+      "id": "nmem",
+      "name": "Nowledge Mem",
+      "unit": "nmem.service",
+      "scope": "system",
+      "layer": "memory",
+      "role": "Cross-tool long-term knowledge and memory graph engine",
+      "ports": [
+        "127.0.0.1:14242"
+      ],
+      "healthUrl": "http://127.0.0.1:14242/health",
+      "risk": "standard"
+    },
+    {
+      "id": "openviking",
+      "name": "OpenViking",
+      "unit": "openviking.service",
+      "scope": "user",
+      "layer": "memory",
+      "role": "Context database, semantic retrieval, and shared skill store",
+      "ports": [
+        "127.0.0.1:1933"
+      ],
+      "healthUrl": "http://127.0.0.1:1933/health",
+      "tailnetUrl": "https://node.example.ts.net:10000",
+      "risk": "standard"
+    },
+    {
+      "id": "symbiote",
+      "name": "Symbiote Workbench",
+      "unit": "symbiote.service",
+      "scope": "user",
+      "layer": "memory",
+      "role": "Incremental reading and spaced-repetition knowledge workbench",
+      "ports": [
+        "127.0.0.1:4318"
+      ],
+      "healthUrl": "http://127.0.0.1:4318/api/health",
+      "tailnetUrl": "https://node.example.ts.net:8443",
+      "risk": "standard"
+    },
+    {
+      "id": "rerank-gateway",
+      "name": "Rerank Gateway",
+      "unit": "rerank-gateway.service",
+      "scope": "user",
+      "layer": "memory",
+      "role": "Local neural reranking HTTP gateway",
+      "ports": [
+        "127.0.0.1:8893"
+      ],
+      "healthUrl": "http://127.0.0.1:8893/health",
+      "risk": "standard"
+    },
+    {
+      "id": "emb-gateway",
+      "name": "Embedding Gateway",
+      "unit": "emb-gateway.service",
+      "scope": "user",
+      "layer": "memory",
+      "role": "On-demand local vector embedding HTTP gateway",
+      "ports": [
+        "127.0.0.1:8892"
+      ],
+      "healthUrl": "http://127.0.0.1:8892/health",
+      "optional": true,
+      "risk": "standard"
+    },
+    {
+      "id": "tailscaled",
+      "name": "Tailscale Daemon",
+      "unit": "tailscaled.service",
+      "scope": "system",
+      "layer": "network",
+      "role": "Private WireGuard mesh networking and Tailscale Serve ingress",
+      "ports": [
+        "100.64.0.10"
+      ],
+      "risk": "critical",
+      "riskNote": "Stopping disconnects all Tailnet peers and private HTTPS serve endpoints."
+    },
+    {
+      "id": "mihomo",
+      "name": "Mihomo Proxy",
+      "unit": "mihomo.service",
+      "scope": "user",
+      "layer": "network",
+      "role": "Rule-based proxy routing engine and controller API",
+      "ports": [
+        "127.0.0.1:7891",
+        "127.0.0.1:19090"
+      ],
+      "healthUrl": "http://127.0.0.1:19090/version",
+      "risk": "standard"
+    },
+    {
+      "id": "postgresql",
+      "name": "PostgreSQL 16",
+      "unit": "postgresql@16-main.service",
+      "scope": "system",
+      "layer": "infra",
+      "role": "Primary relational database cluster",
+      "ports": [
+        "127.0.0.1:5432"
+      ],
+      "risk": "critical",
+      "riskNote": "Stopping interrupts database-backed services."
+    },
+    {
+      "id": "docker",
+      "name": "Docker Engine",
+      "unit": "docker.service",
+      "scope": "system",
+      "layer": "infra",
+      "role": "Container runtime daemon",
+      "ports": [
+        "unix:///var/run/docker.sock"
+      ],
+      "risk": "standard"
+    },
+    {
+      "id": "syncthing",
+      "name": "Syncthing",
+      "unit": "syncthing.service",
+      "scope": "user",
+      "layer": "infra",
+      "role": "Continuous peer-to-peer file synchronization",
+      "ports": [
+        "127.0.0.1:8384",
+        "*:22000"
+      ],
+      "healthUrl": "http://127.0.0.1:8384/rest/noauth/health",
+      "risk": "standard"
+    }
+  ],
+  "timers": [
+    {
+      "id": "ops-health-check",
+      "name": "Periodic Health Check",
+      "unit": "ops-health-check.timer",
+      "scope": "user",
+      "schedule": "Every 5 minutes",
+      "targetService": "ops-health-check.service"
+    },
+    {
+      "id": "ops-backup",
+      "name": "Daily State Backup",
+      "unit": "ops-backup.timer",
+      "scope": "user",
+      "schedule": "Daily at 03:30",
+      "targetService": "ops-backup.service"
+    },
+    {
+      "id": "memory-snapshot",
+      "name": "Memory Store Snapshot",
+      "unit": "memory-snapshot.timer",
+      "scope": "user",
+      "schedule": "Daily at 03:15",
+      "targetService": "memory-snapshot.service"
+    }
+  ],
+  "connectors": {
+    "magpie": {
+      "enabled": true,
+      "apiUrl": "http://127.0.0.1:3426",
+      "webUrl": "http://127.0.0.1:3430",
+      "cliBin": "magpie",
+      "configHome": "",
+      "addr": "127.0.0.1:3426"
+    },
+    "nmem": {
+      "enabled": true,
+      "apiUrl": "http://127.0.0.1:14242",
+      "cliBin": "nmem"
+    },
+    "openviking": {
+      "enabled": true,
+      "apiUrl": "http://127.0.0.1:1933",
+      "cliBin": "ov"
+    },
+    "symbiote": {
+      "enabled": true,
+      "apiUrl": "http://127.0.0.1:4318"
+    },
+    "rerank": {
+      "enabled": true,
+      "apiUrl": "http://127.0.0.1:8893"
+    },
+    "tailscale": {
+      "enabled": true,
+      "cliBin": "tailscale"
+    },
+    "mihomo": {
+      "enabled": true,
+      "apiUrl": "http://127.0.0.1:19090",
+      "secret": ""
+    },
+    "syncthing": {
+      "enabled": true,
+      "apiUrl": "http://127.0.0.1:8384",
+      "apiKey": ""
+    },
+    "customHttp": []
+  },
+  "logFiles": [
+    {
+      "id": "ops-console",
+      "name": "Ops Console Self-Log",
+      "path": "./data/ops-console.jsonl"
+    },
+    {
+      "id": "ops-alerts",
+      "name": "Ops Health Alerts",
+      "path": "./data/alerts.log"
+    }
+  ],
+  "remotes": [
+    {
+      "id": "edge-relay-01",
+      "name": "Edge Relay 01",
+      "ip": "100.64.0.11",
+      "sshTarget": "ops-user@100.64.0.11",
+      "role": "Ingress relay and jump node",
+      "backupPath": "",
+      "sshKey": "",
+      "strictHostKeyChecking": "accept-new"
+    },
+    {
+      "id": "backup-node-02",
+      "name": "Backup Node 02",
+      "ip": "100.64.0.12",
+      "sshTarget": "ops-user@100.64.0.12",
+      "role": "Off-site encrypted backup and standby node",
+      "backupPath": "/var/backups/ops-daily",
+      "sshKey": "",
+      "strictHostKeyChecking": "yes"
+    }
+  ],
+  "ops": {
+    "healthScript": "/opt/ops-console/scripts/health-check.sh",
+    "backupScript": "/opt/ops-console/scripts/backup.sh",
+    "healthLatestPath": "./data/health-latest.json",
+    "backupLastRunPath": "./data/backup-last-run.json",
+    "alertsLogPath": "./data/alerts.log"
+  },
+  "agentMatchers": [
+    {
+      "category": "orchestrator",
+      "label": "Orchestrator",
+      "pattern": "(^|/)t3(\\s|$)|t3-code|agent-orchestrator"
+    },
+    {
+      "category": "gateway",
+      "label": "Model Gateway",
+      "pattern": "(^|/)magpie(\\s|$)|magpie-.*bridge"
+    },
+    {
+      "category": "memory",
+      "label": "Memory Engine",
+      "pattern": "nmem-server|openviking|symbiote|rerank|embedding"
+    },
+    {
+      "category": "agent-runtime",
+      "label": "Agent Runtime",
+      "pattern": "(^|/)codex(\\s|$)|(^|/)claude(\\s|$)|(^|/)pi(\\s|$)|herdr"
+    }
+  ]
+}

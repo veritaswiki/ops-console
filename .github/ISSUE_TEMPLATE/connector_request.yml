@@ -1,0 +1,79 @@
+name: Connector Request
+description: Propose a new official-protocol service, memory, or network connector
+title: "[Connector]: "
+labels:
+  - connector
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Ops Console connectors speak **documented, official upstream protocols only** (HTTP health/API endpoints or structured CLI JSON output) with zero hardcoded secrets.
+
+  - type: input
+    id: service_name
+    attributes:
+      label: Target Service / Tool Name
+      placeholder: "e.g., Ollama, Qdrant, Caddy, WireGuard, Prometheus"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Connector Category
+      options:
+        - Entry & Orchestration
+        - Memory & Intelligence
+        - Network & Mesh
+        - Infrastructure & Data
+        - Remote Node / Compute
+    validations:
+      required: true
+
+  - type: input
+    id: docs_url
+    attributes:
+      label: Official Protocol / API Documentation URL
+      description: Link to the upstream HTTP API or structured CLI documentation.
+      placeholder: "https://example.com/docs/api"
+    validations:
+      required: true
+
+  - type: textarea
+    id: protocol
+    attributes:
+      label: Endpoints or CLI Commands to Query
+      description: Specify read-only HTTP routes (e.g. `GET /health`) or CLI invocations (e.g. `tool status --json`).
+      placeholder: |
+        - `GET http://127.0.0.1:PORT/health`
+        - `tool status --format=json`
+    validations:
+      required: true
+
+  - type: textarea
+    id: sample_output
+    attributes:
+      label: Sample JSON Response (Sanitized)
+      description: Provide a small anonymized example payload returned by the official endpoint/CLI.
+      render: json
+    validations:
+      required: false
+
+  - type: textarea
+    id: auth_and_metrics
+    attributes:
+      label: Authentication & Key Metrics
+      description: How are credentials supplied (if any, e.g., env var), and which 3-5 metrics are most valuable in Ops Console?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: readiness
+    attributes:
+      label: Connector Criteria
+      options:
+        - label: Uses only documented read-only HTTP endpoints or structured CLI output (no undocumented file scraping).
+          required: true
+        - label: Can gracefully degrade when the upstream service is not installed or offline.
+          required: true

@@ -1,0 +1,41 @@
+{
+  "name": "ops-console",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "Self-hostable, zero-dependency control plane for services, AI memory engines, networks, and structured logs.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "ops-console": "./bin/ops-console.mjs"
+  },
+  "files": [
+    "bin/",
+    "src/",
+    "public/",
+    "deploy/",
+    "ops-console.config.example.json",
+    "LICENSE",
+    "README.md",
+    "README.zh-CN.md"
+  ],
+  "keywords": [
+    "ops",
+    "control-plane",
+    "observability",
+    "systemd",
+    "journald",
+    "tailscale",
+    "magpie",
+    "openviking",
+    "nowledge-mem",
+    "self-hosted"
+  ],
+  "scripts": {
+    "start": "node bin/ops-console.mjs",
+    "demo": "node bin/ops-console.mjs --demo",
+    "test": "node --test test/*.test.mjs",
+    "check": "node scripts/check.mjs"
+  }
+}

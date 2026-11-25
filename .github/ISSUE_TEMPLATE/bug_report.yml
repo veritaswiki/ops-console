@@ -1,0 +1,93 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in Ops Console
+title: "[Bug]: "
+labels:
+  - bug
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please sanitize any private IP addresses, Tailscale domains, or Web Keys before posting.
+        For security vulnerabilities, please follow **SECURITY.md** and use Private Vulnerability Reporting instead.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Provide a concise description of the bug and what you expected to happen.
+      placeholder: Describe the unexpected behavior...
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Ops Console Version
+      description: Output of `node bin/ops-console.mjs --version`
+      placeholder: "2.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: node_version
+    attributes:
+      label: Node.js Version
+      description: Output of `node -v`
+      placeholder: "v22.x.x"
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: OS name, distribution, and architecture
+      placeholder: "Ubuntu 24.04 LTS (x86_64) / macOS 15 (arm64)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment_mode
+    attributes:
+      label: Deployment Mode
+      options:
+        - Direct Node.js CLI
+        - Systemd User Service
+        - Systemd System Service
+        - Docker / Docker Compose
+        - Demo Mode (--demo)
+        - Behind Tailscale Serve / Reverse Proxy
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to Reproduce
+      description: Minimal steps needed to reproduce the issue.
+      value: |
+        1. Start Ops Console with `...`
+        2. Navigate to `...` or call API `...`
+        3. Observe error `...`
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant Logs or Config Snippet (Sanitized)
+      description: Paste sanitized console output, `ops-console.jsonl` entries, or browser console errors.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Pre-submission Checklist
+      options:
+        - label: I have redacted any private IPs, domains, Web Keys, and API tokens.
+          required: true
+        - label: I have verified my config passes `node bin/ops-console.mjs --check-config`.
+          required: false

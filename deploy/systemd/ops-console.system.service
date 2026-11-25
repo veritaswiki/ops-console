@@ -1,0 +1,48 @@
+[Unit]
+Description=Ops Console — Architecture, Service, Memory & Log Control Plane
+Documentation=https://github.com/ops-console/ops-console
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Option A (Recommended for systemd/SSH integrations): create a dedicated service account:
+#   sudo useradd --system --home-dir /var/lib/ops-console --shell /usr/sbin/nologin ops-console
+# Option B (Ephemeral/read-only setups): comment User/Group below and enable DynamicUser=yes.
+User=ops-console
+Group=ops-console
+# DynamicUser=yes
+
+StateDirectory=ops-console
+ConfigurationDirectory=ops-console
+WorkingDirectory=/opt/ops-console
+Environment=NODE_ENV=production
+Environment=OPS_CONSOLE_CONFIG=/etc/ops-console/config.json
+Environment=OPS_CONSOLE_DATA_DIR=/var/lib/ops-console
+# Optional secrets/overrides (chmod 600): OPS_CONSOLE_WEB_KEY, OPS_CONSOLE_HOSTS, OPS_CONSOLE_READ_ONLY
+EnvironmentFile=-/etc/ops-console/env
+ExecStart=/usr/bin/env node /opt/ops-console/bin/ops-console.mjs
+
+Restart=always
+RestartSec=2
+MemoryMax=512M
+TimeoutStopSec=15
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=ops-console
+
+# Sandboxing & filesystem hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/var/lib/ops-console
+
+[Install]
+WantedBy=multi-user.target
