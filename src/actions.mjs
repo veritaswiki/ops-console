@@ -1,7 +1,9 @@
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import { findService, findTimer } from './config.mjs';
 import { getUserEnv, runCmd } from './exec.mjs';
+import { maskClientIp, redactText } from './redact.mjs';
 
 const ALLOWED_SVC_ACTIONS = new Set(['start', 'stop', 'restart', 'reload']);
 const ALLOWED_TIMER_ACTIONS = new Set(['start', 'stop', 'enable', 'disable']);
@@ -13,6 +15,59 @@ export class ActionController {
     this.cache = cache;
     this.demoProvider = demoProvider;
     this.runningJobs = new Map();
+    this.confirmTokens = new Map();
+  }
+
+  _maskIp(ip) {
+    return maskClientIp(ip, { expose: Boolean(this.config.security?.exposeClientIps) });
+  }
+
+  _pruneExpiredTokens() {
+    const now = Date.now();
+    for (const [token, meta] of this.confirmTokens.entries()) {
+      if (meta.expiresAt <= now) this.confirmTokens.delete(token);
+    }
+  }
+
+  issueConfirmToken(unitId, action) {
+    this._guardWritable();
+    if (!ALLOWED_SVC_ACTIONS.has(action)) {
+      const err = new Error(`Unsupported service action: ${action}`);
+      err.statusCode = 400;
+      throw err;
+    }
+    let unitName = String(unitId || '');
+    if (!this.config.demo) {
+      const svc = findService(this.config, unitId);
+      if (!svc) {
+        const err = new Error(`Service not in allowlist: ${unitId}`);
+        err.statusCode = 400;
+        throw err;
+      }
+      unitName = svc.unit;
+    }
+    this._pruneExpiredTokens();
+    const token = crypto.randomBytes(16).toString('hex');
+    const expiresAt = Date.now() + 30_000;
+    this.confirmTokens.set(token, { unitId: String(unitId), unitName, action, expiresAt });
+    return {
+      ok: true,
+      confirmToken: token,
+      unit: unitName,
+      action,
+      expiresInSec: 30,
+    };
+  }
+
+  _consumeConfirmToken(token, unitId, unitName, action) {
+    if (!token || typeof token !== 'string') return false;
+    this._pruneExpiredTokens();
+    const meta = this.confirmTokens.get(token);
+    if (!meta) return false;
+    if (meta.action !== action) return false;
+    if (meta.unitId !== String(unitId) && meta.unitName !== String(unitName)) return false;
+    this.confirmTokens.delete(token);
+    return true;
   }
 
   _guardWritable() {
@@ -32,6 +87,16 @@ export class ActionController {
     }
 
     if (this.config.demo && this.demoProvider) {
+      const demoSnap = this.demoProvider.getSnapshot(this.config);
+      const demoSvc = demoSnap.services?.items?.find((s) => s.id === unitId || s.unit === unitId);
+      if (demoSvc?.risk === 'critical' && this.config.security?.requireCriticalConfirm) {
+        if (!this._consumeConfirmToken(ctx.confirmToken, unitId, demoSvc.unit, action)) {
+          const err = new Error(`Critical service ${demoSvc.unit} requires a single-use confirmToken`);
+          err.statusCode = 409;
+          err.requiresConfirm = true;
+          throw err;
+        }
+      }
       const result = this.demoProvider.controlService(unitId, action);
       const audit = await this.logger.appendAudit({
         category: 'service',
@@ -41,9 +106,9 @@ export class ActionController {
         ok: result.ok,
         durationMs: 42,
         actor: ctx.actor || 'web',
-        ip: ctx.ip || '',
+        ip: this._maskIp(ctx.ip || ''),
         requestId: ctx.requestId || '',
-        output: result.message || 'Demo action executed',
+        output: redactText(result.message || 'Demo action executed'),
       });
       return { ...result, audit };
     }
@@ -53,6 +118,19 @@ export class ActionController {
       const err = new Error(`Service not in allowlist: ${unitId}`);
       err.statusCode = 400;
       throw err;
+    }
+    if (Array.isArray(svc.allowedActions) && !svc.allowedActions.includes(action)) {
+      const err = new Error(`Action "${action}" is not permitted for ${svc.unit} (allowed: ${svc.allowedActions.join(', ') || 'none'})`);
+      err.statusCode = 403;
+      throw err;
+    }
+    if (svc.risk === 'critical' && this.config.security?.requireCriticalConfirm) {
+      if (!this._consumeConfirmToken(ctx.confirmToken, unitId, svc.unit, action)) {
+        const err = new Error(`Critical service ${svc.unit} requires a single-use confirmToken`);
+        err.statusCode = 409;
+        err.requiresConfirm = true;
+        throw err;
+      }
     }
 
     const started = Date.now();
@@ -73,14 +151,14 @@ export class ActionController {
         ok: true,
         durationMs,
         actor: ctx.actor || 'web',
-        ip: ctx.ip || '',
+        ip: this._maskIp(ctx.ip || ''),
         requestId: ctx.requestId || '',
-        output: (stdout || stderr || 'OK').trim().slice(0, 400),
+        output: redactText((stdout || stderr || 'OK').trim()).slice(0, 400),
       });
       return { ok: true, audit };
     } catch (err) {
       const durationMs = Date.now() - started;
-      const detail = (err.stderr || err.stdout || err.message || 'Execution failed').trim().slice(0, 400);
+      const detail = redactText((err.stderr || err.stdout || err.message || 'Execution failed').trim()).slice(0, 400);
       const audit = await this.logger.appendAudit({
         category: 'service',
         target: svc.unit,
@@ -89,7 +167,7 @@ export class ActionController {
         ok: false,
         durationMs,
         actor: ctx.actor || 'web',
-        ip: ctx.ip || '',
+        ip: this._maskIp(ctx.ip || ''),
         requestId: ctx.requestId || '',
         output: detail,
       });
@@ -149,13 +227,13 @@ export class ActionController {
         ok: true,
         durationMs: Date.now() - started,
         actor: ctx.actor || 'web',
-        ip: ctx.ip || '',
+        ip: this._maskIp(ctx.ip || ''),
         requestId: ctx.requestId || '',
-        output: (stdout || stderr || 'OK').trim().slice(0, 400),
+        output: redactText((stdout || stderr || 'OK').trim()).slice(0, 400),
       });
       return { ok: true, audit };
     } catch (err) {
-      const detail = (err.stderr || err.stdout || err.message || 'Execution failed').trim().slice(0, 400);
+      const detail = redactText((err.stderr || err.stdout || err.message || 'Execution failed').trim()).slice(0, 400);
       const audit = await this.logger.appendAudit({
         category: 'timer',
         target: timer.unit,
@@ -164,7 +242,7 @@ export class ActionController {
         ok: false,
         durationMs: Date.now() - started,
         actor: ctx.actor || 'web',
-        ip: ctx.ip || '',
+        ip: this._maskIp(ctx.ip || ''),
         requestId: ctx.requestId || '',
         output: detail,
       });
@@ -182,7 +260,7 @@ export class ActionController {
         ok: true,
         durationMs: 185,
         actor: ctx.actor || 'web',
-        ip: ctx.ip || '',
+        ip: this._maskIp(ctx.ip || ''),
         requestId: ctx.requestId || '',
         output: 'Demo health check passed (6/6 green)',
       });
@@ -207,7 +285,7 @@ export class ActionController {
         ok: true,
         durationMs: Date.now() - started,
         actor: ctx.actor || 'web',
-        ip: ctx.ip || '',
+        ip: this._maskIp(ctx.ip || ''),
         requestId: ctx.requestId || '',
         output: 'Health check completed (exit 0)',
       });
@@ -221,7 +299,7 @@ export class ActionController {
         ok: false,
         durationMs: Date.now() - started,
         actor: ctx.actor || 'web',
-        ip: ctx.ip || '',
+        ip: this._maskIp(ctx.ip || ''),
         requestId: ctx.requestId || '',
         output: `Health check exited non-zero (code=${err.code})`,
       });
@@ -243,7 +321,7 @@ export class ActionController {
         ok: true,
         durationMs: 12,
         actor: ctx.actor || 'web',
-        ip: ctx.ip || '',
+        ip: this._maskIp(ctx.ip || ''),
         requestId: ctx.requestId || '',
         output: 'Demo backup snapshot simulated',
       });

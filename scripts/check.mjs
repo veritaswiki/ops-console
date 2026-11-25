@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { loadConfig, PACKAGE_ROOT, validateConfig } from '../src/config.mjs';
+import { APP_VERSION, loadConfig, PACKAGE_ROOT, validateConfig } from '../src/config.mjs';
 
 const execFileAsync = promisify(execFile);
 
@@ -14,10 +14,18 @@ const PII_PATTERNS = [
   { name: 'non-example-cgnat-ip', re: /\b100\.(6[5-9]|[7-9]\d|1[0-2]\d)\.\d{1,3}\.\d{1,3}\b/ },
   { name: 'real-tailnet-domain', re: /tail[0-9a-f]{4,}\.ts\.net/i },
   { name: 'private-key-header', re: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/ },
-  { name: 'github-pat', re: /\bgh[pousr]_[A-Za-z0-9]{20,}\b/ },
+  { name: 'github-pat', re: /\b(?:gh[pousr]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})\b/ },
   { name: 'api-secret-key', re: /\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{20,}\b/ },
   { name: 'tailscale-auth-key', re: /\btskey-[A-Za-z0-9-]{12,}\b/ },
+  { name: 'aws-access-key', re: /\b(?:AKIA|ASIA)[0-9A-Z]{16}\b/ },
+  { name: 'google-api-key', re: /\bAIza[0-9A-Za-z_-]{35}\b/ },
+  { name: 'slack-token', re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/ },
+  { name: 'jwt-token', re: /\beyJ[A-Za-z0-9_-]{16,}\.eyJ[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\b/ },
+  { name: 'probe-token-literal', re: /\bops_prb_[a-f0-9]{32,}\b/ },
+  { name: 'personal-home-path', re: /\/(?:home|Users)\/(?!YOUR_USER\b|ops-user\b|demo\b|runner\b|example\b|ubuntu\b|user\b|<|\*)[a-zA-Z0-9._-]{2,}\// },
 ];
+
+const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 async function walkFiles(dir, out = []) {
   const entries = await fs.readdir(dir, { withFileTypes: true });
@@ -46,6 +54,29 @@ async function main() {
     }
   }
   process.stdout.write(`[check] Syntax validated: ${jsFiles.length} JS/MJS files\n`);
+
+  if (!SEMVER_RE.test(APP_VERSION)) {
+    failures.push(`Invalid SemVer in package.json: ${APP_VERSION}`);
+  }
+  const versionChecks = [
+    { file: 'probe/package.json', re: new RegExp(`"version"\\s*:\\s*"${APP_VERSION.replace(/\./g, '\\.')}"`) },
+    { file: 'probe/ops-probe.mjs', re: new RegExp(`PROBE_VERSION\\s*=\\s*'${APP_VERSION.replace(/\./g, '\\.')}'`) },
+    { file: 'Dockerfile', re: new RegExp(`version="${APP_VERSION.replace(/\./g, '\\.')}"`) },
+    { file: 'docker-compose.yml', re: new RegExp(`ops-console:${APP_VERSION.replace(/\./g, '\\.')}`) },
+    { file: 'deploy/install.sh', re: new RegExp(`v${APP_VERSION.replace(/\./g, '\\.')}`) },
+    { file: 'deploy/probe/install-probe.sh', re: new RegExp(`v${APP_VERSION.replace(/\./g, '\\.')}`) },
+  ];
+  for (const vc of versionChecks) {
+    try {
+      const txt = await fs.readFile(path.join(PACKAGE_ROOT, vc.file), 'utf8');
+      if (!vc.re.test(txt)) {
+        failures.push(`Version mismatch in ${vc.file}: expected ${APP_VERSION}`);
+      }
+    } catch (err) {
+      failures.push(`Version check unreadable (${vc.file}): ${err.message}`);
+    }
+  }
+  process.stdout.write(`[check] Version consistency validated: v${APP_VERSION}\n`);
 
   const examplePath = path.join(PACKAGE_ROOT, 'ops-console.config.example.json');
   try {

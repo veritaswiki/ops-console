@@ -29,14 +29,14 @@ Headers:
 - `Content-Type: application/json`
 - `Authorization: Bearer REPLACE_WITH_PER_NODE_TOKEN`
 - `X-Ops-Probe-Id: <your-node-id>`
-- `User-Agent: ops-probe/2.1.0`
+- `User-Agent: ops-probe/0.3.0`
 
 Example JSON body:
 
 ```json
 {
   "schemaVersion": 1,
-  "probeVersion": "2.1.0",
+  "probeVersion": "0.3.0",
   "nodeId": "iphone-01",
   "sentAt": "2026-11-25T08:00:00.000Z",
   "deviceType": "mobile",
@@ -138,7 +138,7 @@ PAYLOAD="$(jq -n \
   --argjson charging "${CHARGING}" \
   '{
     schemaVersion: 1,
-    probeVersion: "2.1.0",
+    probeVersion: "0.3.0",
     nodeId: $nodeId,
     sentAt: $sentAt,
     deviceType: "mobile",
@@ -164,7 +164,7 @@ curl -fsS --max-time 8 \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "X-Ops-Probe-Id: ${NODE_ID}" \
-  -H "User-Agent: ops-probe/2.1.0" \
+  -H "User-Agent: ops-probe/0.3.0" \
   -d "${PAYLOAD}" >/dev/null
 ```
 
@@ -177,7 +177,7 @@ curl -fsS --max-time 8 \
      - `Content-Type: application/json`
      - `Authorization: Bearer REPLACE_WITH_PER_NODE_TOKEN`
      - `X-Ops-Probe-Id: pixel-01`
-     - `User-Agent: ops-probe/2.1.0`
+     - `User-Agent: ops-probe/0.3.0`
    - **Body**: Use the schema v1 JSON template above with `%BATT` for `battery.percent` and your chosen static/profile-based `region` (do not attach `%LOC`).
 2. Trigger manually from a home-screen widget or on **State → Power → Any** (charger connected).
 
@@ -202,8 +202,8 @@ Apple Shortcuts can check in natively with zero third-party apps:
        - `Content-Type`: `application/json`
        - `Authorization`: `Bearer REPLACE_WITH_PER_NODE_TOKEN`
        - `X-Ops-Probe-Id`: `iphone-01`
-       - `User-Agent`: `ops-probe/2.1.0`
-     - **Request Body**: `JSON` containing `schemaVersion` (`1`), `probeVersion` (`"2.1.0"`), `nodeId` (`"iphone-01"`), `sentAt` (`SentAt`), `deviceType` (`"mobile"`), `platform` (`"ios"`), `battery` dictionary (`percent`, `charging`, `source`), `network` dictionary (`type`), and optional `region`.
+       - `User-Agent`: `ops-probe/0.3.0`
+     - **Request Body**: `JSON` containing `schemaVersion` (`1`), `probeVersion` (`"0.3.0"`), `nodeId` (`"iphone-01"`), `sentAt` (`SentAt`), `deviceType` (`"mobile"`), `platform` (`"ios"`), `battery` dictionary (`percent`, `charging`, `source`), `network` dictionary (`type`), and optional `region`.
 3. Tap the shortcut to test while connected to Tailscale.
 4. *(Optional)* Automate via **Shortcuts → Automation → +**:
    - Trigger on **Charger → Is Connected** or **Time of Day** (e.g., morning/evening).

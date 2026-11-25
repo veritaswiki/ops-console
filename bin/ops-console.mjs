@@ -34,11 +34,13 @@ Environment variables:
   OPS_CONSOLE_CONFIG      Config file path
   OPS_CONSOLE_HOSTS       Comma-separated bind hosts
   OPS_CONSOLE_PORT        Listen port
-  OPS_CONSOLE_WEB_KEY     Web key secret (>= 16 characters)
+  OPS_CONSOLE_WEB_KEY     Web key secret (>= 16 characters, supports env:// and file://)
+  OPS_CONSOLE_WEB_KEY_FILE Path to 0600 file containing web key (preferred over argv/env)
   OPS_CONSOLE_READ_ONLY   1 / true to enable read-only mode
   OPS_CONSOLE_DEMO        1 / true to enable demo sandbox mode
-  OPS_CONSOLE_DATA_DIR    Directory for rotating ops-console.jsonl and audit.jsonl
+  OPS_CONSOLE_DATA_DIR    Directory for rotating logs, audit, probes, and telemetry store
   OPS_CONSOLE_LOG_LEVEL   debug | info | warn | error
+  OPS_CONSOLE_STORAGE_DRIVER auto | sqlite | jsonl | memory
 `);
 }
 
@@ -176,11 +178,14 @@ async function main() {
       demo: config.demo,
       readOnly: config.console.readOnly,
       authEnabled: Boolean(config.auth.webKey),
+      requireCriticalConfirm: Boolean(config.security?.requireCriticalConfirm),
+      storageDriver: config.storage?.driver || 'auto',
       services: config.services.length,
       timers: config.timers.length,
       logFiles: config.logFiles.length,
       remotes: config.remotes.length,
       enabledConnectors,
+      warnings: config.warnings || [],
     };
     process.stdout.write(`${JSON.stringify(summary, null, 2)}\n`);
     process.exit(0);

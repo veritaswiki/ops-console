@@ -1,11 +1,21 @@
 import { createWorldMapController, renderSparklineSvg } from '/world-map.js';
+import { createArchitectureGraph } from '/graph.js';
 
 const state = {
   meta: null,
   snapshot: null,
   remotes: null,
   audit: [],
+  incidents: [],
+  incidentsStorage: null,
   activeView: 'overview',
+  viewSignatures: {},
+  graphFilter: 'all',
+  graphControllers: {
+    overview: null,
+    memory: null,
+    agents: null,
+  },
   fleetTypeFilter: 'all',
   selectedNodeId: '',
   selectedNodeHistory: [],
@@ -22,6 +32,7 @@ const state = {
   logTarget: 'all',
   logEntries: [],
   logStream: null,
+  logSeverityCounts: { total: 0, error: 0, warn: 0, info: 0, debug: 0 },
   pollTimer: null,
   pendingConfirm: null,
 };
@@ -126,7 +137,10 @@ async function apiFetch(url, options = {}) {
     data = { ok: false, error: text || `HTTP ${res.status}` };
   }
   if (!res.ok) {
-    throw new Error(data.error || `Request failed (${res.status})`);
+    const err = new Error(data.error || `Request failed (${res.status})`);
+    err.status = res.status;
+    err.data = data;
+    throw err;
   }
   return data;
 }
@@ -141,7 +155,6 @@ function initTheme() {
     const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
     localStorage.setItem('ops_console_theme', next);
     applyTheme(next);
-    if (state.snapshot) renderTopology(state.snapshot);
   });
 }
 
@@ -171,13 +184,16 @@ function switchView(viewName) {
   }
   if (viewName === 'ops') {
     loadAudit();
+    loadIncidents();
   }
   if (viewName === 'fleet') {
     loadEnrolledProbes();
-    if (state.snapshot) renderFleet(state.snapshot);
   }
   if (viewName === 'logs' && state.logEntries.length === 0) {
     runLogQuery();
+  }
+  if (state.snapshot) {
+    renderActiveView(state.snapshot, { force: viewName === 'fleet' });
   }
 }
 
@@ -217,90 +233,134 @@ function formatCompactPort(ports, fallbackScope = 'user') {
   return clean.length > 16 ? `${clean.slice(0, 15)}...` : clean;
 }
 
-function renderTopology(snap) {
-  const wrap = $('topologyWrap');
-  const layers = snap.services?.layers || [];
-  const items = snap.services?.items || [];
-  if (layers.length === 0 || items.length === 0) {
-    wrap.innerHTML = '<div class="empty-state">尚未配置分层服务拓扑。</div>';
-    return;
-  }
-
-  const cs = getComputedStyle(document.documentElement);
-  const cSurface = cs.getPropertyValue('--surface').trim();
-  const cSubtle = cs.getPropertyValue('--surface-subtle').trim();
-  const cBorder = cs.getPropertyValue('--border').trim();
-  const cInk = cs.getPropertyValue('--ink').trim();
-  const cMuted = cs.getPropertyValue('--muted').trim();
-  const cOk = cs.getPropertyValue('--ok').trim();
-  const cWarn = cs.getPropertyValue('--warn').trim();
-  const cErr = cs.getPropertyValue('--err').trim();
-
-  const width = 1160;
-  const leftCol = 164;
-  const padX = 16;
-  const gapX = 10;
-  const gapY = 10;
-  const cols = 4;
-  const nodeW = Math.floor((width - leftCol - padX * 2 - gapX * (cols - 1)) / cols);
-  const nodeH = 52;
-  const lanePadY = 14;
-  const laneGap = 14;
-
-  let cursorY = 8;
-  const laneLayouts = layers.map((layer) => {
-    const list = items.filter((s) => s.layer === layer.id);
-    const rows = Math.max(1, Math.ceil(list.length / cols));
-    const laneH = lanePadY * 2 + rows * nodeH + (rows - 1) * gapY;
-    const layout = { layer, list, y: cursorY, h: laneH };
-    cursorY += laneH + laneGap;
-    return layout;
-  });
-  const totalH = Math.max(160, cursorY);
-
-  const colorFor = (status) => {
-    if (status === 'healthy') return cOk;
-    if (status === 'degraded') return cWarn;
-    if (status === 'standby') return cMuted;
-    return cErr;
-  };
-
-  let svg = `<svg class="topology-svg" viewBox="0 0 ${width} ${totalH}" role="img" aria-label="系统四层架构拓扑图">`;
-
-  for (let i = 0; i < laneLayouts.length - 1; i += 1) {
-    const cur = laneLayouts[i];
-    const nxt = laneLayouts[i + 1];
-    const xLine = leftCol + 24;
-    svg += `<line x1="${xLine}" y1="${cur.y + cur.h}" x2="${xLine}" y2="${nxt.y}" stroke="${cBorder}" stroke-width="1.5" stroke-dasharray="3 3" />`;
-  }
-
-  for (const lane of laneLayouts) {
-    svg += `<rect x="1" y="${lane.y}" width="${width - 2}" height="${lane.h}" rx="8" fill="${cSubtle}" stroke="${cBorder}" stroke-width="1" />`;
-    svg += `<text x="18" y="${lane.y + 30}" fill="${cInk}" font-size="14" font-weight="600">${esc(lane.layer.label)}</text>`;
-    svg += `<text x="18" y="${lane.y + 50}" fill="${cMuted}" font-size="13">${lane.list.filter((s) => s.status === 'healthy').length}/${lane.list.length} 健康</text>`;
-
-    lane.list.forEach((svc, idx) => {
-      const col = idx % cols;
-      const row = Math.floor(idx / cols);
-      const x = leftCol + padX + col * (nodeW + gapX);
-      const y = lane.y + lanePadY + row * (nodeH + gapY);
-      const stColor = colorFor(svc.status);
-      const portText = formatCompactPort(svc.ports, svc.scope || 'user');
-      const latText = svc.probe?.latencyMs ? `${svc.probe.latencyMs}ms` : (svc.status === 'standby' ? 'standby' : svc.activeState);
-      const shortName = svc.name.length > 17 ? `${svc.name.slice(0, 16)}...` : svc.name;
-      const subRaw = `${portText} · ${latText}`;
-      const subText = subRaw.length > 26 ? `${subRaw.slice(0, 25)}...` : subRaw;
-      svg += `<g class="topo-node" data-unit="${esc(svc.unit)}" tabindex="0" role="button" aria-label="${esc(svc.name)} ${esc(svc.status)}">`;
-      svg += `<rect x="${x}" y="${y}" width="${nodeW}" height="${nodeH}" rx="6" fill="${cSurface}" stroke="${cBorder}" stroke-width="1" />`;
-      svg += `<circle cx="${x + 14}" cy="${y + 20}" r="4" fill="${stColor}" />`;
-      svg += `<text x="${x + 25}" y="${y + 24}" fill="${cInk}" font-size="13" font-weight="600">${esc(shortName)}</text>`;
-      svg += `<text x="${x + 25}" y="${y + 42}" fill="${cMuted}" font-size="13" font-family="IBM Plex Mono, monospace">${esc(subText)}</text>`;
-      svg += `</g>`;
+function ensureOverviewGraph() {
+  if (!state.graphControllers.overview) {
+    state.graphControllers.overview = createArchitectureGraph($('topologyWrap'), {
+      mode: 'full',
+      inspectorEl: $('topologyInspector'),
+      onOpenLogs: (unit) => openServiceLogs(unit),
     });
   }
+  return state.graphControllers.overview;
+}
 
-  svg += '</svg>';
-  wrap.innerHTML = svg;
+function ensureMemoryGraph() {
+  if (!state.graphControllers.memory) {
+    state.graphControllers.memory = createArchitectureGraph($('memoryGraphWrap'), {
+      mode: 'memory',
+      inspectorEl: $('memoryGraphInspector'),
+      onOpenLogs: (unit) => openServiceLogs(unit),
+    });
+  }
+  return state.graphControllers.memory;
+}
+
+function ensureAgentsGraph() {
+  if (!state.graphControllers.agents) {
+    state.graphControllers.agents = createArchitectureGraph($('agentsGraphWrap'), {
+      mode: 'agents',
+      inspectorEl: $('agentsGraphInspector'),
+      onOpenLogs: (unit) => openServiceLogs(unit),
+      onSelectCategory: (cat) => {
+        state.agentCategory = cat || 'all';
+        document.querySelectorAll('#agentCategoryFilter .seg-item').forEach((btn) => {
+          btn.classList.toggle('is-active', btn.dataset.cat === state.agentCategory);
+        });
+        if (state.snapshot) {
+          state.viewSignatures.agents = '';
+          renderAgents(state.snapshot);
+        }
+      },
+    });
+  }
+  return state.graphControllers.agents;
+}
+
+function computeViewSignature(viewName, snap) {
+  if (!snap) return '';
+  try {
+    switch (viewName) {
+      case 'overview':
+        return JSON.stringify([
+          snap.collectedAt,
+          snap.host?.load1,
+          snap.host?.memory?.usedBytes,
+          snap.services?.summary,
+          (snap.services?.items || []).map((s) => [s.id, s.status, s.probe?.latencyMs]),
+          snap.fleet?.summary,
+          snap.incidents?.length,
+          snap.incidents?.[0]?.id,
+          snap.incidents?.[0]?.ts,
+          state.graphFilter,
+        ]);
+      case 'fleet':
+        return JSON.stringify([
+          snap.collectedAt,
+          snap.fleet?.summary,
+          (snap.fleet?.nodes || []).map((n) => [n.id, n.status, n.probeAgeSec, n.cpu?.usagePct, n.memory?.usedPct]),
+          state.fleetTypeFilter,
+          state.selectedNodeId,
+        ]);
+      case 'services':
+        return JSON.stringify([
+          snap.collectedAt,
+          (snap.services?.items || []).map((s) => [s.unit, s.status, s.restarts, s.memoryBytes, s.probe?.latencyMs]),
+          state.serviceLayer,
+          state.serviceStatus,
+          state.serviceQuery,
+        ]);
+      case 'memory':
+        return JSON.stringify([snap.collectedAt, snap.memory]);
+      case 'agents':
+        return JSON.stringify([snap.collectedAt, snap.magpie, snap.agents, state.agentCategory]);
+      case 'network':
+        return JSON.stringify([snap.collectedAt, snap.network, snap.firewall]);
+      case 'ops':
+        return JSON.stringify([snap.collectedAt, snap.health, snap.backup, snap.timers, snap.runningJobs, snap.incidents?.length, snap.incidents?.[0]?.id]);
+      default:
+        return String(snap.collectedAt || '');
+    }
+  } catch {
+    return String(snap.collectedAt || Date.now());
+  }
+}
+
+function renderActiveView(snap, { force = false } = {}) {
+  if (!snap) return;
+  const view = state.activeView;
+  if (view === 'logs') return;
+  const sig = computeViewSignature(view, snap);
+  if (!force && state.viewSignatures[view] === sig) return;
+  state.viewSignatures[view] = sig;
+  if (view === 'overview') renderOverview(snap);
+  else if (view === 'fleet') renderFleet(snap);
+  else if (view === 'services') renderServices(snap);
+  else if (view === 'memory') renderMemory(snap);
+  else if (view === 'agents') renderAgents(snap);
+  else if (view === 'network') renderNetwork(snap);
+  else if (view === 'ops') renderOps(snap);
+}
+
+function renderOverviewIncidents(incidents) {
+  const el = $('overviewIncidents');
+  if (!el) return;
+  const list = Array.isArray(incidents) ? incidents.slice(0, 5) : [];
+  if (list.length === 0) {
+    el.innerHTML = '<p class="panel-desc">暂无近期健康状态跃迁记录。</p>';
+    return;
+  }
+  el.innerHTML = `<ul class="plain-list">${list.map((inc) => {
+    const stateBadge = renderStatusCell(inc.toState, `${inc.fromState || '-'} -> ${inc.toState || '-'}`);
+    const resolvedTag = inc.resolvedAt ? '已恢复' : '活跃';
+    return `
+      <li>
+        <div class="incident-item">
+          <span><strong>${esc(inc.node || inc.entityKey || '-')}</strong> <span class="incident-transition mono">${esc(formatTimeShort(inc.ts))}</span></span>
+          <span>${stateBadge} <span class="cell-sub">(${esc(resolvedTag)})</span></span>
+        </div>
+      </li>
+    `;
+  }).join('')}</ul>`;
 }
 
 function renderOverview(snap) {
@@ -334,14 +394,18 @@ function renderOverview(snap) {
   const fleetSummary = snap.fleet?.summary || null;
   const modelsTotal = magpie.totalModels ?? 0;
   if (fleetSummary) {
+    const reachable = fleetSummary.reachable ?? fleetSummary.online ?? 0;
+    const meshOnly = fleetSummary.meshOnly ?? Math.max(0, reachable - (fleetSummary.probed ?? 0));
     $('kpiNetwork').textContent = `${fleetSummary.online}/${fleetSummary.total} 节点`;
-    $('kpiNetworkSub').textContent = `探针实采 ${fleetSummary.probed} 台 · Tailnet ${tsOnline}/${tsTotal} · ${modelsTotal} 模型`;
+    $('kpiNetworkSub').textContent = `探针实采 ${fleetSummary.probed} · 仅组网 ${meshOnly} · ${modelsTotal} 模型`;
   } else {
     $('kpiNetwork').textContent = `${tsOnline}/${tsTotal} · ${modelsTotal}`;
     $('kpiNetworkSub').textContent = 'Tailscale 在线设备 · Magpie 路由模型数';
   }
 
-  renderTopology(snap);
+  const overviewGraph = ensureOverviewGraph();
+  overviewGraph.setFilter(state.graphFilter);
+  overviewGraph.setData(snap);
 
   const connectorRows = [
     {
@@ -438,6 +502,8 @@ function renderOverview(snap) {
       }).join('')
     : '<div class="empty-state">无挂载点数据。</div>';
 
+  renderOverviewIncidents(snap.incidents || state.incidents);
+
   const alerts = snap.alerts || [];
   const jobs = [...(snap.activeOpsJobs || []), ...(snap.runningJobs || []).map((j) => `${j.name} (PID ${j.pid})`)];
   let alertsHtml = '';
@@ -474,6 +540,7 @@ function probeModeLabel(mode) {
     checkin: '移动签到',
     ssh: 'SSH 探测',
     'tailscale-only': '仅 Tailscale',
+    external: '外部边缘',
   };
   return map[mode] || mode || '-';
 }
@@ -483,6 +550,7 @@ function nodeStatusLabel(node) {
   if (node.status === 'degraded') return '上报延迟';
   if (node.status === 'standby') {
     if (node.deviceType === 'mobile') return '待签到';
+    if (node.probeMode === 'external') return '待接探针';
     return node.transport && node.transport !== 'offline' ? '仅组网在线' : '待机';
   }
   return '离线';
@@ -599,7 +667,9 @@ function renderNodeInspector(node) {
           ? 'Web / API 签到'
           : node.transport === 'ssh'
             ? 'SSH 探测'
-            : '离线';
+            : node.transport === 'external'
+              ? '外部线路 (未入 Tailnet)'
+              : '离线';
 
   const netText = node.network?.rxBytesPerSec != null
     ? `RX ${formatBytes(node.network.rxBytesPerSec)}/s · TX ${formatBytes(node.network.txBytesPerSec)}/s`
@@ -664,7 +734,9 @@ function renderFleet(snap) {
   $('fleetKpiTotal').textContent = `${sum.total ?? nodes.length}`;
   $('fleetKpiTotalSub').textContent = `服务器 ${sum.servers ?? 0} · 笔记本 ${sum.laptops ?? 0} · 移动端 ${sum.mobiles ?? 0}`;
   $('fleetKpiOnline').textContent = `${sum.online ?? 0} / ${sum.total ?? nodes.length}`;
-  $('fleetKpiOnlineSub').textContent = `${links.filter((l) => l.active).length} 条活跃组网链路`;
+  const fleetReachable = sum.reachable ?? sum.online ?? 0;
+  const fleetMeshOnly = sum.meshOnly ?? Math.max(0, fleetReachable - (sum.probed ?? 0));
+  $('fleetKpiOnlineSub').textContent = `可达 ${fleetReachable} · 仅组网 ${fleetMeshOnly} · ${links.filter((l) => l.active).length} 条活跃链路`;
   $('fleetKpiProbed').textContent = `${sum.probed ?? 0} / ${sum.total ?? nodes.length}`;
   $('fleetKpiProbedSub').textContent = '支持 ops-probe 单向推送与移动端签到';
   $('fleetKpiSecurity').textContent = fleet.requireTailscaleCidr ? 'Tailnet 仅限' : '受控内网';
@@ -711,7 +783,11 @@ function renderFleet(snap) {
     if (n.memory?.usedPct != null) metricParts.push(`Mem ${Math.round(n.memory.usedPct)}%`);
     if (n.battery?.percent != null) metricParts.push(`电量 ${Math.round(n.battery.percent)}%${n.battery.charging ? '+' : ''}`);
     const metricText = metricParts.length ? metricParts.join(' · ') : '-';
-    const netSub = n.relay ? `DERP ${n.relay}` : (n.transport || '-');
+    const netSub = n.transport === 'direct'
+      ? 'P2P 直连'
+      : (n.transport === 'external'
+        ? '外部线路'
+        : (n.relay ? `DERP ${n.relay}` : (n.transport || '-')));
     const canRevoke = !readOnly && n.probeEnrolled && n.probeMode !== 'local';
     return `
       <tr class="${isSel ? 'fleet-row-selected' : ''}">
@@ -854,14 +930,16 @@ function renderServices(snap) {
       ? `${formatBytes(svc.memoryBytes)}${svc.mainPid ? ` · #${svc.mainPid}` : ''}`
       : (svc.mainPid ? `PID ${svc.mainPid}` : '-');
 
-    const actionCtrl = readOnly
+    const actionLabels = { restart: '重启', start: '启动', stop: '停止', reload: '重载' };
+    const allowedList = Array.isArray(svc.allowedActions)
+      ? svc.allowedActions.filter((a) => actionLabels[a])
+      : ['restart', 'start', 'stop', 'reload'];
+
+    const actionCtrl = readOnly || allowedList.length === 0
       ? '<span class="cell-sub">只读</span>'
-      : `<select class="action-select" data-svc-action="${esc(svc.unit)}" data-svc-name="${esc(svc.name)}" data-svc-risk="${esc(svc.riskNote || '')}" aria-label="控制 ${esc(svc.name)}">
+      : `<select class="action-select" data-svc-action="${esc(svc.unit)}" data-svc-name="${esc(svc.name)}" data-svc-risk="${esc(svc.riskNote || '')}" data-svc-critical="${svc.risk === 'critical' ? '1' : '0'}" aria-label="控制 ${esc(svc.name)}">
           <option value="">控制...</option>
-          <option value="restart">重启</option>
-          <option value="start">启动</option>
-          <option value="stop">停止</option>
-          <option value="reload">重载</option>
+          ${allowedList.map((act) => `<option value="${esc(act)}">${esc(actionLabels[act])}</option>`).join('')}
         </select>`;
 
     return `
@@ -892,6 +970,8 @@ function renderServices(snap) {
 function renderMemory(snap) {
   const mem = snap.memory || {};
   const cards = [];
+
+  ensureMemoryGraph().setData(snap);
 
   if (mem.nmem) {
     const n = mem.nmem;
@@ -1001,6 +1081,8 @@ function renderAgents(snap) {
   const magpie = snap.magpie || {};
   const agentsData = snap.agents || { totalProcesses: 0, processes: [], counts: {} };
 
+  ensureAgentsGraph().setData(snap);
+
   $('agentsCountMeta').textContent = `活跃进程 ${agentsData.totalProcesses || 0} · 模型路由 ${magpie.totalModels || 0}`;
 
   const webLink = $('magpieWebLink');
@@ -1074,6 +1156,7 @@ function renderNetwork(snap) {
   const ts = snap.network?.tailscale || {};
   const mh = snap.network?.mihomo || {};
   const st = snap.network?.syncthing || {};
+  const fw = snap.firewall || snap.network?.firewall || null;
 
   $('tailscaleMetaDesc').textContent = ts.reachable
     ? `状态 ${ts.backendState} · v${ts.version || '-'} · ${ts.onlineCount}/${ts.devices?.length || 0} 设备在线`
@@ -1128,7 +1211,89 @@ function renderNetwork(snap) {
       </div>`
     : '<div class="empty-state">Syncthing 连接器未启用。</div>';
 
+  renderFirewall(fw);
   renderRemotesSection();
+}
+
+function postureBadge(posture) {
+  if (posture === 'loopback') return renderStatusCell('healthy', '仅回环');
+  if (posture === 'tailnet') return renderStatusCell('healthy', '仅 Tailnet');
+  if (posture === 'tailnet-guarded') return renderStatusCell('healthy', '防火墙放行 Tailnet');
+  if (posture === 'private') return renderStatusCell('healthy', '仅内网');
+  if (posture === 'public' || posture === 'public-unfiltered') return renderStatusCell('failed', '公网监听');
+  return renderStatusCell('standby', posture || '未知');
+}
+
+function renderFirewall(fw) {
+  const panel = $('firewallPanel');
+  if (!panel) return;
+  if (!fw || fw.enabled === false) {
+    $('firewallBadge').textContent = '未启用';
+    $('firewallSummaryBar').innerHTML = '';
+    $('firewallHint').hidden = true;
+    $('firewallListenersBody').innerHTML = '<tr><td colspan="5" class="empty-state">防火墙只读采集未启用。</td></tr>';
+    $('firewallRulesBody').innerHTML = '<tr><td colspan="6" class="empty-state">无规则数据。</td></tr>';
+    return;
+  }
+
+  const sum = fw.summary || {};
+  const filterPolicies = Object.entries(fw.policies || {})
+    .filter(([k]) => k.startsWith('filter:'))
+    .map(([k, v]) => `${k.replace(/^filter:/, '')}:${typeof v === 'object' && v ? (v.policy || '-') : v}`)
+    .join(' / ');
+  $('firewallMetaDesc').textContent = `${fw.protocol || '只读 iptables-save + ss'} · filter 默认策略 ${filterPolicies || '只读套接字模式'}`;
+  $('firewallBadge').textContent = `${fw.backend || 'readonly'} · ${fw.totalRules ?? 0} 条规则`;
+
+  const publicCount = Number(sum.publicUnfiltered || 0);
+  $('firewallSummaryBar').innerHTML = `
+    <div class="fw-stat"><div class="fw-stat-label">监听套接字</div><div class="fw-stat-val mono">${sum.totalListeners ?? 0}</div></div>
+    <div class="fw-stat"><div class="fw-stat-label">仅回环</div><div class="fw-stat-val mono is-ok">${sum.loopback ?? 0}</div></div>
+    <div class="fw-stat"><div class="fw-stat-label">Tailnet / 受保护</div><div class="fw-stat-val mono is-ok">${sum.tailnet ?? 0}</div></div>
+    <div class="fw-stat"><div class="fw-stat-label">公网未防护</div><div class="fw-stat-val mono ${publicCount > 0 ? 'is-warn' : 'is-ok'}">${publicCount}</div></div>
+    <div class="fw-stat"><div class="fw-stat-label">累计拦截包数</div><div class="fw-stat-val mono">${sum.droppedPackets ?? 0}</div></div>
+  `;
+
+  const hintEl = $('firewallHint');
+  if (fw.permissionHint) {
+    hintEl.textContent = fw.permissionHint;
+    hintEl.hidden = false;
+  } else {
+    hintEl.hidden = true;
+  }
+
+  const postureRank = { public: 0, 'public-unfiltered': 0, 'tailnet-guarded': 1, tailnet: 2, private: 3, loopback: 4 };
+  const listeners = Array.isArray(fw.listeners)
+    ? [...fw.listeners].sort((a, b) => (postureRank[a.posture] ?? 5) - (postureRank[b.posture] ?? 5) || (a.port ?? 0) - (b.port ?? 0))
+    : [];
+  $('firewallListenersBody').innerHTML = listeners.length > 0
+    ? listeners.slice(0, 45).map((l) => `
+        <tr>
+          <td class="mono">${esc(String(l.proto || 'tcp').toUpperCase())}</td>
+          <td class="mono">${esc(l.bind || '-')}</td>
+          <td class="mono">${esc(l.port ?? '-')}</td>
+          <td class="mono">${esc(l.process || '-')}${l.pid ? ` (#${l.pid})` : ''}</td>
+          <td>${postureBadge(l.posture)}</td>
+        </tr>
+      `).join('')
+    : '<tr><td colspan="5" class="empty-state">未采集到监听套接字。</td></tr>';
+
+  const rules = Array.isArray(fw.rules) ? fw.rules : [];
+  $('firewallRulesBody').innerHTML = rules.length > 0
+    ? rules.map((r) => {
+        const target = String(r.target || '-').toUpperCase();
+        const targetTone = target === 'DROP' || target === 'REJECT' ? 'degraded' : (target === 'ACCEPT' ? 'healthy' : 'standby');
+        return `
+          <tr>
+            <td class="mono">${esc(r.family || 'ipv4')} / ${esc(r.chain || '-')}</td>
+            <td class="mono">${esc(r.inIface || '*')}</td>
+            <td class="mono">${esc(r.proto || 'all')}${r.dport ? ` :${esc(r.dport)}` : ''}</td>
+            <td>${renderStatusCell(targetTone, target)}</td>
+            <td class="mono">${esc(r.packets ?? 0)}</td>
+            <td>${esc(r.comment || r.source || '-')}</td>
+          </tr>
+        `;
+      }).join('')
+    : '<tr><td colspan="6" class="empty-state">暂无可读取的入站过滤规则（可按提示配置只读 sudoers）。</td></tr>';
 }
 
 function renderRemotesSection() {
@@ -1212,6 +1377,33 @@ function renderOps(snap) {
         `;
       }).join('')
     : '<tr><td colspan="4" class="empty-state">未配置受管定时任务。</td></tr>';
+
+  renderIncidents();
+}
+
+function renderIncidents() {
+  const body = $('incidentsTableBody');
+  if (!body) return;
+  const storageEl = $('incidentsStorageMeta');
+  if (storageEl && state.incidentsStorage) {
+    const st = state.incidentsStorage;
+    storageEl.textContent = `持久化驱动 ${st.driver || '-'} · 样本 ${st.samples ?? 0} 条 · 活跃事件 ${st.openIncidents ?? 0} 条 · 磁盘占用 ${formatBytes(st.bytes)}`;
+  }
+  const items = Array.isArray(state.incidents) ? state.incidents : [];
+  if (items.length === 0) {
+    body.innerHTML = '<tr><td colspan="6" class="empty-state">暂无状态变更事件记录。</td></tr>';
+    return;
+  }
+  body.innerHTML = items.map((inc) => `
+    <tr>
+      <td class="mono nowrap">${esc(formatTimeShort(inc.ts))}</td>
+      <td class="mono">${esc(inc.kind || '-')}</td>
+      <td><strong>${esc(inc.node || inc.entityKey || '-')}</strong><span class="cell-sub mono">${esc(inc.entityKey || '')}</span></td>
+      <td>${renderStatusCell(inc.toState, `${inc.fromState || '-'} -> ${inc.toState || '-'}`)}</td>
+      <td>${inc.resolvedAt ? renderStatusCell('healthy', `已恢复 ${formatTimeShort(inc.resolvedAt)}`) : renderStatusCell('degraded', '持续中')}</td>
+      <td>${esc(inc.detail || '-')}</td>
+    </tr>
+  `).join('');
 }
 
 function renderAudit() {
@@ -1284,15 +1476,23 @@ function buildLogParams() {
   return params;
 }
 
-function renderLogEntries() {
-  const viewport = $('logViewport');
-  const entries = state.logEntries;
-  const counts = { total: entries.length, error: 0, warn: 0, info: 0, debug: 0 };
-  for (const e of entries) {
-    if (counts[e.level] !== undefined) counts[e.level] += 1;
-    else counts.info += 1;
-  }
+function normalizeLogLevel(level) {
+  return ['error', 'warn', 'info', 'debug'].includes(level) ? level : 'info';
+}
 
+function buildLogLineHtml(entry) {
+  const lvl = normalizeLogLevel(entry.level);
+  return `
+    <div class="log-line">
+      <span class="log-ts">${esc(formatTimeShort(entry.ts))}</span>
+      <span class="log-lvl log-lvl-${lvl}">${lvl}</span>
+      <span class="log-unit" title="${esc(entry.unit || '')}">${esc(entry.unit || '-')}</span>
+      <span class="log-msg">${esc(entry.message || '')}</span>
+    </div>
+  `;
+}
+
+function updateLogSeverityUi(counts) {
   $('logSeverityStats').textContent = `总计 ${counts.total} 条 · ERROR ${counts.error} · WARN ${counts.warn} · INFO ${counts.info} · DEBUG ${counts.debug}`;
   const track = $('logSeverityTrack');
   if (counts.total > 0) {
@@ -1306,23 +1506,52 @@ function renderLogEntries() {
   } else {
     track.innerHTML = '';
   }
+}
+
+function renderLogEntries() {
+  const viewport = $('logViewport');
+  const entries = state.logEntries;
+  const counts = { total: entries.length, error: 0, warn: 0, info: 0, debug: 0 };
+  for (const e of entries) {
+    counts[normalizeLogLevel(e.level)] += 1;
+  }
+  state.logSeverityCounts = counts;
+  updateLogSeverityUi(counts);
 
   if (entries.length === 0) {
     viewport.innerHTML = '<div class="log-empty">当前筛选条件下暂无日志记录。</div>';
     return;
   }
 
-  viewport.innerHTML = entries.map((e) => {
-    const lvl = ['error', 'warn', 'info', 'debug'].includes(e.level) ? e.level : 'info';
-    return `
-      <div class="log-line">
-        <span class="log-ts">${esc(formatTimeShort(e.ts))}</span>
-        <span class="log-lvl log-lvl-${lvl}">${lvl}</span>
-        <span class="log-unit" title="${esc(e.unit || '')}">${esc(e.unit || '-')}</span>
-        <span class="log-msg">${esc(e.message || '')}</span>
-      </div>
-    `;
-  }).join('');
+  viewport.innerHTML = entries.map((e) => buildLogLineHtml(e)).join('');
+
+  if ($('logAutoScroll').checked) {
+    viewport.scrollTop = viewport.scrollHeight;
+  }
+}
+
+function appendLogEntry(entry) {
+  const viewport = $('logViewport');
+  const counts = state.logSeverityCounts || { total: 0, error: 0, warn: 0, info: 0, debug: 0 };
+  if (state.logEntries.length === 0) {
+    const empty = viewport.querySelector('.log-empty');
+    if (empty) empty.remove();
+  }
+  state.logEntries.push(entry);
+  counts[normalizeLogLevel(entry.level)] += 1;
+  counts.total += 1;
+
+  viewport.insertAdjacentHTML('beforeend', buildLogLineHtml(entry));
+  while (state.logEntries.length > 500) {
+    const dropped = state.logEntries.shift();
+    if (dropped) {
+      counts[normalizeLogLevel(dropped.level)] = Math.max(0, counts[normalizeLogLevel(dropped.level)] - 1);
+      counts.total = Math.max(0, counts.total - 1);
+    }
+    if (viewport.firstElementChild) viewport.firstElementChild.remove();
+  }
+  state.logSeverityCounts = counts;
+  updateLogSeverityUi(counts);
 
   if ($('logAutoScroll').checked) {
     viewport.scrollTop = viewport.scrollHeight;
@@ -1379,11 +1608,7 @@ function toggleLogStream() {
   es.addEventListener('log', (ev) => {
     try {
       const entry = JSON.parse(ev.data);
-      state.logEntries.push(entry);
-      if (state.logEntries.length > 500) {
-        state.logEntries.splice(0, state.logEntries.length - 500);
-      }
-      renderLogEntries();
+      appendLogEntry(entry);
     } catch {
       // ignore malformed frame
     }
@@ -1436,14 +1661,11 @@ async function loadSnapshot(force = false) {
   try {
     const snap = await apiFetch(`/api/snapshot${force ? '?refresh=1' : ''}`);
     state.snapshot = snap;
+    if (Array.isArray(snap.incidents)) {
+      state.incidents = snap.incidents;
+    }
     $('syncStamp').textContent = `已同步 ${formatClock(snap.collectedAt)}`;
-    renderOverview(snap);
-    renderFleet(snap);
-    renderServices(snap);
-    renderMemory(snap);
-    renderAgents(snap);
-    renderNetwork(snap);
-    renderOps(snap);
+    renderActiveView(snap, { force });
   } catch (err) {
     showToast(`数据同步失败：${err.message}`, true);
   } finally {
@@ -1472,6 +1694,20 @@ async function loadAudit() {
     renderAudit();
   } catch (err) {
     showToast(`读取审计记录失败：${err.message}`, true);
+  }
+}
+
+async function loadIncidents() {
+  try {
+    const data = await apiFetch('/api/incidents?limit=60');
+    state.incidents = Array.isArray(data.items) ? data.items : [];
+    state.incidentsStorage = data.storage || null;
+    renderIncidents();
+    if (state.activeView === 'overview') {
+      renderOverviewIncidents(state.incidents);
+    }
+  } catch (err) {
+    showToast(`读取状态变更事件失败：${err.message}`, true);
   }
 }
 
@@ -1507,19 +1743,19 @@ function bindEvents() {
     window.location.reload();
   });
 
-  $('topologyWrap').addEventListener('click', (ev) => {
-    const node = ev.target.closest('.topo-node');
-    if (node && node.dataset.unit) openServiceLogs(node.dataset.unit);
-  });
-
-  $('topologyWrap').addEventListener('keydown', (ev) => {
-    if (ev.key !== 'Enter' && ev.key !== ' ') return;
-    const node = ev.target.closest('.topo-node');
-    if (node && node.dataset.unit) {
-      ev.preventDefault();
-      openServiceLogs(node.dataset.unit);
-    }
-  });
+  const graphFilterSeg = $('graphFilterSegment');
+  if (graphFilterSeg) {
+    graphFilterSeg.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('.seg-item');
+      if (!btn || !btn.dataset.graphFilter) return;
+      state.graphFilter = btn.dataset.graphFilter;
+      document.querySelectorAll('#graphFilterSegment .seg-item').forEach((b) => {
+        b.classList.toggle('is-active', b === btn);
+      });
+      ensureOverviewGraph().setFilter(state.graphFilter);
+      state.viewSignatures.overview = '';
+    });
+  }
 
   $('serviceLayerFilter').addEventListener('click', (ev) => {
     const btn = ev.target.closest('.seg-item');
@@ -1553,16 +1789,25 @@ function bindEvents() {
     const unit = sel.dataset.svcAction;
     const name = sel.dataset.svcName;
     const risk = sel.dataset.svcRisk;
+    const isCritical = sel.dataset.svcCritical === '1';
     sel.value = '';
     openConfirm({
       title: `确认对 ${name} 执行 ${action}`,
       body: `目标 unit：${unit}。操作完成后将自动记录到审计日志并刷新状态。`,
-      riskNote: risk,
+      riskNote: risk || (isCritical ? '关键核心服务：将向服务端申请一次性确认令牌后执行。' : ''),
       onConfirm: async () => {
         try {
+          let confirmToken = '';
+          if (isCritical) {
+            const issued = await apiFetch('/api/actions/confirm-token', {
+              method: 'POST',
+              body: JSON.stringify({ unit, action }),
+            });
+            confirmToken = issued.confirmToken || '';
+          }
           await apiFetch('/api/services/control', {
             method: 'POST',
-            body: JSON.stringify({ unit, action }),
+            body: JSON.stringify(confirmToken ? { unit, action, confirmToken } : { unit, action }),
           });
           showToast(`已对 ${name} 执行 ${action}`);
           await loadSnapshot(true);
@@ -1733,6 +1978,10 @@ function bindEvents() {
   });
 
   $('refreshAuditBtn').addEventListener('click', () => loadAudit());
+  const refreshIncBtn = $('refreshIncidentsBtn');
+  if (refreshIncBtn) {
+    refreshIncBtn.addEventListener('click', () => loadIncidents());
+  }
 
   // Fleet map & probe controls
   $('mapRegionSegment').addEventListener('click', (ev) => {

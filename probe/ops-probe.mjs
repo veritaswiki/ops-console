@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-export const PROBE_VERSION = '2.1.0';
+export const PROBE_VERSION = '0.3.0';
 export const SCHEMA_VERSION = 1;
 
 const DEFAULT_INTERVAL_SEC = 30;

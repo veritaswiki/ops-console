@@ -11,6 +11,7 @@ import { collectTailscale } from './network-tailscale.mjs';
 import { collectMihomo } from './network-mihomo.mjs';
 import { collectSyncthing } from './service-syncthing.mjs';
 import { collectRemoteNodes } from './remote-ssh.mjs';
+import { collectFirewall } from './firewall.mjs';
 
 async function collectOpsStateFiles(config) {
   let health = null;
@@ -60,11 +61,71 @@ async function collectOpsStateFiles(config) {
 }
 
 export class ConnectorHub {
-  constructor({ config, cache, demoProvider = null, probeRegistry = null }) {
+  constructor({ config, cache, demoProvider = null, probeRegistry = null, store = null }) {
     this.config = config;
     this.cache = cache;
     this.demoProvider = demoProvider;
     this.probeRegistry = probeRegistry;
+    this.store = store;
+  }
+
+  warmUp() {
+    if (this.config.demo) return;
+    if (this.config.connectors.magpie?.enabled) {
+      this.collectMagpieGateway(false).catch(() => {});
+    }
+    if (this.config.remotes?.length > 0) {
+      collectRemoteNodes(this.config, this.cache, false).catch(() => {});
+    }
+    if (this.config.connectors.firewall?.enabled !== false) {
+      this.collectFirewall(false).catch(() => {});
+    }
+  }
+
+  async collectFirewall(force = false) {
+    if (this.config.demo && this.demoProvider) {
+      return this.demoProvider.getFirewall();
+    }
+    return this.cache.getOrLoad(
+      'firewall',
+      15_000,
+      () => collectFirewall(this.config.connectors.firewall),
+      { force, staleOnError: true },
+    );
+  }
+
+  _trackTransitions(snapshot) {
+    if (!this.store || !snapshot) return;
+    for (const svc of snapshot.services?.items || []) {
+      if (svc.optional && svc.status === 'standby') continue;
+      this.store.recordStateTransition({
+        entityKey: `service:${svc.id}`,
+        node: svc.name || svc.unit,
+        kind: 'service',
+        toState: svc.status || 'unknown',
+        detail: svc.probe?.error || svc.subState || '',
+      });
+    }
+    for (const engineKey of ['nmem', 'openviking', 'symbiote', 'rerank']) {
+      const eng = snapshot.memory?.[engineKey];
+      if (!eng?.enabled) continue;
+      this.store.recordStateTransition({
+        entityKey: `engine:${engineKey}`,
+        node: eng.name || engineKey,
+        kind: 'engine',
+        toState: eng.status || 'unknown',
+        detail: eng.error || '',
+      });
+    }
+    for (const node of snapshot.fleet?.nodes || []) {
+      this.store.recordStateTransition({
+        entityKey: `node:${node.id}`,
+        node: node.name || node.id,
+        kind: 'node',
+        toState: node.status || 'unknown',
+        detail: node.transport || '',
+      });
+    }
   }
 
   async collectMemory(force = false) {
@@ -101,12 +162,13 @@ export class ConnectorHub {
       'network',
       12_000,
       async () => {
-        const [tailscale, mihomo, syncthing] = await Promise.all([
+        const [tailscale, mihomo, syncthing, firewall] = await Promise.all([
           collectTailscale(this.config.connectors.tailscale),
           collectMihomo(this.config.connectors.mihomo),
           collectSyncthing(this.config.connectors.syncthing),
+          this.collectFirewall(force),
         ]);
-        return { tailscale, mihomo, syncthing };
+        return { tailscale, mihomo, syncthing, firewall };
       },
       { force, staleOnError: true },
     );
@@ -135,6 +197,8 @@ export class ConnectorHub {
             summary: {
               total: nodes.length,
               online: nodes.filter((node) => node.status === 'healthy' || node.status === 'degraded').length,
+              reachable: nodes.filter((node) => node.status === 'healthy' || node.status === 'degraded' || (node.status === 'standby' && node.transport !== 'offline')).length,
+              meshOnly: nodes.filter((node) => node.status === 'standby' && node.transport !== 'offline').length,
               probed: nodes.filter((node) => node.probeMode === 'local' || node.probeLive).length,
               servers: nodes.filter((node) => node.deviceType === 'hub' || node.deviceType === 'server' || node.deviceType === 'edge').length,
               laptops: nodes.filter((node) => node.deviceType === 'laptop').length,
@@ -143,7 +207,10 @@ export class ConnectorHub {
           },
         };
       }
-      return baseDemo;
+      return {
+        ...baseDemo,
+        incidents: this.store ? this.store.listIncidents({ limit: 15 }) : (baseDemo.incidents || []),
+      };
     }
 
     const baseSnapshot = await this.cache.getOrLoad(
@@ -171,6 +238,7 @@ export class ConnectorHub {
           memory,
           network,
           tailscale: network.tailscale,
+          firewall: network.firewall,
           health: opsState.health,
           backup: opsState.backup,
           alerts: opsState.alerts,
@@ -181,17 +249,24 @@ export class ConnectorHub {
       { force, staleOnError: true },
     );
 
-    if (!this.probeRegistry) return baseSnapshot;
-    if (this.config.remotes?.length > 0 && !this.cache.entries?.has('remotes')) {
-      collectRemoteNodes(this.config, this.cache, false).catch(() => {});
+    let finalSnapshot = baseSnapshot;
+    if (this.probeRegistry) {
+      if (this.config.remotes?.length > 0 && !this.cache.entries?.has('remotes')) {
+        collectRemoteNodes(this.config, this.cache, false).catch(() => {});
+      }
+      const cachedRemotesEntry = this.cache.entries?.get('remotes');
+      const cachedRemotes = Array.isArray(cachedRemotesEntry?.value) ? cachedRemotesEntry.value : [];
+      const fleet = this.probeRegistry.buildFleetView({
+        snapshot: baseSnapshot,
+        remotes: cachedRemotes,
+      });
+      finalSnapshot = { ...baseSnapshot, fleet };
     }
-    const cachedRemotesEntry = this.cache.entries?.get('remotes');
-    const cachedRemotes = Array.isArray(cachedRemotesEntry?.value) ? cachedRemotesEntry.value : [];
-    const fleet = this.probeRegistry.buildFleetView({
-      snapshot: baseSnapshot,
-      remotes: cachedRemotes,
-    });
-    return { ...baseSnapshot, fleet };
+    this._trackTransitions(finalSnapshot);
+    return {
+      ...finalSnapshot,
+      incidents: this.store ? this.store.listIncidents({ limit: 15 }) : [],
+    };
   }
 
   async collectRemotes(force = false) {

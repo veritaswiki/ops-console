@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import { findLogFile, findService, findTimer } from './config.mjs';
 import { getUserEnv, runCmd } from './exec.mjs';
+import { redactLogEntry, redactText } from './redact.mjs';
 
 const SINCE_ALLOWLIST = new Map([
   ['15m', '-15m'],
@@ -199,15 +200,20 @@ export class LogService {
     const since = String(params.since || '1h');
     const q = String(params.q || '');
     const lines = Math.min(500, Math.max(10, Number(params.lines) || 150));
+    const includeLines = Boolean(params.includeLines);
     const maxPriority = LEVEL_TO_MAX_PRIORITY.get(level) ?? 7;
     const matcher = buildQueryMatcher(q);
 
     if (this.config.demo && this.demoProvider) {
-      return this.demoProvider.queryLogs({ source, unit: unitId, file: fileId, level, since, q, lines });
+      const demoRes = this.demoProvider.queryLogs({ source, unit: unitId, file: fileId, level, since, q, lines });
+      const sanitized = (demoRes.entries || []).map(redactLogEntry);
+      const payload = { ...demoRes, entries: sanitized };
+      if (!includeLines) delete payload.lines;
+      return payload;
     }
 
     if (source === 'self') {
-      const rawEntries = this.logger.getRecent(500);
+      const rawEntries = this.logger.getRecent(500).map(redactLogEntry);
       let filtered = rawEntries.filter((e) => (e.priority ?? 6) <= maxPriority);
       if (matcher) filtered = filtered.filter(matcher);
       const sliced = filtered.slice(-lines);
@@ -217,7 +223,7 @@ export class LogService {
         label: 'ops-console',
         entries: sliced,
         counts: summarizeCounts(sliced),
-        lines: sliced.map((e) => `${e.ts} [${e.level.toUpperCase()}] ${e.message}`).join('\n'),
+        ...(includeLines ? { lines: sliced.map((e) => `${e.ts} [${e.level.toUpperCase()}] ${e.message}`).join('\n') } : {}),
       };
     }
 
@@ -229,7 +235,7 @@ export class LogService {
         priority: r.ok === false ? 3 : 6,
         level: r.ok === false ? 'error' : 'info',
         pid: '',
-        message: `[${r.category || 'ops'}:${r.action || 'run'}] ${r.target || ''} (${r.ok ? 'OK' : 'FAIL'}, ${r.durationMs ?? 0}ms) ${r.output || ''}`.trim(),
+        message: redactText(`[${r.category || 'ops'}:${r.action || 'run'}] ${r.target || ''} (${r.ok ? 'OK' : 'FAIL'}, ${r.durationMs ?? 0}ms) ${r.output || ''}`.trim()),
         meta: r,
       }));
       entries = entries.filter((e) => e.priority <= maxPriority);
@@ -241,7 +247,7 @@ export class LogService {
         label: 'audit.jsonl',
         entries: sliced,
         counts: summarizeCounts(sliced),
-        lines: sliced.map((e) => `${e.ts} [${e.level.toUpperCase()}] ${e.message}`).join('\n'),
+        ...(includeLines ? { lines: sliced.map((e) => `${e.ts} [${e.level.toUpperCase()}] ${e.message}`).join('\n') } : {}),
       };
     }
 
@@ -257,6 +263,7 @@ export class LogService {
           .split('\n')
           .map((line) => parseGenericLogLine(line, logFile.name))
           .filter(Boolean)
+          .map(redactLogEntry)
           .filter((e) => e.priority <= maxPriority);
         if (matcher) entries = entries.filter(matcher);
         const sliced = entries.slice(-lines);
@@ -267,7 +274,7 @@ export class LogService {
           path: logFile.path,
           entries: sliced,
           counts: summarizeCounts(sliced),
-          lines: sliced.map((e) => `${e.ts ? e.ts + ' ' : ''}[${e.level.toUpperCase()}] ${e.message}`).join('\n'),
+          ...(includeLines ? { lines: sliced.map((e) => `${e.ts ? e.ts + ' ' : ''}[${e.level.toUpperCase()}] ${e.message}`).join('\n') } : {}),
         };
       } catch (err) {
         return {
@@ -327,6 +334,7 @@ export class LogService {
       entries = [...userEntries, ...sysEntries].sort((a, b) => a.ts.localeCompare(b.ts));
     }
 
+    entries = entries.map(redactLogEntry);
     if (matcher) entries = entries.filter(matcher);
     const sliced = entries.slice(-lines);
 
@@ -338,12 +346,12 @@ export class LogService {
       label: targetUnit ? targetUnit.name : 'All Managed Units',
       entries: sliced,
       counts: summarizeCounts(sliced),
-      lines: sliced.map((e) => `${e.ts} [${e.level.toUpperCase()}] ${e.unit}: ${e.message}`).join('\n'),
+      ...(includeLines ? { lines: sliced.map((e) => `${e.ts} [${e.level.toUpperCase()}] ${e.unit}: ${e.message}`).join('\n') } : {}),
     };
   }
 
   formatExport(result, format = 'jsonl') {
-    const entries = result.entries || [];
+    const entries = (result.entries || []).map(redactLogEntry);
     if (format === 'text' || format === 'log') {
       const text = entries
         .map((e) => `${e.ts || ''} [${String(e.level || 'info').toUpperCase().padEnd(5)}] ${e.unit || '-'}${e.pid ? `[${e.pid}]` : ''}: ${e.message}`)
@@ -432,8 +440,9 @@ export class LogService {
     const emitEntry = (entry) => {
       if (!entry) return;
       if ((entry.priority ?? 6) > maxPriority) return;
-      if (matcher && !matcher(entry)) return;
-      sendEvent('log', entry);
+      const clean = redactLogEntry(entry);
+      if (matcher && !matcher(clean)) return;
+      sendEvent('log', clean);
     };
 
     if (this.config.demo && this.demoProvider) {

@@ -46,6 +46,7 @@ jobs:
             bin \
             src \
             public \
+            probe \
             deploy \
             dist/stage/ops-console/
           tar -czf "dist/ops-console-${TAG_NAME}.tar.gz" -C dist/stage ops-console

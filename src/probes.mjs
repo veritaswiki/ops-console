@@ -2,11 +2,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
+import { maskClientIp } from './redact.mjs';
 import { safeEqualString } from './security.mjs';
 
 const NODE_ID_RE = /^[a-z0-9][a-z0-9._-]{1,47}$/;
 const VALID_DEVICE_TYPES = new Set(['hub', 'server', 'edge', 'laptop', 'mobile']);
-const VALID_PROBE_MODES = new Set(['local', 'push', 'checkin', 'tailscale-only', 'ssh']);
+const VALID_PROBE_MODES = new Set(['local', 'push', 'checkin', 'tailscale-only', 'ssh', 'external']);
 
 export const DERP_COORDS = {
   volcbj: { region: 'Beijing Relay', lat: 39.9, lon: 116.4 },
@@ -157,7 +158,7 @@ export function sanitizeProbePayload(raw, expectedNodeId) {
 
   return {
     schemaVersion: clampNum(raw.schemaVersion, 1, 10, 1),
-    probeVersion: cleanStr(raw.probeVersion || '2.1.0', 24),
+    probeVersion: cleanStr(raw.probeVersion || '0.3.0', 24),
     nodeId,
     sentAt: cleanStr(raw.sentAt || new Date().toISOString(), 40),
     deviceType,
@@ -233,6 +234,9 @@ export class ProbeRegistry {
     this.statePath = path.join(config.console.dataDir, 'probes-state.json');
     this.records = new Map();
     this.telemetry = new Map();
+    this._persistTimer = null;
+    this._persistDirty = false;
+    this._persistInFlight = null;
     this._loadSync();
   }
 
@@ -279,46 +283,94 @@ export class ProbeRegistry {
     await fsp.rename(tmp, this.storePath);
   }
 
+  _schedulePersistTelemetryState() {
+    if (this.config.demo) return;
+    this._persistDirty = true;
+    if (this._persistTimer) return;
+    this._persistTimer = setTimeout(() => {
+      this._persistTimer = null;
+      this._persistTelemetryState().catch(() => {});
+    }, 500);
+    if (typeof this._persistTimer.unref === 'function') {
+      this._persistTimer.unref();
+    }
+  }
+
   async _persistTelemetryState() {
     if (this.config.demo) return;
-    try {
-      await fsp.mkdir(path.dirname(this.statePath), { recursive: true, mode: 0o700 });
-      const obj = {};
-      for (const [id, entry] of this.telemetry.entries()) {
-        obj[id] = entry;
+    if (this._persistInFlight) {
+      this._persistDirty = true;
+      return this._persistInFlight;
+    }
+    this._persistDirty = false;
+    const run = (async () => {
+      try {
+        await fsp.mkdir(path.dirname(this.statePath), { recursive: true, mode: 0o700 });
+        const obj = {};
+        for (const [id, entry] of this.telemetry.entries()) {
+          obj[id] = entry;
+        }
+        const tmp = `${this.statePath}.tmp.${process.pid}.${Date.now()}`;
+        await fsp.writeFile(tmp, JSON.stringify({ updatedAt: new Date().toISOString(), telemetry: obj }), { mode: 0o600 });
+        await fsp.rename(tmp, this.statePath);
+      } catch {
+        // non-fatal state cache
+      } finally {
+        this._persistInFlight = null;
+        if (this._persistDirty) {
+          this._schedulePersistTelemetryState();
+        }
       }
-      const tmp = `${this.statePath}.tmp.${process.pid}`;
-      await fsp.writeFile(tmp, JSON.stringify({ updatedAt: new Date().toISOString(), telemetry: obj }), { mode: 0o600 });
-      await fsp.rename(tmp, this.statePath);
-    } catch {
-      // non-fatal state cache
+    })();
+    this._persistInFlight = run;
+    return run;
+  }
+
+  async flush() {
+    if (this._persistTimer) {
+      clearTimeout(this._persistTimer);
+      this._persistTimer = null;
+    }
+    if (this._persistInFlight) {
+      await this._persistInFlight;
+    }
+    if (this._persistDirty) {
+      await this._persistTelemetryState();
     }
   }
 
   listEnrolled() {
-    return [...this.records.values()].map((rec) => ({
-      id: rec.id,
-      name: rec.name,
-      deviceType: rec.deviceType,
-      probeMode: rec.probeMode,
-      role: rec.role,
-      region: rec.region,
-      provider: rec.provider,
-      lat: rec.lat,
-      lon: rec.lon,
-      tailscaleIp: rec.tailscaleIp || '',
-      scopes: rec.scopes || ['telemetry:write'],
-      createdAt: rec.createdAt,
-      rotatedAt: rec.rotatedAt || rec.createdAt,
-      lastSeenAt: this.telemetry.get(rec.id)?.receivedAt || null,
-      lastSourceIp: this.telemetry.get(rec.id)?.sourceIp || null,
-    }));
+    const exposeIps = Boolean(this.config.security?.exposeClientIps);
+    return [...this.records.values()].map((rec) => {
+      const rawIp = this.telemetry.get(rec.id)?.sourceIp || null;
+      return {
+        id: rec.id,
+        name: rec.name,
+        deviceType: rec.deviceType,
+        probeMode: rec.probeMode,
+        role: rec.role,
+        region: rec.region,
+        provider: rec.provider,
+        lat: rec.lat,
+        lon: rec.lon,
+        tailscaleIp: rec.tailscaleIp || '',
+        scopes: rec.scopes || ['telemetry:write'],
+        createdAt: rec.createdAt,
+        rotatedAt: rec.rotatedAt || rec.createdAt,
+        lastSeenAt: this.telemetry.get(rec.id)?.receivedAt || null,
+        lastSourceIp: rawIp ? (exposeIps ? rawIp : maskClientIp(rawIp)) : null,
+      };
+    });
   }
 
   async enroll({ id, name, deviceType = 'server', probeMode = 'push', role = '', region = '', provider = '', lat = null, lon = null, tailscaleIp = '' }) {
     const cleanId = cleanStr(id, 48).toLowerCase();
     if (!validateNodeId(cleanId)) {
       throw new Error('Node ID must be 2-48 lowercase letters, digits, dots, underscores, or hyphens');
+    }
+    const maxProbes = this.config.fleet?.maxProbes || 128;
+    if (!this.records.has(cleanId) && this.records.size >= maxProbes) {
+      throw new Error(`Probe registry limit reached (maxProbes=${maxProbes})`);
     }
     const cleanType = VALID_DEVICE_TYPES.has(deviceType) ? deviceType : 'server';
     const cleanMode = VALID_PROBE_MODES.has(probeMode) ? probeMode : (cleanType === 'mobile' ? 'checkin' : 'push');
@@ -414,7 +466,7 @@ export class ProbeRegistry {
       batteryPct: sanitized.battery?.percent ?? null,
     });
 
-    await this._persistTelemetryState();
+    this._schedulePersistTelemetryState();
     return { ok: true, nodeId: sanitized.nodeId, receivedAt: nowIso };
   }
 
@@ -423,6 +475,7 @@ export class ProbeRegistry {
     const staleMs = (fleetCfg.probeStaleSec || 90) * 1000;
     const offlineMs = (fleetCfg.probeOfflineSec || 180) * 1000;
     const nowMs = Date.now();
+    const nowIso = new Date(nowMs).toISOString();
 
     const tsRaw = snapshot?.tailscale || snapshot?.network?.tailscale || {};
     const tsDevices = Array.isArray(tsRaw.devices) ? tsRaw.devices : [];
@@ -553,23 +606,27 @@ export class ProbeRegistry {
 
       const probeLive = Boolean(tele && ageMs <= effectiveOfflineMs);
       const probeFresh = Boolean(tele && ageMs <= effectiveStaleMs);
+      const isExternal = (rec?.probeMode || decl.probeMode) === 'external';
+      const peerHasDirectAddr = Boolean(peer?.curAddr && peer.curAddr !== 'none');
 
       let status = 'offline';
       if (probeFresh) status = 'healthy';
       else if (probeLive) status = 'degraded';
       else if (sshRem?.reachable) status = 'healthy';
       else if (peer?.online) status = isMobile ? 'healthy' : 'standby';
-      else if (isMobile) status = 'standby';
+      else if (isMobile || isExternal) status = 'standby';
 
       let transport = 'offline';
       if (peer?.online) {
-        transport = (peer.active || peer.curAddr) && !peer.relay ? 'direct' : (peer.relay ? 'relay' : 'direct');
+        transport = peerHasDirectAddr ? 'direct' : (peer.relay ? 'relay' : 'direct');
       } else if (probeLive) {
         transport = isMobile ? 'checkin' : 'direct';
       } else if (sshRem?.reachable) {
         transport = 'ssh';
       } else if (isMobile) {
         transport = 'checkin';
+      } else if (isExternal) {
+        transport = 'external';
       }
 
       const data = tele?.data || null;
@@ -617,7 +674,7 @@ export class ProbeRegistry {
         backupDisk: sshRem?.backupDisk || (sshRem?.backup && sshRem.backup !== 'n/a' ? sshRem.backup : null),
         rttMs: data?.hubRttMs ?? (sshRem?.reachable ? sshRem.rttMs : null),
         lastSeenAt: tele?.receivedAt || (sshRem?.reachable ? (sshRem.checkedAt || snapshot?.collectedAt || nowIso) : null) || peer?.lastSeen || null,
-        note: data?.note || '',
+        note: data?.note || decl.note || '',
         scopes: rec?.scopes || (isMobile ? ['telemetry:checkin'] : ['readonly']),
         history: this.timeseries?.get(`node:${id}`, 24) || [],
       });
@@ -649,7 +706,7 @@ export class ProbeRegistry {
         probeEnrolled: false,
         probeLive: false,
         probeAgeSec: null,
-        transport: peer.online ? (peer.relay ? 'relay' : 'direct') : 'offline',
+        transport: peer.online ? ((peer.curAddr && peer.curAddr !== 'none') ? 'direct' : (peer.relay ? 'relay' : 'direct')) : 'offline',
         tailscaleIp: peer.ip || '',
         tailscaleDns: peer.dnsName || '',
         relay: peer.relay || '',
@@ -701,13 +758,19 @@ export class ProbeRegistry {
         from: localId,
         to: node.id,
         kind: node.transport === 'offline' ? 'ssh' : node.transport,
-        label: node.relay ? `DERP ${node.relay}` : (node.transport === 'checkin' ? 'Check-in' : 'Tailnet'),
+        label: node.transport === 'direct'
+          ? 'Tailnet Direct'
+          : (node.transport === 'external'
+            ? 'Proxy / Edge'
+            : (node.relay ? `DERP ${node.relay}` : (node.transport === 'checkin' ? 'Check-in' : 'Tailnet'))),
         rttMs: node.rttMs ?? null,
-        active: node.status === 'healthy' || node.status === 'degraded' || (node.status === 'standby' && node.transport !== 'offline'),
+        active: node.status === 'healthy' || node.status === 'degraded' || (node.status === 'standby' && node.transport !== 'offline' && node.transport !== 'external'),
       });
     }
 
     const onlineNodes = nodes.filter((node) => node.status === 'healthy' || node.status === 'degraded').length;
+    const meshOnlyNodes = nodes.filter((node) => node.status === 'standby' && (node.transport === 'direct' || node.transport === 'relay')).length;
+    const reachableNodes = onlineNodes + meshOnlyNodes;
     const probedNodes = nodes.filter((node) => node.probeMode === 'local' || node.probeLive).length;
 
     const avgCpuSamples = nodes.map((node) => node.cpu?.usagePct).filter((val) => typeof val === 'number');
@@ -727,6 +790,8 @@ export class ProbeRegistry {
       summary: {
         total: nodes.length,
         online: onlineNodes,
+        reachable: reachableNodes,
+        meshOnly: meshOnlyNodes,
         probed: probedNodes,
         servers: nodes.filter((node) => node.deviceType === 'hub' || node.deviceType === 'server' || node.deviceType === 'edge').length,
         laptops: nodes.filter((node) => node.deviceType === 'laptop').length,
@@ -741,13 +806,17 @@ export class ProbeRegistry {
 
 export function buildInstallHints({ hubUrl, nodeId, token, deviceType, region }) {
   const safeRegion = region || 'Local';
-  const linuxCmd = `sudo ./deploy/probe/install-probe.sh --hub-url "${hubUrl}" --node-id "${nodeId}" --token "${token}" --device-type "${deviceType}"`;
-  const macCmd = `./deploy/probe/install-probe.sh --hub-url "${hubUrl}" --node-id "${nodeId}" --token "${token}" --device-type "laptop"`;
+  const linuxCmd = `sudo ./deploy/probe/install-probe.sh --hub-url "${hubUrl}" --node-id "${nodeId}" --device-type "${deviceType}" --token-file - <<'EOF'
+${token}
+EOF`;
+  const macCmd = `./deploy/probe/install-probe.sh --hub-url "${hubUrl}" --node-id "${nodeId}" --device-type "laptop" --token-file - <<'EOF'
+${token}
+EOF`;
   const mobileCurl = `curl -fsS -X POST "${hubUrl}/api/probes/ingest" \\
-  -H "Authorization: Bearer ${token}" \\
+  -H "Authorization: Bearer \${OPS_PROBE_TOKEN}" \\
   -H "X-Ops-Probe-Id: ${nodeId}" \\
   -H "Content-Type: application/json" \\
-  -d '{"schemaVersion":1,"nodeId":"${nodeId}","deviceType":"mobile","platform":"android","region":"${safeRegion}","battery":{"percent":85,"charging":false},"network":{"type":"5g"}}'`;
+  -d '{"schemaVersion":1,"probeVersion":"0.3.0","nodeId":"${nodeId}","deviceType":"mobile","platform":"android","region":"${safeRegion}","battery":{"percent":85,"charging":false},"network":{"type":"5g"}}'`;
 
   return {
     linuxSystemd: linuxCmd,

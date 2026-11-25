@@ -18,9 +18,18 @@
       "http://localhost:4320",
       "https://node.example.ts.net"
     ],
+    "exposeClientIps": false,
+    "requireCriticalConfirm": true,
     "rateLimitPerMinute": 240,
     "mutatingRateLimitPerMinute": 30,
     "maxSseStreams": 8
+  },
+  "storage": {
+    "driver": "auto",
+    "rawRetentionDays": 7,
+    "rollup1mDays": 30,
+    "rollup5mDays": 365,
+    "incidentRetentionDays": 90
   },
   "host": {
     "mounts": [
@@ -63,6 +72,11 @@
         "127.0.0.1:4320"
       ],
       "healthUrl": "http://127.0.0.1:4320/api/ping",
+      "dependsOn": [
+        "magpie",
+        "nmem",
+        "openviking"
+      ],
       "risk": "standard",
       "riskNote": "Restarting interrupts this control plane UI for 1-2 seconds."
     },
@@ -78,6 +92,13 @@
         "127.0.0.1:3430"
       ],
       "healthUrl": "http://127.0.0.1:3426/v1/models",
+      "dependsOn": [
+        "mihomo"
+      ],
+      "allowedActions": [
+        "restart",
+        "reload"
+      ],
       "risk": "critical",
       "riskNote": "Stopping or restarting interrupts active model inference and MCP sessions."
     },
@@ -93,6 +114,15 @@
       ],
       "healthUrl": "http://127.0.0.1:3773/",
       "tailnetUrl": "https://node.example.ts.net",
+      "dependsOn": [
+        "magpie",
+        "nmem",
+        "openviking"
+      ],
+      "allowedActions": [
+        "restart",
+        "start"
+      ],
       "risk": "critical",
       "riskNote": "Restarting drops active client connections to running orchestrator sessions."
     },
@@ -121,6 +151,10 @@
       ],
       "healthUrl": "http://127.0.0.1:1933/health",
       "tailnetUrl": "https://node.example.ts.net:10000",
+      "dependsOn": [
+        "rerank-gateway",
+        "emb-gateway"
+      ],
       "risk": "standard"
     },
     {
@@ -135,6 +169,9 @@
       ],
       "healthUrl": "http://127.0.0.1:4318/api/health",
       "tailnetUrl": "https://node.example.ts.net:8443",
+      "dependsOn": [
+        "nmem"
+      ],
       "risk": "standard"
     },
     {
@@ -174,6 +211,9 @@
       "ports": [
         "100.64.0.10"
       ],
+      "allowedActions": [
+        "restart"
+      ],
       "risk": "critical",
       "riskNote": "Stopping disconnects all Tailnet peers and private HTTPS serve endpoints."
     },
@@ -200,6 +240,10 @@
       "role": "Primary relational database cluster",
       "ports": [
         "127.0.0.1:5432"
+      ],
+      "allowedActions": [
+        "restart",
+        "reload"
       ],
       "risk": "critical",
       "riskNote": "Stopping interrupts database-backed services."
@@ -298,6 +342,9 @@
       "apiUrl": "http://127.0.0.1:8384",
       "apiKey": ""
     },
+    "firewall": {
+      "enabled": true
+    },
     "customHttp": []
   },
   "logFiles": [
@@ -348,6 +395,7 @@
     "probeStaleSec": 90,
     "probeOfflineSec": 180,
     "requireTailscaleCidr": true,
+    "maxProbes": 128,
     "historyPoints": 60,
     "declaredNodes": [
       {

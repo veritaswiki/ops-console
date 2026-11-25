@@ -79,17 +79,27 @@
       <div class="panel">
         <div class="panel-head">
           <div>
-            <h2>系统分层拓扑</h2>
-            <p class="panel-desc">按入口编排、记忆智能、组网隧道与基础设施四层展示实时状态，点击任意节点可直接查看日志。</p>
+            <h2>统一架构与依赖图谱</h2>
+            <p class="panel-desc">按入口 Agent、模型网关、记忆上下文与网络底座四泳道实时映射依赖关系，点击节点高亮上下游并下钻日志。</p>
           </div>
-          <div class="legend" aria-label="状态图例">
-            <span class="legend-item"><i class="dot dot-ok"></i>健康</span>
-            <span class="legend-item"><i class="dot dot-warn"></i>降级</span>
-            <span class="legend-item"><i class="dot dot-err"></i>故障</span>
-            <span class="legend-item"><i class="dot dot-muted"></i>待机</span>
+          <div class="graph-head-controls">
+            <div class="segmented" id="graphFilterSegment" role="tablist" aria-label="架构图谱筛选">
+              <button type="button" class="seg-item is-active" data-graph-filter="all">全部</button>
+              <button type="button" class="seg-item" data-graph-filter="services">核心服务</button>
+              <button type="button" class="seg-item" data-graph-filter="memory">记忆链路</button>
+              <button type="button" class="seg-item" data-graph-filter="agents">Agent 与网关</button>
+              <button type="button" class="seg-item" data-graph-filter="network">网络与底座</button>
+            </div>
+            <div class="legend" aria-label="状态图例">
+              <span class="legend-item"><i class="dot dot-ok"></i>健康</span>
+              <span class="legend-item"><i class="dot dot-warn"></i>降级</span>
+              <span class="legend-item"><i class="dot dot-err"></i>故障</span>
+              <span class="legend-item"><i class="dot dot-muted"></i>待机</span>
+            </div>
           </div>
         </div>
         <div class="topology-wrap" id="topologyWrap"></div>
+        <div class="ag-inspector" id="topologyInspector" hidden></div>
       </div>
       <div class="grid-two">
         <div class="panel">
@@ -116,11 +126,16 @@
         <div class="panel">
           <div class="panel-head">
             <div>
-              <h2>主机存储与近期告警</h2>
-              <p class="panel-desc">挂载点容量使用率与最近运维事件记录。</p>
+              <h2>主机存储与近期事件</h2>
+              <p class="panel-desc">挂载点容量使用率、持久化的状态变更时间线与近期告警。</p>
             </div>
           </div>
           <div class="subsection" id="overviewDisks"></div>
+          <div class="divider"></div>
+          <div class="subsection">
+            <h3 class="sub-title">状态变更事件时间线</h3>
+            <div id="overviewIncidents"></div>
+          </div>
           <div class="divider"></div>
           <div class="subsection">
             <h3 class="sub-title">最近告警与活跃任务</h3>
@@ -424,6 +439,16 @@
         <div id="memorySearchResults" class="results-area" hidden></div>
         <div id="memoryDoctorOutput" class="doctor-area" hidden></div>
       </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>记忆与上下文调用图谱</h2>
+            <p class="panel-desc">实时展示 Agent、联合检索与各记忆引擎及底层存储的关联与响应延迟。</p>
+          </div>
+        </div>
+        <div class="topology-wrap" id="memoryGraphWrap"></div>
+        <div class="ag-inspector" id="memoryGraphInspector" hidden></div>
+      </div>
       <div class="grid-two" id="memoryEnginesGrid"></div>
     </section>
     <section class="view" data-panel="agents" id="view-agents" hidden>
@@ -433,6 +458,16 @@
           <p class="view-desc">Magpie 模型路由目录、桥接注册状态、共享 Library 摘要以及主机活跃编排进程。</p>
         </div>
         <div class="view-head-meta mono" id="agentsCountMeta"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>Agent 与模型网关路由图谱</h2>
+            <p class="panel-desc">聚合展示活跃运行时进程组、Magpie 路由桥接、记忆总线与模型供给渠道，点击进程组可筛选下表。</p>
+          </div>
+        </div>
+        <div class="topology-wrap" id="agentsGraphWrap"></div>
+        <div class="ag-inspector" id="agentsGraphInspector" hidden></div>
       </div>
       <div class="panel" id="magpiePanel">
         <div class="panel-head">
@@ -530,6 +565,50 @@
           <div class="subsection">
             <h3 class="sub-title">远程 SSH 主机</h3>
             <div id="remotesContent"></div>
+          </div>
+        </div>
+      </div>
+      <div class="panel" id="firewallPanel">
+        <div class="panel-head">
+          <div>
+            <h2>主机防火墙与端口暴露面（只读）</h2>
+            <p class="panel-desc" id="firewallMetaDesc">通过只读 iptables-save -c 与 ss 套接字表实时核验端口暴露态势，严禁通过控制台修改防火墙规则。</p>
+          </div>
+          <span class="mono panel-meta" id="firewallBadge"></span>
+        </div>
+        <div class="fw-summary-bar" id="firewallSummaryBar"></div>
+        <div class="fw-hint" id="firewallHint" hidden></div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>协议</th>
+                <th>绑定地址</th>
+                <th>端口</th>
+                <th>进程 / PID</th>
+                <th>暴露评估</th>
+              </tr>
+            </thead>
+            <tbody id="firewallListenersBody"></tbody>
+          </table>
+        </div>
+        <div class="divider"></div>
+        <div class="subsection">
+          <h3 class="sub-title">入站过滤规则摘要（INPUT / DOCKER-USER / ts-*）</h3>
+          <div class="table-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>协议栈 / 链</th>
+                  <th>接口</th>
+                  <th>协议 / 目标端口</th>
+                  <th>动作</th>
+                  <th>命中包数</th>
+                  <th>备注</th>
+                </tr>
+              </thead>
+              <tbody id="firewallRulesBody"></tbody>
+            </table>
           </div>
         </div>
       </div>
@@ -631,6 +710,30 @@
               <tbody id="timersTableBody"></tbody>
             </table>
           </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head">
+          <div>
+            <h2>状态变更事件时间线</h2>
+            <p class="panel-desc" id="incidentsStorageMeta">持久化记录服务、记忆引擎与远端节点的健康状态跃迁与恢复时间。</p>
+          </div>
+          <button type="button" class="btn-subtle" id="refreshIncidentsBtn">刷新事件</button>
+        </div>
+        <div class="table-wrap">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>时间</th>
+                <th>类型</th>
+                <th>对象</th>
+                <th>状态跃迁</th>
+                <th>恢复状态</th>
+                <th>详情</th>
+              </tr>
+            </thead>
+            <tbody id="incidentsTableBody"></tbody>
+          </table>
         </div>
       </div>
       <div class="panel">

@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { ActionController } from './actions.mjs';
 import { SingleFlightCache } from './cache.mjs';
 import { APP_VERSION, PACKAGE_ROOT } from './config.mjs';
@@ -10,6 +11,8 @@ import { ConnectorHub } from './connectors/index.mjs';
 import { StructuredLogger } from './logger.mjs';
 import { LogService } from './logs.mjs';
 import { isTailscaleOrLoopbackIp, ProbeRegistry, validateNodeId } from './probes.mjs';
+import { maskClientIp } from './redact.mjs';
+import { TelemetryStore } from './store.mjs';
 import { TimeSeriesStore } from './timeseries.mjs';
 import {
   buildClearSessionCookie,
@@ -39,6 +42,28 @@ const MIME_TYPES = {
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_PROBE_BODY_BYTES = 32 * 1024;
+const COMPRESS_MIN_BYTES = 1024;
+const COMPRESSIBLE_MIME = /^(?:text\/|application\/(?:json|javascript)|image\/svg\+xml)/i;
+
+function chooseEncoding(req) {
+  const ae = String(req?.headers?.['accept-encoding'] || '').toLowerCase();
+  if (!ae) return '';
+  if (/\bbr\b/.test(ae)) return 'br';
+  if (/\bgzip\b/.test(ae)) return 'gzip';
+  return '';
+}
+
+function compressBuffer(buf, encoding) {
+  if (encoding === 'br') {
+    return zlib.brotliCompressSync(buf, {
+      params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 },
+    });
+  }
+  if (encoding === 'gzip') {
+    return zlib.gzipSync(buf, { level: 6 });
+  }
+  return buf;
+}
 
 function extractClientIp(req, trustProxy = false) {
   if (trustProxy) {
@@ -56,15 +81,30 @@ function isHttpsRequest(req, trustProxy = false) {
   return false;
 }
 
-function sendJson(res, statusCode, payload, extraHeaders = {}) {
-  const body = JSON.stringify(payload);
-  res.writeHead(statusCode, {
+function sendJson(res, statusCode, payload, extraHeaders = {}, req = null) {
+  const rawBuf = Buffer.from(JSON.stringify(payload), 'utf8');
+  const encoding = rawBuf.length >= COMPRESS_MIN_BYTES ? chooseEncoding(req) : '';
+  let outBuf = rawBuf;
+  const headers = {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     ...getSecurityHeaders({ isHtml: false }),
     ...extraHeaders,
+  };
+  if (encoding) {
+    outBuf = compressBuffer(rawBuf, encoding);
+    headers['Content-Encoding'] = encoding;
+    headers.Vary = headers.Vary ? `${headers.Vary}, Accept-Encoding` : 'Accept-Encoding';
+  }
+  headers['Content-Length'] = outBuf.length;
+  res.writeHead(statusCode, {
+    ...headers,
   });
-  res.end(body);
+  if (req?.method === 'HEAD') {
+    res.end();
+  } else {
+    res.end(outBuf);
+  }
 }
 
 function sendHtml(res, statusCode, html, extraHeaders = {}) {
@@ -128,7 +168,8 @@ function normalizeLogQuery(searchParams) {
   if ((regexFlag === '1' || regexFlag === 'true') && q && !(q.startsWith('/') && q.endsWith('/'))) {
     q = `/${q}/`;
   }
-  return { source, unit, file, since, level, lines, q };
+  const includeLines = searchParams.get('includeLines') === '1' || searchParams.get('includeLines') === 'true';
+  return { source, unit, file, since, level, lines, q, includeLines };
 }
 
 function sanitizeDownloadName(str) {
@@ -151,12 +192,23 @@ export function createOpsConsole(options = {}) {
     silentStdout: Boolean(options.silentStdout),
   });
   const cache = options.cache || new SingleFlightCache();
+  const store = options.store || new TelemetryStore({
+    dataDir: config.console.dataDir,
+    driver: config.storage?.driver || 'auto',
+    demo: config.demo,
+    rawRetentionDays: config.storage?.rawRetentionDays,
+    rollup1mDays: config.storage?.rollup1mDays,
+    rollup5mDays: config.storage?.rollup5mDays,
+    incidentRetentionDays: config.storage?.incidentRetentionDays,
+    logger,
+  });
   const timeseries = options.timeseries || new TimeSeriesStore({
     maxPoints: config.fleet?.historyPoints || 60,
     minIntervalMs: 3000,
+    store,
   });
   const probeRegistry = options.probeRegistry || new ProbeRegistry({ config, logger, timeseries });
-  const hub = options.hub || new ConnectorHub({ config, cache, demoProvider, probeRegistry });
+  const hub = options.hub || new ConnectorHub({ config, cache, demoProvider, probeRegistry, store });
   const logs = options.logs || new LogService({ config, logger, demoProvider });
   const actions = options.actions || new ActionController({ config, logger, cache, demoProvider });
 
@@ -172,6 +224,11 @@ export function createOpsConsole(options = {}) {
     windowMs: 60_000,
     maxRequests: 30,
   });
+  const staticCache = new Map();
+
+  function auditIp(rawIp) {
+    return config.security?.exposeClientIps ? rawIp : maskClientIp(rawIp);
+  }
 
   async function serveStatic(req, res, pathname) {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
@@ -214,17 +271,52 @@ export function createOpsConsole(options = {}) {
     const ext = path.extname(resolved).toLowerCase();
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
     const isHtml = ext === '.html';
-    const content = await fs.readFile(resolved);
-    res.writeHead(200, {
+    let cached = staticCache.get(resolved);
+    if (!cached || cached.mtimeMs !== stat.mtimeMs || cached.size !== stat.size) {
+      const content = await fs.readFile(resolved);
+      const etag = `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+      const compressible = COMPRESSIBLE_MIME.test(contentType) && content.length >= COMPRESS_MIN_BYTES;
+      cached = {
+        mtimeMs: stat.mtimeMs,
+        size: stat.size,
+        etag,
+        content,
+        gzip: compressible ? compressBuffer(content, 'gzip') : null,
+        br: compressible ? compressBuffer(content, 'br') : null,
+        contentType,
+        isHtml,
+      };
+      staticCache.set(resolved, cached);
+    }
+
+    const headers = {
       'Content-Type': contentType,
-      'Content-Length': content.length,
       'Cache-Control': isHtml ? 'no-cache' : 'public, max-age=60',
+      ETag: cached.etag,
+      Vary: 'Accept-Encoding',
       ...getSecurityHeaders({ isHtml }),
-    });
+    };
+    if (String(req.headers['if-none-match'] || '').trim() === cached.etag) {
+      res.writeHead(304, headers);
+      res.end();
+      return;
+    }
+
+    const encoding = chooseEncoding(req);
+    let body = cached.content;
+    if (encoding === 'br' && cached.br) {
+      body = cached.br;
+      headers['Content-Encoding'] = 'br';
+    } else if (encoding === 'gzip' && cached.gzip) {
+      body = cached.gzip;
+      headers['Content-Encoding'] = 'gzip';
+    }
+    headers['Content-Length'] = body.length;
+    res.writeHead(200, headers);
     if (req.method === 'HEAD') {
       res.end();
     } else {
-      res.end(content);
+      res.end(body);
     }
   }
 
@@ -253,7 +345,7 @@ export function createOpsConsole(options = {}) {
           demo: config.demo,
           uptimeSec: Math.floor(process.uptime()),
           ts: new Date().toISOString(),
-        });
+        }, {}, req);
         return;
       }
 
@@ -405,6 +497,9 @@ export function createOpsConsole(options = {}) {
           demo: config.demo,
           readOnly: config.console.readOnly,
           authEnabled: Boolean(config.auth.webKey),
+          storageDriver: store.driver,
+          requireCriticalConfirm: Boolean(config.security?.requireCriticalConfirm),
+          warnings: config.warnings || [],
           requireTailscaleCidr: config.fleet?.requireTailscaleCidr !== false,
           localNodeId: config.fleet?.localNode?.id || 'hub-primary',
           enrolledProbesCount: probeRegistry.records.size,
@@ -416,14 +511,14 @@ export function createOpsConsole(options = {}) {
             health: Boolean(config.ops.healthScript || config.demo),
             backup: Boolean(config.ops.backupScript || config.demo),
           },
-        });
+        }, {}, req);
         return;
       }
 
       if (method === 'GET' && (pathname === '/api/nodes' || pathname === '/api/fleet')) {
         const force = url.searchParams.get('refresh') === '1';
         const snapshot = await hub.collectSnapshot(force);
-        sendJson(res, 200, { ok: true, fleet: snapshot.fleet || null });
+        sendJson(res, 200, { ok: true, fleet: snapshot.fleet || null }, {}, req);
         return;
       }
 
@@ -440,7 +535,7 @@ export function createOpsConsole(options = {}) {
           return;
         }
         const fullHistory = timeseries.get(`node:${nodeId}`, config.fleet?.historyPoints || 60);
-        sendJson(res, 200, { ok: true, node, history: fullHistory.length ? fullHistory : (node.history || []) });
+        sendJson(res, 200, { ok: true, node, history: fullHistory.length ? fullHistory : (node.history || []) }, {}, req);
         return;
       }
 
@@ -449,7 +544,7 @@ export function createOpsConsole(options = {}) {
           ok: true,
           probes: probeRegistry.listEnrolled(),
           requireTailscaleCidr: config.fleet?.requireTailscaleCidr !== false,
-        });
+        }, {}, req);
         return;
       }
 
@@ -477,7 +572,7 @@ export function createOpsConsole(options = {}) {
             action: 'probe_enroll',
             target: enrolled.node.id,
             actor: 'web',
-            ip: clientIp,
+            ip: auditIp(clientIp),
             requestId,
             ok: true,
             output: `deviceType=${enrolled.node.deviceType} scopes=${enrolled.node.scopes.join(',')}`,
@@ -519,7 +614,7 @@ export function createOpsConsole(options = {}) {
             action: 'mobile_checkin',
             target: targetId,
             actor: 'web',
-            ip: clientIp,
+            ip: auditIp(clientIp),
             requestId,
             ok: true,
             output: `region=${data.region || 'default'}`,
@@ -543,7 +638,7 @@ export function createOpsConsole(options = {}) {
           action: 'probe_revoke',
           target: targetId,
           actor: 'web',
-          ip: clientIp,
+          ip: auditIp(clientIp),
           requestId,
           ok: revoked.ok,
           output: revoked.ok ? 'revoked' : revoked.error,
@@ -558,14 +653,37 @@ export function createOpsConsole(options = {}) {
         sendJson(res, 200, {
           ...snapshot,
           runningJobs: actions.getRunningJobs(),
-        });
+        }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/firewall') {
+        const force = url.searchParams.get('refresh') === '1';
+        const firewall = await hub.collectFirewall(force);
+        sendJson(res, 200, { ok: true, firewall }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/incidents') {
+        const limit = Number(url.searchParams.get('limit') || 60);
+        const openOnly = url.searchParams.get('openOnly') === '1' || url.searchParams.get('openOnly') === 'true';
+        const items = config.demo && demoProvider
+          ? demoProvider.getIncidents()
+          : store.listIncidents({ limit, openOnly });
+        sendJson(res, 200, {
+          ok: true,
+          storage: await store.getStats(),
+          items: openOnly
+            ? items.filter((item) => !item.resolvedAt).slice(0, Math.max(1, Math.min(200, limit)))
+            : items.slice(0, Math.max(1, Math.min(200, limit))),
+        }, {}, req);
         return;
       }
 
       if (method === 'GET' && pathname === '/api/memory') {
         const force = url.searchParams.get('refresh') === '1';
         const memory = await hub.collectMemory(force);
-        sendJson(res, 200, { ok: true, ...memory });
+        sendJson(res, 200, { ok: true, ...memory }, {}, req);
         return;
       }
 
@@ -574,7 +692,7 @@ export function createOpsConsole(options = {}) {
         const q = url.searchParams.get('q') || '';
         const limit = Number(url.searchParams.get('limit') || 10);
         const result = await hub.searchMemory(provider, q, limit);
-        sendJson(res, 200, result);
+        sendJson(res, 200, result, {}, req);
         return;
       }
 
@@ -585,30 +703,31 @@ export function createOpsConsole(options = {}) {
           if (data.provider) provider = String(data.provider);
         }
         const result = await hub.runMemoryDoctor(provider);
-        sendJson(res, 200, result);
+        sendJson(res, 200, result, {}, req);
         return;
       }
 
       if (method === 'GET' && pathname === '/api/remotes') {
         const force = url.searchParams.get('refresh') === '1';
         const nodes = await hub.collectRemotes(force);
-        sendJson(res, 200, { ok: true, nodes });
+        sendJson(res, 200, { ok: true, nodes }, {}, req);
         return;
       }
 
       if (method === 'GET' && pathname === '/api/logs/sources') {
-        sendJson(res, 200, { ok: true, ...logs.listSources() });
+        sendJson(res, 200, { ok: true, ...logs.listSources() }, {}, req);
         return;
       }
 
       if (method === 'GET' && pathname === '/api/logs') {
         const queryParams = normalizeLogQuery(url.searchParams);
         const result = await logs.query(queryParams);
-        sendJson(res, result.ok ? 200 : 400, result);
+        sendJson(res, result.ok ? 200 : 400, result, {}, req);
         return;
       }
 
       if (method === 'GET' && pathname === '/api/logs/stream') {
+        req.socket?.setTimeout?.(0);
         const queryParams = normalizeLogQuery(url.searchParams);
         logs.openStream(req, res, queryParams);
         return;
@@ -639,7 +758,14 @@ export function createOpsConsole(options = {}) {
       if (method === 'GET' && pathname === '/api/audit') {
         const limit = Number(url.searchParams.get('limit') || 80);
         const items = await logger.readAudit(limit);
-        sendJson(res, 200, { ok: true, items });
+        sendJson(res, 200, { ok: true, items }, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/actions/confirm-token') {
+        const { data } = await readBody(req);
+        const issued = actions.issueConfirmToken(String(data.unit || data.id || ''), String(data.action || ''));
+        sendJson(res, 200, { ok: true, ...issued }, {}, req);
         return;
       }
 
@@ -649,8 +775,9 @@ export function createOpsConsole(options = {}) {
           actor: 'web',
           ip: clientIp,
           requestId,
+          confirmToken: String(data.confirmToken || ''),
         });
-        sendJson(res, result.ok ? 200 : 500, result);
+        sendJson(res, result.ok ? 200 : 500, result, {}, req);
         return;
       }
 
@@ -702,7 +829,11 @@ export function createOpsConsole(options = {}) {
         error: err.message,
       });
       if (!res.headersSent) {
-        sendJson(res, statusCode, { ok: false, error: err.message || 'Internal server error' });
+        sendJson(res, statusCode, {
+          ok: false,
+          error: err.message || 'Internal server error',
+          ...(err.requiresConfirm ? { requiresConfirm: true } : {}),
+        }, {}, req);
       } else if (!res.writableEnded) {
         res.end();
       }
@@ -723,9 +854,12 @@ export function createOpsConsole(options = {}) {
     const hosts = config.console.hosts;
     const port = config.console.port;
     try {
+      await store.init();
+      await store.hydrateTimeSeries(timeseries, { limitPerSeries: config.fleet?.historyPoints || 60 });
       for (const host of hosts) {
         const srv = http.createServer(handleRequest);
-        srv.requestTimeout = 0;
+        srv.requestTimeout = 30_000;
+        srv.maxRequestsPerSocket = 200;
         srv.headersTimeout = 15_000;
         srv.keepAliveTimeout = 65_000;
         await new Promise((resolve, reject) => {
@@ -741,11 +875,13 @@ export function createOpsConsole(options = {}) {
         addresses.push({ host, port: actualPort, url: `http://${host}:${actualPort}` });
       }
       started = true;
+      hub.warmUp();
       logger.info('server_started', {
         version: APP_VERSION,
         demo: config.demo,
         readOnly: config.console.readOnly,
         authEnabled: Boolean(config.auth.webKey),
+        storageDriver: store.driver,
         urls: addresses.map((a) => a.url),
       });
       return { addresses };
@@ -757,6 +893,7 @@ export function createOpsConsole(options = {}) {
 
   async function stop() {
     logs.closeAllStreams();
+    await probeRegistry.flush();
     const closing = servers.splice(0, servers.length).map(
       (srv) =>
         new Promise((resolve) => {
@@ -771,6 +908,7 @@ export function createOpsConsole(options = {}) {
     await Promise.all(closing);
     addresses.length = 0;
     started = false;
+    await store.close();
     logger.info('server_stopped');
     await logger.flush();
   }
@@ -779,6 +917,7 @@ export function createOpsConsole(options = {}) {
     config,
     logger,
     cache,
+    store,
     timeseries,
     probeRegistry,
     hub,

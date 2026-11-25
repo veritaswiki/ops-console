@@ -1,6 +1,6 @@
 {
   "name": "@ops-console/probe",
-  "version": "2.1.0",
+  "version": "0.3.0",
   "type": "module",
   "description": "Lightweight, zero-dependency, push-only telemetry probe for Ops Console.",
   "license": "MIT",

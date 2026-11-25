@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PACKAGE_ROOT = path.resolve(__dirname, '..');
 
-let pkgVersion = '2.0.0';
+let pkgVersion = '0.3.0';
 try {
   const pkg = JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf8'));
   if (pkg.version) pkgVersion = pkg.version;
@@ -31,7 +31,47 @@ const DEFAULT_AGENT_MATCHERS = [
 
 const VALID_SCOPES = new Set(['user', 'system']);
 const VALID_RISKS = new Set(['standard', 'critical']);
+const VALID_SVC_ACTIONS = new Set(['start', 'stop', 'restart', 'reload']);
+const VALID_STORAGE_DRIVERS = new Set(['auto', 'sqlite', 'jsonl', 'memory']);
 const UNIT_RE = /^[A-Za-z0-9@._:-]{1,128}$/;
+
+function readSecretFileStrict(filePath, fieldName) {
+  const expanded = filePath.startsWith('~/')
+    ? path.join(os.homedir(), filePath.slice(2))
+    : path.resolve(filePath);
+  const stat = fs.statSync(expanded);
+  if (!stat.isFile()) {
+    throw new Error(`Secret path for ${fieldName} is not a regular file: ${expanded}`);
+  }
+  if (process.platform !== 'win32' && (stat.mode & 0o077) !== 0) {
+    const octal = (stat.mode & 0o777).toString(8).padStart(3, '0');
+    throw new Error(`Secret file for ${fieldName} has unsafe permissions (${octal}); run chmod 600 ${expanded}`);
+  }
+  return fs.readFileSync(expanded, 'utf8').trim();
+}
+
+export function resolveSecretRef(rawValue, { env = process.env, warnings = null, fieldName = 'secret', fromConfig = false } = {}) {
+  const str = String(rawValue ?? '').trim();
+  if (!str) return '';
+  if (str.startsWith('env://')) {
+    const varName = str.slice('env://'.length).trim();
+    if (!/^[A-Z0-9_]+$/i.test(varName)) {
+      throw new Error(`Invalid env:// secret reference for ${fieldName}: ${str}`);
+    }
+    return String(env[varName] || '').trim();
+  }
+  if (str.startsWith('file://')) {
+    const filePath = str.slice('file://'.length).trim();
+    if (!filePath) {
+      throw new Error(`Empty file:// secret reference for ${fieldName}`);
+    }
+    return readSecretFileStrict(filePath, fieldName);
+  }
+  if (fromConfig && Array.isArray(warnings)) {
+    warnings.push(`Literal secret configured in ${fieldName}; prefer env:// or file:// (0600) indirection.`);
+  }
+  return str;
+}
 
 export function parseCliArgs(argv = process.argv.slice(2)) {
   const out = {
@@ -148,6 +188,14 @@ export function validateConfig(raw) {
         if (svc.risk && !VALID_RISKS.has(svc.risk)) {
           errors.push(`Invalid risk for ${svc.id}: ${svc.risk}`);
         }
+        if (svc.allowedActions !== undefined && svc.allowedActions !== null) {
+          if (!Array.isArray(svc.allowedActions) || svc.allowedActions.some((a) => !VALID_SVC_ACTIONS.has(a))) {
+            errors.push(`Invalid allowedActions for ${svc.id}`);
+          }
+        }
+        if (svc.dependsOn !== undefined && !Array.isArray(svc.dependsOn)) {
+          errors.push(`Invalid dependsOn for ${svc.id}: must be an array`);
+        }
       }
     }
   }
@@ -176,6 +224,9 @@ export function validateConfig(raw) {
   if (raw.fleet?.meshLinks !== undefined && !Array.isArray(raw.fleet.meshLinks)) {
     errors.push('fleet.meshLinks must be an array');
   }
+  if (raw.storage?.driver !== undefined && !VALID_STORAGE_DRIVERS.has(raw.storage.driver)) {
+    errors.push(`Invalid storage.driver: ${raw.storage.driver}`);
+  }
 
   return { valid: errors.length === 0, errors };
 }
@@ -198,13 +249,32 @@ export function loadConfig(options = {}) {
 
   const portOverride = cli.port ?? (env.OPS_CONSOLE_PORT ? Number(env.OPS_CONSOLE_PORT) : null);
   const hostsOverride = cli.hosts ?? env.OPS_CONSOLE_HOSTS ?? env.OPS_CONSOLE_HOST ?? null;
-  const webKeyOverride = cli.webKey ?? (env.OPS_CONSOLE_WEB_KEY !== undefined ? env.OPS_CONSOLE_WEB_KEY : null);
+  const warnings = [];
+  let webKeyOverride = null;
+  if (cli.webKey !== null && cli.webKey !== undefined) {
+    warnings.push('Passing --web-key on the CLI leaks the secret to process listings; use OPS_CONSOLE_WEB_KEY_FILE or LoadCredential.');
+    webKeyOverride = resolveSecretRef(cli.webKey, { env, warnings, fieldName: '--web-key' });
+  } else if (env.OPS_CONSOLE_WEB_KEY_FILE) {
+    webKeyOverride = readSecretFileStrict(env.OPS_CONSOLE_WEB_KEY_FILE, 'OPS_CONSOLE_WEB_KEY_FILE');
+  } else if (env.OPS_CONSOLE_WEB_KEY !== undefined) {
+    webKeyOverride = resolveSecretRef(env.OPS_CONSOLE_WEB_KEY, { env, warnings, fieldName: 'OPS_CONSOLE_WEB_KEY' });
+  }
   const readOnlyOverride = cli.readOnly ?? parseBoolEnv(env.OPS_CONSOLE_READ_ONLY);
   const dataDirOverride = env.OPS_CONSOLE_DATA_DIR || null;
+  const resolvedWebKey = webKeyOverride !== null
+    ? webKeyOverride
+    : resolveSecretRef(raw.auth?.webKey ?? '', { env, warnings, fieldName: 'auth.webKey', fromConfig: true });
+  const resolvedMihomoSecret = raw.connectors?.mihomo?.secret
+    ? resolveSecretRef(raw.connectors.mihomo.secret, { env, warnings, fieldName: 'connectors.mihomo.secret', fromConfig: true })
+    : String(env.MIHOMO_API_SECRET || '').trim();
+  const resolvedSyncthingKey = raw.connectors?.syncthing?.apiKey
+    ? resolveSecretRef(raw.connectors.syncthing.apiKey, { env, warnings, fieldName: 'connectors.syncthing.apiKey', fromConfig: true })
+    : String(env.SYNCTHING_API_KEY || '').trim();
 
   const merged = {
     configPath: resolvedPath || null,
     demo: Boolean(demoMode),
+    warnings,
     console: {
       title: raw.console?.title || 'Ops Console',
       subtitle: raw.console?.subtitle || (demoMode ? 'Interactive Demo Mode' : 'Architecture Control Plane'),
@@ -216,7 +286,7 @@ export function loadConfig(options = {}) {
       ),
     },
     auth: {
-      webKey: String(webKeyOverride ?? raw.auth?.webKey ?? '').trim(),
+      webKey: String(resolvedWebKey || '').trim(),
     },
     security: {
       allowedOrigins: Array.isArray(raw.security?.allowedOrigins) ? raw.security.allowedOrigins : [],
@@ -224,6 +294,17 @@ export function loadConfig(options = {}) {
       mutatingRateLimitPerMinute: Math.max(5, Number(raw.security?.mutatingRateLimitPerMinute || 30)),
       maxSseStreams: Math.min(32, Math.max(1, Number(raw.security?.maxSseStreams || 8))),
       trustProxy: Boolean(parseBoolEnv(env.OPS_CONSOLE_TRUST_PROXY) ?? raw.security?.trustProxy ?? false),
+      exposeClientIps: Boolean(raw.security?.exposeClientIps ?? false),
+      requireCriticalConfirm: raw.security?.requireCriticalConfirm !== undefined
+        ? Boolean(raw.security.requireCriticalConfirm)
+        : true,
+    },
+    storage: {
+      driver: String(env.OPS_CONSOLE_STORAGE_DRIVER || raw.storage?.driver || 'auto').toLowerCase(),
+      rawRetentionDays: Math.max(1, Number(raw.storage?.rawRetentionDays || 7)),
+      rollup1mDays: Math.max(1, Number(raw.storage?.rollup1mDays || 30)),
+      rollup5mDays: Math.max(7, Number(raw.storage?.rollup5mDays || 365)),
+      incidentRetentionDays: Math.max(7, Number(raw.storage?.incidentRetentionDays || 90)),
     },
     logging: {
       level: String(env.OPS_CONSOLE_LOG_LEVEL || raw.logging?.level || 'info').toLowerCase(),
@@ -247,6 +328,8 @@ export function loadConfig(options = {}) {
       optional: Boolean(s.optional),
       risk: s.risk === 'critical' ? 'critical' : 'standard',
       riskNote: s.riskNote ? String(s.riskNote) : '',
+      allowedActions: Array.isArray(s.allowedActions) ? s.allowedActions.map(String) : null,
+      dependsOn: Array.isArray(s.dependsOn) ? s.dependsOn.map(String) : [],
     })) : [],
     timers: Array.isArray(raw.timers) ? raw.timers.map((t) => ({
       id: String(t.id),
@@ -290,12 +373,15 @@ export function loadConfig(options = {}) {
       mihomo: {
         enabled: Boolean(raw.connectors?.mihomo?.enabled),
         apiUrl: raw.connectors?.mihomo?.apiUrl || 'http://127.0.0.1:19090',
-        secret: raw.connectors?.mihomo?.secret || env.MIHOMO_API_SECRET || '',
+        secret: resolvedMihomoSecret,
       },
       syncthing: {
         enabled: Boolean(raw.connectors?.syncthing?.enabled),
         apiUrl: raw.connectors?.syncthing?.apiUrl || 'http://127.0.0.1:8384',
-        apiKey: raw.connectors?.syncthing?.apiKey || env.SYNCTHING_API_KEY || '',
+        apiKey: resolvedSyncthingKey,
+      },
+      firewall: {
+        enabled: raw.connectors?.firewall?.enabled !== undefined ? Boolean(raw.connectors.firewall.enabled) : true,
       },
       customHttp: Array.isArray(raw.connectors?.customHttp) ? raw.connectors.customHttp : [],
     },
@@ -331,6 +417,7 @@ export function loadConfig(options = {}) {
         ? Boolean(raw.fleet.requireTailscaleCidr)
         : true,
       historyPoints: Math.min(180, Math.max(15, Number(raw.fleet?.historyPoints || 60))),
+      maxProbes: Math.min(512, Math.max(8, Number(raw.fleet?.maxProbes || 128))),
       declaredNodes: Array.isArray(raw.fleet?.declaredNodes) ? raw.fleet.declaredNodes.map((node) => ({
         id: String(node.id || '').toLowerCase(),
         name: String(node.name || node.id || ''),
@@ -342,6 +429,7 @@ export function loadConfig(options = {}) {
         tailscaleIp: String(node.tailscaleIp || ''),
         lat: Number.isFinite(Number(node.lat)) ? Number(node.lat) : null,
         lon: Number.isFinite(Number(node.lon)) ? Number(node.lon) : null,
+        note: String(node.note || ''),
       })).filter((node) => node.id) : [],
       meshLinks: Array.isArray(raw.fleet?.meshLinks) ? raw.fleet.meshLinks.map((link) => ({
         from: String(link.from || ''),

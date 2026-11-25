@@ -1,10 +1,29 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import zlib from 'node:zlib';
 import { loadConfig } from '../src/config.mjs';
 import { createOpsConsole } from '../src/server.mjs';
+
+function rawHttpGet(url, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(url, { headers }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => {
+        resolve({
+          statusCode: res.statusCode,
+          headers: res.headers,
+          body: Buffer.concat(chunks),
+        });
+      });
+    });
+    req.on('error', reject);
+  });
+}
 
 async function startTestServer(overrides = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ops-console-srv-'));
@@ -38,6 +57,7 @@ test('demo server serves UI, security headers, APIs, actions, export, and live S
     assert.equal(pingRes.status, 200);
     const ping = await pingRes.json();
     assert.equal(ping.ok, true);
+    assert.equal(ping.version, '0.3.0');
     assert.equal(ping.demo, true);
 
     const indexRes = await fetch(`${baseUrl}/`);
@@ -51,13 +71,15 @@ test('demo server serves UI, security headers, APIs, actions, export, and live S
     const traversalRes = await fetch(`${baseUrl}/%2e%2e/package.json`);
     assert.equal(traversalRes.status, 404);
 
-    const [meta, snap, memSearch, doctor, remotes, logsRes] = await Promise.all([
+    const [meta, snap, memSearch, doctor, remotes, logsRes, firewallRes, incidentsRes] = await Promise.all([
       fetch(`${baseUrl}/api/meta`).then((r) => r.json()),
       fetch(`${baseUrl}/api/snapshot`).then((r) => r.json()),
       fetch(`${baseUrl}/api/memory/search?provider=all&q=tailscale`).then((r) => r.json()),
       fetch(`${baseUrl}/api/memory/doctor`).then((r) => r.json()),
       fetch(`${baseUrl}/api/remotes`).then((r) => r.json()),
       fetch(`${baseUrl}/api/logs?source=journald&level=all&lines=50`).then((r) => r.json()),
+      fetch(`${baseUrl}/api/firewall`).then((r) => r.json()),
+      fetch(`${baseUrl}/api/incidents`).then((r) => r.json()),
     ]);
     assert.equal(meta.ok, true);
     assert.ok(Array.isArray(snap.services.items) && snap.services.items.length > 0);
@@ -66,12 +88,46 @@ test('demo server serves UI, security headers, APIs, actions, export, and live S
     assert.equal(remotes.ok, true);
     assert.equal(logsRes.ok, true);
     assert.ok(logsRes.entries.length > 0);
+    assert.equal(firewallRes.ok, true);
+    assert.equal(firewallRes.firewall.enabled, true);
+    assert.equal(firewallRes.firewall.readOnly, true);
+    assert.ok(Array.isArray(firewallRes.firewall.rules) && firewallRes.firewall.rules.length > 0);
+    assert.ok(Array.isArray(firewallRes.firewall.listeners) && firewallRes.firewall.listeners.length > 0);
+    assert.equal(firewallRes.firewall.summary.publicUnfiltered, 0);
+    assert.equal(incidentsRes.ok, true);
+    assert.ok(incidentsRes.storage && typeof incidentsRes.storage.driver === 'string');
+    assert.ok(Array.isArray(incidentsRes.items) && incidentsRes.items.length > 0);
+    assert.ok(incidentsRes.items.every((item) => item.entityKey && item.fromState && item.toState));
+
+    const gzipSnapRes = await rawHttpGet(`${baseUrl}/api/snapshot`, { 'Accept-Encoding': 'gzip' });
+    assert.equal(gzipSnapRes.statusCode, 200);
+    assert.equal(gzipSnapRes.headers['content-encoding'], 'gzip');
+    assert.ok(String(gzipSnapRes.headers.vary || '').toLowerCase().includes('accept-encoding'));
+    const gunzippedSnap = JSON.parse(zlib.gunzipSync(gzipSnapRes.body).toString('utf8'));
+    assert.ok(Array.isArray(gunzippedSnap.services.items) && gunzippedSnap.services.items.length > 0);
+
+    const cssRes = await rawHttpGet(`${baseUrl}/styles.css`, { 'Accept-Encoding': 'gzip' });
+    assert.equal(cssRes.statusCode, 200);
+    assert.equal(cssRes.headers['content-encoding'], 'gzip');
+    assert.ok(typeof cssRes.headers.etag === 'string' && cssRes.headers.etag.length > 0);
+    const gunzippedCss = zlib.gunzipSync(cssRes.body);
+    assert.ok(gunzippedCss.length > cssRes.body.length);
+    assert.ok(gunzippedCss.toString('utf8').includes(':root'));
+
+    const cssNotModified = await rawHttpGet(`${baseUrl}/styles.css`, {
+      'If-None-Match': cssRes.headers.etag,
+      'Accept-Encoding': 'gzip',
+    });
+    assert.equal(cssNotModified.statusCode, 304);
+    assert.equal(cssNotModified.body.length, 0);
 
     const exportRes = await fetch(`${baseUrl}/api/logs/export?source=journald&format=jsonl`);
     assert.equal(exportRes.status, 200);
     assert.ok(exportRes.headers.get('content-disposition').includes('.jsonl'));
 
-    const firstUnit = snap.services.items[0].unit;
+    const criticalSvc = snap.services.items.find((svc) => svc.risk === 'critical') || snap.services.items[0];
+    const firstUnit = criticalSvc.unit;
+    assert.equal(criticalSvc.risk, 'critical');
     const csrfBlocked = await fetch(`${baseUrl}/api/services/control`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Origin: 'https://attacker.example' },
@@ -79,14 +135,46 @@ test('demo server serves UI, security headers, APIs, actions, export, and live S
     });
     assert.equal(csrfBlocked.status, 403);
 
-    const ctrlRes = await fetch(`${baseUrl}/api/services/control`, {
+    const unconfirmedRes = await fetch(`${baseUrl}/api/services/control`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ unit: firstUnit, action: 'restart' }),
     });
+    assert.equal(unconfirmedRes.status, 409);
+    const unconfirmedBody = await unconfirmedRes.json();
+    assert.equal(unconfirmedBody.ok, false);
+    assert.equal(unconfirmedBody.requiresConfirm, true);
+
+    const tokenRes = await fetch(`${baseUrl}/api/actions/confirm-token`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unit: firstUnit, action: 'restart' }),
+    });
+    assert.equal(tokenRes.status, 200);
+    const tokenBody = await tokenRes.json();
+    assert.equal(tokenBody.ok, true);
+    assert.equal(tokenBody.unit, firstUnit);
+    assert.equal(tokenBody.action, 'restart');
+    assert.ok(typeof tokenBody.confirmToken === 'string' && tokenBody.confirmToken.length >= 16);
+
+    const ctrlRes = await fetch(`${baseUrl}/api/services/control`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unit: firstUnit, action: 'restart', confirmToken: tokenBody.confirmToken }),
+    });
     assert.equal(ctrlRes.status, 200);
     const ctrlBody = await ctrlRes.json();
     assert.equal(ctrlBody.ok, true);
+
+    const replayRes = await fetch(`${baseUrl}/api/services/control`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ unit: firstUnit, action: 'restart', confirmToken: tokenBody.confirmToken }),
+    });
+    assert.equal(replayRes.status, 409);
+    const replayBody = await replayRes.json();
+    assert.equal(replayBody.ok, false);
+    assert.equal(replayBody.requiresConfirm, true);
 
     const audit = await fetch(`${baseUrl}/api/audit`).then((r) => r.json());
     assert.equal(audit.ok, true);

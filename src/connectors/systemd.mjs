@@ -1,4 +1,5 @@
 import { httpProbe, runCmd } from '../exec.mjs';
+import { redactCommand } from '../redact.mjs';
 
 export function parseSystemctlShowBlocks(stdout) {
   const map = new Map();
@@ -169,9 +170,7 @@ export async function collectAgentProcesses(config) {
       }
       if (!matched) continue;
 
-      const sanitizedCmd = args
-        .replace(/(--?(?:api[-_]?key|token|secret|password|web[-_]?key)[=\s]+)[^\s]+/gi, '$1[REDACTED]')
-        .slice(0, 140);
+      const sanitizedCmd = redactCommand(args, 140);
 
       counts[matched.category] = (counts[matched.category] || 0) + 1;
       processes.push({

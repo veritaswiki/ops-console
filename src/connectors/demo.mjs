@@ -184,7 +184,10 @@ export function createDemoProvider() {
           { name: 'claude', model: 'claude-sonnet-5-5', detail: 'mcp=hub' },
           { name: 'pi', model: 'gemini-4-neon', detail: 'skills=openviking' },
         ],
-        library: { summaryLines: ['MCP Router: shared (magpie-hub)', 'Skill Store: OpenViking native'] },
+        library: {
+          mcpCount: 4,
+          summaryLines: ['MCP Router: shared (magpie-hub)', 'Skill Store: OpenViking native'],
+        },
       },
       agents: {
         totalProcesses: 14,
@@ -246,7 +249,9 @@ export function createDemoProvider() {
           status: 'healthy',
           latencyMs: 7,
         },
+        firewall: getFirewall(),
       },
+      firewall: getFirewall(),
       health: {
         generated_at: new Date().toISOString(),
         overall: 'green',
@@ -273,6 +278,7 @@ export function createDemoProvider() {
       activeOpsJobs: [],
       timers: state.timers,
       fleet: buildDemoFleet(state),
+      incidents: getIncidents(),
     };
   }
 
@@ -489,7 +495,7 @@ export function createDemoProvider() {
     return {
       localNodeId: 'hub-primary',
       requireTailscaleCidr: true,
-      summary: { total: 5, online: 5, probed: 5, servers: 3, laptops: 1, mobiles: 1 },
+      summary: { total: 5, online: 5, reachable: 5, meshOnly: 0, probed: 5, servers: 3, laptops: 1, mobiles: 1 },
       nodes,
       links,
       fleetHistory: makeDemoHistory(14, 38, 0).map((pt) => ({
@@ -600,5 +606,50 @@ export function createDemoProvider() {
     return { ok: true, unit: t.unit, message: `Demo timer ${action} succeeded for ${t.unit}` };
   }
 
-  return { getSnapshot, getMemory, getRemotes, queryLogs, startDemoLogStream, searchMemory, controlService, controlTimer };
+  return { getSnapshot, getMemory, getRemotes, getFirewall, getIncidents, queryLogs, startDemoLogStream, searchMemory, controlService, controlTimer };
 }
+  function getFirewall() {
+    return {
+      id: 'firewall',
+      name: 'Host Firewall & Port Posture',
+      enabled: true,
+      readOnly: true,
+      backend: 'iptables',
+      protocol: 'Read-only iptables-save -c / ip6tables-save -c + ss -Htlpn',
+      status: 'healthy',
+      policies: { 'filter:INPUT': { table: 'filter', chain: 'INPUT', policy: 'ACCEPT', packets: 48210, bytes: 19420012 } },
+      rules: [
+        { family: 'ipv4', table: 'filter', chain: 'INPUT', inIface: 'lo', proto: 'tcp', dport: '3426,3430,3773', source: '*', target: 'ACCEPT', packets: 18420, bytes: 9240110, comment: 'allow loopback' },
+        { family: 'ipv4', table: 'filter', chain: 'INPUT', inIface: 'tailscale0', proto: 'tcp', dport: '3426,3430,3773', source: '*', target: 'ACCEPT', packets: 6412, bytes: 3812440, comment: 'allow tailnet' },
+        { family: 'ipv4', table: 'filter', chain: 'INPUT', inIface: '*', proto: 'tcp', dport: '3426,3430,3773', source: '*', target: 'DROP', packets: 129, bytes: 7740, comment: 'block public' },
+      ],
+      totalRules: 3,
+      listeners: [
+        { proto: 'tcp', bind: '127.0.0.1', port: 1933, scope: 'loopback', process: 'openviking', pid: 2104, guarded: false, posture: 'loopback' },
+        { proto: 'tcp', bind: '127.0.0.1', port: 3426, scope: 'loopback', process: 'magpie', pid: 1580, guarded: false, posture: 'loopback' },
+        { proto: 'tcp', bind: '100.64.0.10', port: 3430, scope: 'tailnet', process: 'magpie', pid: 1580, guarded: false, posture: 'tailnet' },
+        { proto: 'tcp', bind: '0.0.0.0', port: 3773, scope: 'public-wildcard', process: 'orchestrator', pid: 1421, guarded: true, posture: 'tailnet-guarded' },
+        { proto: 'tcp', bind: '127.0.0.1', port: 4320, scope: 'loopback', process: 'node', pid: process.pid, guarded: false, posture: 'loopback' },
+        { proto: 'tcp', bind: '127.0.0.1', port: 14242, scope: 'loopback', process: 'nmem-server', pid: 1922, guarded: false, posture: 'loopback' },
+      ],
+      summary: {
+        totalListeners: 6,
+        loopback: 4,
+        tailnet: 2,
+        publicUnfiltered: 0,
+        guardedPorts: [3426, 3430, 3773],
+        droppedPackets: 129,
+        ipv4Rules: 3,
+        ipv6Rules: 0,
+      },
+      permissionHint: null,
+    };
+  }
+
+  function getIncidents() {
+    return [
+      { id: 2, ts: new Date(Date.now() - 420_000).toISOString(), entityKey: 'service:mihomo', node: 'Mihomo Proxy', kind: 'service', fromState: 'degraded', toState: 'healthy', detail: 'Upstream latency normalized (42ms)', resolvedAt: new Date(Date.now() - 420_000).toISOString() },
+      { id: 1, ts: new Date(Date.now() - 1_800_000).toISOString(), entityKey: 'node:workstation-mac', node: 'Workstation Laptop', kind: 'node', fromState: 'offline', toState: 'healthy', detail: 'DERP sin probe resumed', resolvedAt: new Date(Date.now() - 1_800_000).toISOString() },
+    ];
+  }
+

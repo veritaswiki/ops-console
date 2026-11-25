@@ -202,6 +202,7 @@ test('ProbeRegistry.buildFleetView adapts real connector snapshot shapes (host/s
     });
     config.fleet.declaredNodes = [
       { id: 'relay-node', name: 'Relay Node', deviceType: 'server', probeMode: 'ssh', region: 'Beijing, CN', tailscaleIp: '100.64.0.11', lat: 39.9, lon: 116.4 },
+      { id: 'edge-eu', name: 'EU Edge', deviceType: 'edge', probeMode: 'external', region: 'Frankfurt, DE', lat: 50.11, lon: 8.68, note: 'External edge pending probe' },
     ];
     const ts = new TimeSeriesStore({ maxPoints: 30, minIntervalMs: 0 });
     const reg = new ProbeRegistry({ config, timeseries: ts });
@@ -223,7 +224,7 @@ test('ProbeRegistry.buildFleetView adapts real connector snapshot shapes (host/s
         tailscale: {
           devices: [
             { name: 'hub-box', ip: '100.64.0.10', os: 'linux', online: true, isSelf: true, relay: 'sha' },
-            { name: 'relay-node', ip: '100.64.0.11', os: 'linux', online: true, isSelf: false, relay: 'pek' },
+            { name: 'relay-node', ip: '100.64.0.11', os: 'linux', online: true, isSelf: false, relay: 'pek', curAddr: '198.51.100.11:41641' },
             { name: 'auto-laptop', ip: '100.64.0.19', os: 'macOS', online: true, isSelf: false, relay: 'sha' },
           ],
         },
@@ -244,10 +245,17 @@ test('ProbeRegistry.buildFleetView adapts real connector snapshot shapes (host/s
 
     const relay = fleet.nodes.find((n) => n.id === 'relay-node');
     assert.equal(relay.status, 'healthy');
+    assert.equal(relay.transport, 'direct');
     assert.equal(relay.memory.usedPct, 25);
     assert.equal(relay.disks[0].usedPct, 30);
     assert.equal(relay.backupDisk, '1.2G:2026-11-25');
     assert.equal(relay.rttMs, 22);
+
+    const edgeEu = fleet.nodes.find((n) => n.id === 'edge-eu');
+    assert.ok(edgeEu);
+    assert.equal(edgeEu.status, 'standby');
+    assert.equal(edgeEu.transport, 'external');
+    assert.equal(edgeEu.note, 'External edge pending probe');
 
     const discovered = fleet.nodes.find((n) => n.id === 'ts-auto-laptop');
     assert.ok(discovered);

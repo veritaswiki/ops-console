@@ -4,13 +4,13 @@
 
 [English](./README.md) | 简体中文
 
-[![Version](https://img.shields.io/badge/version-2.1.0-0f172a?style=flat-square)](./CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-0.3.0-0f172a?style=flat-square)](./CHANGELOG.md)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20%20LTS-16a34a?style=flat-square)](https://nodejs.org/)
 [![Dependencies](https://img.shields.io/badge/runtime%20deps-0-2563eb?style=flat-square)](#核心特性)
 [![License: MIT](https://img.shields.io/badge/license-MIT-475569?style=flat-square)](./LICENSE)
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-111827?style=flat-square)](./.github/workflows/ci.yml)
 
-Ops Console 是一个零外部运行时依赖的 Node.js 控制平面，将服务编排、AI 记忆与上下文遥测、Mesh 组网监测、远端 SSH 节点巡检以及实时结构化日志检索整合进一套轻量的自托管 Web 仪表台。
+Ops Console 是一个零外部运行时依赖的 Node.js 控制平面，将服务编排、AI 记忆与上下文遥测、Mesh 组网监测、远端 SSH 节点巡检、防火墙暴露面、持久化事件历史以及实时结构化日志检索整合进一套轻量的自托管 Web 仪表台。
 
 ---
 
@@ -18,10 +18,11 @@ Ops Console 是一个零外部运行时依赖的 Node.js 控制平面，将服�
 
 ```mermaid
 flowchart LR
-  Browser["Web 仪表台 UI (7 大视图 · 明/暗主题)"]
+  Browser["Web 仪表台 UI (8 大视图 · 交互图谱 · 明/暗主题)"]
   Auth["认证与安全闸门 (Web Key Cookie · CSRF · 限流)"]
   API["HTTP 与 SSE 路由层 (Node.js >= 20 ESM)"]
   Cache["SingleFlight TTL 缓存 (异常兜底陈旧数据)"]
+  Store["遥测存储 (SQLite WAL / JSONL · 汇总 · 事件)"]
   Logs["统一日志引擎 (journalctl JSON · 文件 · 环形缓冲 · SSE)"]
   Audit["结构化审计日志 (audit.jsonl)"]
 
@@ -30,12 +31,14 @@ flowchart LR
     Mem["Nowledge Mem · OpenViking · Symbiote · Rerank/Emb"]
     Gw["Magpie 网关与运行态 Agent"]
     Net["Tailscale · Mihomo · Syncthing"]
+    Fw["防火墙与端口暴露面 (只读)"]
     SSH["远端 SSH 节点 (BatchMode)"]
   end
 
   Browser <--> Auth
   Auth <--> API
   API --> Cache
+  API --> Store
   Cache --> Connectors
   API <--> Logs
   API --> Audit
@@ -56,7 +59,7 @@ npm run demo
 node bin/ops-console.mjs --demo --port 4320
 ```
 
-浏览器打开 `http://127.0.0.1:4320` 即可体验全部 8 个功能视图（含离线全球节点地图与推送探针管理）。
+浏览器打开 `http://127.0.0.1:4320` 即可体验全部 8 个功能视图，包括离线全球节点地图、可交互的架构/记忆/Agent 图谱与推送探针管理。
 
 ---
 
@@ -64,12 +67,16 @@ node bin/ops-console.mjs --demo --port 4320
 
 | 模块 | 能力说明 |
 | --- | --- |
-| **精密仪表台 UI** | 零外部 CDN 的浅色/深色响应式 Web UI，包含 8 个核心视图：**总览与拓扑**、**全球节点与探针**、**服务管理**、**记忆与上下文**、**Agent 与网关**、**网络**、**日志检索**、**运维与审计**。 |
+| **精密仪表台 UI** | 零外部 CDN 的浅色/深色响应式 Web UI，包含 8 个核心视图：**总览与拓扑**、**全球节点与探针**、**服务管理**、**记忆与上下文**、**Agent 与网关**、**网络**、**日志检索**、**运维与审计**。仅渲染当前激活视图；地图与架构图谱使用带 key 的 SVG DOM 差异更新，SSE 日志采用增量追加。 |
+| **交互式架构图谱** | 统一的 4 泳道 SVG 拓扑（`public/graph.js`）：**入口与 Agent → 网关与 Provider → 记忆与上下文 → 网络与基础设施**，由显式 `services[].dependsOn`、端口/进程发现与全球节点链路共同构建。点击节点可查看详情并高亮一跳依赖；记忆与 Agent 迷你图谱复用同一套交互。 |
 | **多端全球舰队与 `ops-probe`** | 内置离线 Natural Earth 1:110m 矢量世界地图与实时 SVG 趋势折线图；提供零依赖只推送探针（Linux `systemd` / macOS `LaunchAgent`）与手机一键签到，不采集 GPS、无反向控制通道。 |
+| **性能与传输优化** | `magpie ls` / `magpie library` 采用 60 秒 TTL 的非阻塞后台刷新，HTTP `/v1/models` 仍在请求路径实时探测；≥ 1 KiB 响应启用 Brotli/Gzip；静态资源使用内存缓存与 `ETag` / `304`；`requestTimeout=30s`；`maxRequestsPerSocket=200`。 |
+| **遥测持久化与事件** | 零依赖存储层（`src/store.mjs`）支持 `auto`/`sqlite`/`jsonl`/`memory` 驱动，保留 7 天原始采样、30 天 1 分钟汇总、365 天 5 分钟汇总，以及 90 天状态迁移事件，通过 `GET /api/incidents` 查询。 |
+| **防火墙与端口暴露面** | 只读解析 `iptables-save -c`、`ip6tables-save -c` 与 `ss -Htlpn` / `ss -Hulpn`，将监听端口归类为回环、Tailnet、LAN 或公网暴露，并通过 `GET /api/firewall` 展示；绝不自动修改防火墙规则。 |
 | **官方协议连接器** | 插件化架构，仅调用各组件官方 HTTP API 与结构化 CLI JSON（`nmem`、`ov`、`magpie`、`tailscale`、`systemctl`、`journalctl`、Mihomo REST、Syncthing REST、Symbiote、Rerank/Embedding、SSH），无硬编码密钥。 |
 | **生产级统一日志系统** | 结构化 `journalctl --output=json` 查询（按单元、级别 `err`/`warn`/`info`/`debug`、时间范围 `15m..7d`、关键词/正则过滤及级别分布直方图）；基于 `realpath` 路径防逃逸的文件日志读取；自日志轮转（`5 MB x 5`）与内存环形缓冲；SSE 实时追踪及一键导出 `jsonl`/`text`。 |
-| **运维操作与审计追踪** | 严格白名单控制服务/定时器启停与重载、高风险服务确认提示、只读模式（`--read-only`）、巡检与备份触发，以及记录操作者、IP、请求 ID、目标、动作、耗时与结果的 `audit.jsonl`。 |
-| **安全与韧性设计** | 全程 `execFile` 无 Shell 注入、Origin/Referer CSRF 校验、滑动窗口限流、CSP 等安全响应头、可选 Web Key 签名 Cookie 认证、SingleFlight 并发合并与异常陈旧缓存兜底、优雅 `SIGTERM`/`SIGINT` 退出。 |
+| **运维操作与审计追踪** | 严格白名单控制服务/定时器启停与重载，逐服务 `allowedActions` 限定动作；高风险服务必须提供服务端一次性 30 秒 `confirmToken`。支持只读模式（`--read-only`）、巡检与备份触发，并以 `audit.jsonl` 记录操作者、IP、请求 ID、目标、动作、耗时与结果。 |
+| **安全与韧性设计** | 全程 `execFile` 无 Shell 注入、Origin/Referer CSRF 校验、滑动窗口限流、CSP 等安全响应头、可选 Web Key 签名 Cookie 认证、日志/导出/SSE/审计统一脱敏、默认掩码客户端 IP、`0600`/`0700` 运行权限，以及优雅 `SIGTERM`/`SIGINT` 退出。 |
 | **零依赖运行时** | 纯 Node.js >= 20 LTS 原生 ESM，零第三方 npm 运行时依赖，易于审计与离线部署。 |
 
 ---
@@ -101,13 +108,16 @@ node bin/ops-console.mjs --check-config --config ./config.local.json
 | `--host <addr>` / `--hosts <a,b>` | `OPS_CONSOLE_HOST` / `OPS_CONSOLE_HOSTS` | `127.0.0.1` | 逗号分隔的多地址绑定（如 `127.0.0.1,100.64.0.10`）。 |
 | `--port <port>` | `OPS_CONSOLE_PORT` | `4320` | 监听端口。 |
 | `--web-key <key>` | `OPS_CONSOLE_WEB_KEY` | 关闭 | 启用访问密钥认证（至少 16 字符），支持签名 Cookie 与 Bearer Token。 |
+| — | `OPS_CONSOLE_WEB_KEY_FILE` | — | 从严格 `0600` 文件读取 Web Key（推荐配合 systemd `LoadCredential`）。 |
 | `--read-only` | `OPS_CONSOLE_READ_ONLY=1` | `false` | 只读模式，禁用所有写操作与控制端点。 |
 | `--demo` | `OPS_CONSOLE_DEMO=1` | `false` | 启用内置沙盒数据与模拟实时 SSE 日志。 |
 | — | `OPS_CONSOLE_DATA_DIR` | `./data` | 覆盖自日志、`audit.jsonl` 与运行数据的存储目录。 |
+| — | `OPS_CONSOLE_STORAGE_DRIVER` | `auto` | 遥测存储驱动：`auto`、`sqlite`、`jsonl` 或 `memory`。 |
 | — | `MIHOMO_API_SECRET` | — | Mihomo REST API 鉴权密钥（可选）。 |
 | — | `SYNCTHING_API_KEY` | — | Syncthing API 密钥（可选）。 |
 | `--check-config` | — | — | 校验配置文件有效性后退出（成功返回 `0`）。 |
-| `--version` | — | — | 输出版本号（`2.1.0`）并退出。 |
+| `--version` | — | — | 输出版本号（`0.3.0`）并退出。 |
+| `--help` | — | — | 显示命令行帮助信息。 |
 
 ### 探针管理子命令
 
@@ -123,7 +133,42 @@ ops-console probe revoke --id edge-tokyo-01
 ```
 
 Linux `systemd`、macOS `LaunchAgent` 与手机端签到说明详见 [`probe/README.md`](./probe/README.md) 与 [`deploy/probe/mobile-checkin.md`](./deploy/probe/mobile-checkin.md)。
-| `--help` | — | — | 显示命令行帮助信息。 |
+
+手动安装探针时，推荐使用 `--token-file -` 配合 heredoc，避免一次性令牌出现在 `argv` 或 `ps` 中：
+
+```bash
+sudo ./deploy/probe/install-probe.sh --hub-url https://node.example.ts.net --node-id edge-tokyo-01 --token-file - <<'EOF'
+REPLACE_WITH_ONE_TIME_PROBE_TOKEN
+EOF
+```
+
+---
+
+## 遥测持久化、事件与防火墙暴露面
+
+### 存储与保留策略
+
+`storage.driver` 默认为 `auto`：Node.js 22+ 使用内置 `node:sqlite` 的 WAL 模式保存至 `data/telemetry.sqlite`；Node.js 20 自动回退到 `data/metrics/` 下权限为 `0600` 的按日 JSONL。也可显式指定 `sqlite`、`jsonl` 或 `memory`。
+
+```json
+"storage": {
+  "driver": "auto",
+  "rawRetentionDays": 7,
+  "rollup1mDays": 30,
+  "rollup5mDays": 365,
+  "incidentRetentionDays": 90
+}
+```
+
+存储层保留 7 天原始采样、30 天 1 分钟汇总、365 天 5 分钟汇总与 90 天状态迁移事件。通过 `GET /api/incidents`（支持 `limit`、`openOnly=1`）读取事件及存储驱动统计。
+
+### 防火墙与监听端口
+
+`src/connectors/firewall.mjs` 只读执行 `iptables-save -c`、`ip6tables-save -c`、`ss -Htlpn` 与 `ss -Hulpn`，不会变更任何规则。监听端口会被归类为回环、Tailnet、LAN、通配/公网；若通配端口已有带包计数的 DROP/REJECT 规则保护，则标记为 `tailnet-guarded`。可在网络视图或 `GET /api/firewall` 查看，连接器本身只读。
+
+### 图谱依赖
+
+交互图谱基于显式 `services[].dependsOn` 结合端口、进程与全球节点链路生成 4 泳道拓扑。为每个服务补充 `dependsOn`，即可让图谱与一跳高亮准确反映真实架构。
 
 ---
 
@@ -166,6 +211,14 @@ OPS_CONSOLE_DEMO=1 docker compose up --build
 ./deploy/install.sh --with-systemd
 ```
 
+打印与当前配置精确匹配的最小权限 sudoers 模板（不会写入 `/etc/sudoers.d/`）：
+
+```bash
+./deploy/install.sh --render-sudoers ./config.local.json --user ops-user
+```
+
+请先审阅输出，使用 `visudo -c -f <file>` 校验，再以 `root:root`、`0440` 权限安装。除非显式声明 `allowedActions`，关键系统服务默认不会生成 sudo 规则。
+
 如需手动配置，请参考以下模板：
 
 - [deploy/systemd/ops-console.user.service](./deploy/systemd/ops-console.user.service) — 用户级服务单元（`systemctl --user`）
@@ -198,6 +251,7 @@ tailscale serve --bg --https=8444 http://127.0.0.1:4320
 | **Tailscale** | `tailscale status --json`、`tailscale serve status --json` | Mesh 节点在线态、Tailnet IP、Serve 暴露规则 |
 | **Mihomo (Clash Meta)** | `GET /version`、`/connections`、`/proxies`（通过环境变量读取密钥） | 核心版本、活跃连接数、代理策略组状态 |
 | **Syncthing** | `GET /rest/noauth/health` | 文件同步守护进程健康检查 |
+| **主机防火墙与端口** | `iptables-save -c`、`ip6tables-save -c`、`ss -Htlpn`、`ss -Hulpn`（只读） | IPv4/IPv6 策略与规则、监听端口、回环/Tailnet/LAN/公网暴露面 |
 | **远端 SSH 节点** | `ssh -o BatchMode=yes` 与可配置 `StrictHostKeyChecking`（60 秒缓存） | 远端负载、内存、磁盘及备份新鲜度 |
 | **通用 HTTP 探测** | 按服务配置发起 `GET <healthUrl>` | HTTP 状态码与响应延迟 |
 
@@ -212,6 +266,8 @@ tailscale serve --bg --https=8444 http://127.0.0.1:4320
 | `GET /api/fleet`（`GET /api/nodes`） | 只读 | 获取融合本地中心、推送探针、SSH 远端主机与 Tailscale 设备的全网节点视图。 |
 | `GET /api/nodes/:id` | 只读 | 获取单节点完整遥测与有界时序历史曲线数据。 |
 | `GET /api/probes` | 只读 | 列出已签发探针的元数据与权限范围（不含明文令牌）。 |
+| `GET /api/firewall?refresh=1` | 只读 | 读取防火墙策略/规则、监听端口与暴露面汇总。 |
+| `GET /api/incidents` | 只读 | 读取状态迁移事件（`limit`、`openOnly=1`）与存储驱动统计。 |
 | `POST /api/probes/ingest` | 探针令牌 | 只推送遥测写入接口，采用 `Bearer ops_prb_*` + `X-Ops-Probe-Id` 鉴权，默认限定 Tailnet/回环来源网段。 |
 | `POST /api/probes/checkin` | 会话 / 只读 | 移动端 Web 一键签到（RTT、可选电量与网络制式，零 GPS 权限）。 |
 | `POST /api/probes/enroll` | 变更 | 签发一次性探针令牌与各平台安装命令，`--read-only` 下禁用。 |
@@ -221,7 +277,8 @@ tailscale serve --bg --https=8444 http://127.0.0.1:4320
 | `GET /api/logs/stream` | 只读（SSE） | 实时 `text/event-stream` 日志流，带心跳保活、并发数上限与子进程退出回收。 |
 | `GET /api/logs/export` | 只读 | 导出过滤后的日志（支持 `?format=jsonl` 与 `?format=text`）。 |
 | `GET /api/audit` | 只读 | 读取 `audit.jsonl` 中的最近运维审计记录。 |
-| `POST /api/services/control` | 变更 | 白名单服务控制（`start`/`stop`/`restart`/`reload`），`--read-only` 下禁用。 |
+| `POST /api/actions/confirm-token` | 变更 | 为关键服务动作签发服务端一次性 30 秒 `confirmToken`，`--read-only` 下禁用。 |
+| `POST /api/services/control` | 变更 | 白名单服务控制（`start`/`stop`/`restart`/`reload`）。启用 `security.requireCriticalConfirm` 时，关键服务缺少 `confirmToken` 返回 HTTP `409`；`--read-only` 下禁用。 |
 | `POST /api/timers/control` | 变更 | 白名单定时器控制（`start`/`stop`/`enable`/`disable`），`--read-only` 下禁用。 |
 | `POST /api/ops/health` | 变更 | 触发已配置的健康巡检脚本，`--read-only` 下禁用。 |
 | `POST /api/ops/backup` | 变更 | 触发已配置的备份脚本，`--read-only` 下禁用。 |
@@ -233,10 +290,15 @@ tailscale serve --bg --https=8444 http://127.0.0.1:4320
 ## 安全与加固概要
 
 - **零 Shell 注入**：所有外部命令统一经 `execFile` / `spawn(..., { shell: false })` 以参数数组形式执行。
-- **严格白名单**：仅配置文件显式声明的服务、定时器、日志文件与运维脚本允许被查询或操作。
+- **严格白名单**：仅配置文件显式声明的服务、定时器、日志文件、运维脚本及逐服务 `allowedActions` 允许被查询或操作。
+- **关键操作确认**：`risk: "critical"` 服务必须通过 `POST /api/actions/confirm-token` 获取服务端一次性 30 秒 `confirmToken`；缺失或过期返回 HTTP `409`。
 - **路径防穿越**：文件日志读取先执行 `fs.realpath` 解析符号链接并校验路径前缀，仅以尾部块读取。
 - **CSRF 与限流防护**：所有 `POST` 变更请求校验 `Origin`/`Referer` 并受每 IP 滑动窗口限流保护。
 - **只读观测模式**：通过 `--read-only` 或 `OPS_CONSOLE_READ_ONLY=1` 一键关闭全部变更入口。
+- **最小权限部署**：`--render-sudoers` 仅打印配置所需的服务、定时器与防火墙读取命令级 sudo 规则，不写入 `/etc/sudoers.d/`。
+- **密钥间接引用**：连接器密钥与 Web Key 可使用 `env://VAR` 或权限严格为 `0600` 的 `file:///path`。`OPS_CONSOLE_WEB_KEY_FILE` 与 systemd `LoadCredential` 可避免密钥出现在 `argv` 与 `ps`。
+- **统一脱敏与 IP 掩码**：`src/redact.mjs` 对日志、导出、SSE、审计与 `ps` 命令行统一清理令牌与密钥；运行目录为 `0700`、文件为 `0600`，systemd 单元设置 `UMask=0077`。`security.exposeClientIps: false` 默认在审计与 `/api/probes` 中掩码客户端及探针 IP。
+- **只读防火墙检查**：防火墙暴露面仅通过只读命令采集，Ops Console 绝不新增、删除或清空规则。
 - **零外链 CSP 与单向推送边界**：严格 `default-src 'self'` 策略与离线地图资产；远端探针仅具备单向遥测写入权限，默认限制 Tailnet/回环来源网段，彻底消除反向控制攻击面。
 
 完整威胁模型与部署加固清单请查阅 [SECURITY.md](./SECURITY.md)。
@@ -252,9 +314,15 @@ npm start       # 启动控制平面
 npm run demo    # 启动沙盒演示模式
 ```
 
+每个克隆执行一次以下命令启用仓库钩子；提交前会运行 12 条 PII/密钥规则扫描与 SemVer 版本一致性检查：
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## 相关文档与社区
 
-- [架构说明（ARCHITECTURE.md）](./ARCHITECTURE.md) — 模块划分、连接器契约、SSE 日志流水线与威胁模型
+- [架构说明（ARCHITECTURE.md）](./ARCHITECTURE.md) — 模块划分、连接器契约、遥测存储、防火墙暴露面、交互图谱、SSE 日志流水线与威胁模型
 - [贡献指南（CONTRIBUTING.md）](./CONTRIBUTING.md) — 运行测试、新增官方连接器与 PR 规范
 - [安全策略（SECURITY.md）](./SECURITY.md) — 漏洞披露流程与生产加固清单
 - [行为准则（CODE_OF_CONDUCT.md）](./CODE_OF_CONDUCT.md) — 社区协作约定

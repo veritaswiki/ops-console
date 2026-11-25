@@ -2,7 +2,7 @@ FROM node:22-alpine
 
 LABEL org.opencontainers.image.title="Ops Console" \
       org.opencontainers.image.description="Self-Hostable Architecture, Service, Memory & Log Control Plane" \
-      org.opencontainers.image.version="2.0.0" \
+      org.opencontainers.image.version="0.3.0" \
       org.opencontainers.image.licenses="MIT"
 
 WORKDIR /app
@@ -15,6 +15,7 @@ COPY package.json ops-console.config.example.json ./
 COPY bin ./bin
 COPY src ./src
 COPY public ./public
+COPY probe ./probe
 
 RUN chown -R ops:ops /app
 

@@ -157,7 +157,7 @@ function layoutNodes(nodes, scale) {
 function estimateTextWidth(text, fontSize) {
   let units = 0;
   for (const ch of String(text || "")) {
-    units += ch.charCodeAt(0) > 255 ? 1.02 : 0.62;
+    units += ch.charCodeAt(0) > 255 ? 1.18 : 0.72;
   }
   return units * fontSize;
 }
@@ -197,6 +197,7 @@ function placeNodeLabels(placed, { selectedNodeId, vb, scale, fontSize, subFontS
     const topBaseline = isTwoLine ? -(gy + lineH * 0.95) : -gy;
     const botBaseline = gy + fontSize * 0.85;
     const midBaseline = isTwoLine ? -fontSize * 0.1 : fontSize * 0.35;
+    const rightEdge = vb.x + vb.w - 14 * scale;
     return [
       // Near ring (8 directions)
       { anchor: "start", lx: x + gx, ly: y + midBaseline, rx1: x + gx, ry1: y + midBaseline - fontSize * 0.9, rx2: x + gx + w, ry2: y + midBaseline - fontSize * 0.9 + h, leader: false },
@@ -214,16 +215,25 @@ function placeNodeLabels(placed, { selectedNodeId, vb, scale, fontSize, subFontS
       { anchor: "end", lx: x - outerX, ly: y + outerY + fontSize * 0.5, rx1: x - outerX - w, ry1: y + outerY - fontSize * 0.4, rx2: x - outerX, ry2: y + outerY - fontSize * 0.4 + h, leader: true },
       { anchor: "middle", lx: x, ly: y - outerY * 1.45, rx1: x - w / 2, ry1: y - outerY * 1.45 - fontSize * 0.9, rx2: x + w / 2, ry2: y - outerY * 1.45 - fontSize * 0.9 + h, leader: true },
       { anchor: "middle", lx: x, ly: y + outerY * 1.65, rx1: x - w / 2, ry1: y + outerY * 1.65 - fontSize * 0.9, rx2: x + w / 2, ry2: y + outerY * 1.65 - fontSize * 0.9 + h, leader: true },
+      // Viewport-clamped right-edge candidates (prevents coastal nodes from clipping at eastern border)
+      ...(x + outerX + w > rightEdge ? [
+        { anchor: "end", lx: rightEdge, ly: y + midBaseline, rx1: rightEdge - w, ry1: y + midBaseline - fontSize * 0.9, rx2: rightEdge, ry2: y + midBaseline - fontSize * 0.9 + h, leader: true },
+        { anchor: "end", lx: rightEdge, ly: y - outerY * 1.15, rx1: rightEdge - w, ry1: y - outerY * 1.15 - fontSize * 0.9, rx2: rightEdge, ry2: y - outerY * 1.15 - fontSize * 0.9 + h, leader: true },
+        { anchor: "end", lx: rightEdge, ly: y + outerY * 1.25, rx1: rightEdge - w, ry1: y + outerY * 1.25 - fontSize * 0.9, rx2: rightEdge, ry2: y + outerY * 1.25 - fontSize * 0.9 + h, leader: true },
+        { anchor: "end", lx: rightEdge, ly: y - outerY * 2.1, rx1: rightEdge - w, ry1: y - outerY * 2.1 - fontSize * 0.9, rx2: rightEdge, ry2: y - outerY * 2.1 - fontSize * 0.9 + h, leader: true },
+        { anchor: "end", lx: rightEdge, ly: y + outerY * 2.2, rx1: rightEdge - w, ry1: y + outerY * 2.2 - fontSize * 0.9, rx2: rightEdge, ry2: y + outerY * 2.2 - fontSize * 0.9 + h, leader: true },
+      ] : []),
     ];
   };
 
   const evaluate = (cand) => {
     const rect = { x1: cand.rx1 - pad, y1: cand.ry1 - pad, x2: cand.rx2 + pad, y2: cand.ry2 + pad };
+    const edgeMargin = 8 * scale;
     let penalty = cand.leader ? 18 : 0;
-    if (rect.x1 < vb.x + 2) penalty += (vb.x + 2 - rect.x1) * 40;
-    if (rect.x2 > vb.x + vb.w - 2) penalty += (rect.x2 - (vb.x + vb.w - 2)) * 40;
-    if (rect.y1 < vb.y + 2) penalty += (vb.y + 2 - rect.y1) * 40;
-    if (rect.y2 > vb.y + vb.h - 2) penalty += (rect.y2 - (vb.y + vb.h - 2)) * 40;
+    if (rect.x1 < vb.x + edgeMargin) penalty += 50000 + (vb.x + edgeMargin - rect.x1) * 500;
+    if (rect.x2 > vb.x + vb.w - edgeMargin) penalty += 50000 + (rect.x2 - (vb.x + vb.w - edgeMargin)) * 500;
+    if (rect.y1 < vb.y + edgeMargin) penalty += 50000 + (vb.y + edgeMargin - rect.y1) * 500;
+    if (rect.y2 > vb.y + vb.h - edgeMargin) penalty += 50000 + (rect.y2 - (vb.y + vb.h - edgeMargin)) * 500;
     let overlap = 0;
     for (const occ of occupied) {
       overlap += rectOverlapArea(rect, occ);
@@ -255,7 +265,7 @@ function placeNodeLabels(placed, { selectedNodeId, vb, scale, fontSize, subFontS
     if (best.overlap > 0 && !isSelected && metricHint) {
       for (const cand of makeCandidates(x, y, w1, h1, lineGap, false)) {
         const ev = evaluate(cand);
-        if (ev.overlap < best.overlap || (ev.overlap === best.overlap && ev.score < best.score)) {
+        if (ev.score < best.score) {
           best = { ...cand, ...ev, showSub: false, shortName, metricHint };
         }
       }
@@ -304,7 +314,7 @@ function renderMarkerGlyph(deviceType, scale) {
   `;
 }
 
-export function renderWorldMapSvg({ nodes = [], links = [], selectedNodeId = "", viewBox = REGION_PRESETS.world }) {
+function buildDynamicLayersMarkup({ nodes = [], links = [], selectedNodeId = "", viewBox = REGION_PRESETS.world }) {
   const vb = clampViewBox(viewBox);
   const scale = Math.max(0.18, Math.min(1.05, vb.w / MAP_WIDTH));
   const placed = layoutNodes(nodes, scale);
@@ -331,12 +341,12 @@ export function renderWorldMapSvg({ nodes = [], links = [], selectedNodeId = "",
     ].filter(Boolean).join(" ");
     const strokeW = (isHighlight ? 2.1 : 1.35) * scale;
     const dash = kind === "relay" ? `${(4.5 * scale).toFixed(1)} ${(3.2 * scale).toFixed(1)}`
-      : (kind === "checkin" || kind === "ssh" || kind === "backup" ? `${(2.4 * scale).toFixed(1)} ${(3.0 * scale).toFixed(1)}` : "");
+      : (kind === "checkin" || kind === "ssh" || kind === "backup" || kind === "external" ? `${(2.4 * scale).toFixed(1)} ${(3.0 * scale).toFixed(1)}` : "");
     const dAttr = `M${a.x.toFixed(1)} ${a.y.toFixed(1)} Q${mx.toFixed(1)} ${my.toFixed(1)} ${b.x.toFixed(1)} ${b.y.toFixed(1)}`;
 
     let rttTag = "";
     const rttNum = link.rttMs == null || link.rttMs === "" ? NaN : Number(link.rttMs);
-    if (isHighlight && Number.isFinite(rttNum) && rttNum > 0 && dist > 36 * scale) {
+    if (isHighlight && Number.isFinite(rttNum) && rttNum > 0 && dist > 72 * scale) {
       const lx = (0.25 * a.x + 0.5 * mx + 0.25 * b.x).toFixed(1);
       const ly = (0.25 * a.y + 0.5 * my + 0.25 * b.y - 4 * scale).toFixed(1);
       rttTag = `<text x="${lx}" y="${ly}" class="wm-arc-label" font-size="${(12.2 * scale).toFixed(1)}" text-anchor="middle">${esc(Math.round(rttNum))}ms</text>`;
@@ -362,7 +372,7 @@ export function renderWorldMapSvg({ nodes = [], links = [], selectedNodeId = "",
     return `<line x1="${item.x.toFixed(1)}" y1="${item.y.toFixed(1)}" x2="${tx.toFixed(1)}" y2="${ty.toFixed(1)}" class="wm-leader" stroke-width="${(0.85 * scale).toFixed(2)}" />`;
   }).join("");
 
-  const nodeSvg = placed.map((item, idx) => {
+  const nodeItems = placed.map((item, idx) => {
     const { node, x, y } = item;
     const lp = labelPlacements[idx];
     const tone = nodeTone(node.status);
@@ -371,22 +381,38 @@ export function renderWorldMapSvg({ nodes = [], links = [], selectedNodeId = "",
     const relX = (lp.lx - x).toFixed(1);
     const relY = (lp.ly - y).toFixed(1);
     const relSubY = (lp.ly - y + lp.lineGap).toFixed(1);
-    return `
-      <g class="wm-node wm-tone-${tone}${isSelected ? " is-selected" : ""}"
-         transform="translate(${x.toFixed(1)}, ${y.toFixed(1)})"
-         data-node-id="${esc(node.id)}"
-         role="button"
-         tabindex="0"
-         aria-label="${esc(titleText)}">
+    const inner = `
         <title>${esc(titleText)}</title>
         <circle cx="0" cy="0" r="${(15 * scale).toFixed(2)}" class="wm-hit-area" />
         ${isSelected ? `<circle cx="0" cy="0" r="${(12.2 * scale).toFixed(2)}" class="wm-select-ring" stroke-width="${(1.6 * scale).toFixed(2)}" />` : ""}
         ${renderMarkerGlyph(node.deviceType, scale)}
         ${lp.hideLabel ? "" : `<text x="${relX}" y="${relY}" text-anchor="${lp.anchor}" font-size="${fontSize.toFixed(1)}" class="wm-label">${esc(lp.shortName)}</text>`}
         ${!lp.hideLabel && lp.showSub && lp.metricHint ? `<text x="${relX}" y="${relSubY}" text-anchor="${lp.anchor}" font-size="${subFontSize.toFixed(1)}" class="wm-sublabel">${esc(lp.metricHint)}</text>` : ""}
-      </g>
     `;
-  }).join("");
+    return {
+      id: node.id,
+      cls: `wm-node wm-tone-${tone}${isSelected ? " is-selected" : ""}`,
+      transform: `translate(${x.toFixed(1)}, ${y.toFixed(1)})`,
+      ariaLabel: titleText,
+      inner,
+    };
+  });
+
+  return { vb, arcSvg, leaderSvg: `${leaderSvg}${labelLeaderSvg}`, nodeItems };
+}
+
+export function renderWorldMapSvg({ nodes = [], links = [], selectedNodeId = "", viewBox = REGION_PRESETS.world }) {
+  const { vb, arcSvg, leaderSvg, nodeItems } = buildDynamicLayersMarkup({ nodes, links, selectedNodeId, viewBox });
+  const nodeSvg = nodeItems.map((n) => `
+      <g class="${n.cls}"
+         transform="${n.transform}"
+         data-node-id="${esc(n.id)}"
+         role="button"
+         tabindex="0"
+         aria-label="${esc(n.ariaLabel)}">
+        ${n.inner}
+      </g>
+    `).join("");
 
   return `
     <svg class="wm-svg" viewBox="${vb.x} ${vb.y} ${vb.w} ${vb.h}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="全球多设备节点分布与链路拓扑地图">
@@ -394,7 +420,7 @@ export function renderWorldMapSvg({ nodes = [], links = [], selectedNodeId = "",
       <g class="wm-graticule-layer">${GRATICULE_SVG}</g>
       <g class="wm-land-layer">${LAND_SVG}</g>
       <g class="wm-arc-layer">${arcSvg}</g>
-      <g class="wm-leader-layer">${leaderSvg}${labelLeaderSvg}</g>
+      <g class="wm-leader-layer">${leaderSvg}</g>
       <g class="wm-node-layer">${nodeSvg}</g>
     </svg>
   `;
@@ -465,15 +491,93 @@ export function createWorldMapController(container, { onSelectNode } = {}) {
   let viewBox = { ...REGION_PRESETS.world };
   let lastData = { nodes: [], links: [], selectedNodeId: "" };
   let dragging = null;
+  let svgEl = null;
+  let arcLayer = null;
+  let leaderLayer = null;
+  let nodeLayer = null;
+  let lastArcSvg = null;
+  let lastLeaderSvg = null;
+  const nodeDomMap = new Map();
+
+  function ensureBaseMounted() {
+    if (!container || svgEl) return;
+    container.innerHTML = `
+      <svg class="wm-svg" viewBox="${viewBox.x} ${viewBox.y} ${viewBox.w} ${viewBox.h}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="全球多设备节点分布与链路拓扑地图">
+        <rect x="0" y="0" width="${MAP_WIDTH}" height="${MAP_HEIGHT}" class="wm-ocean" />
+        <g class="wm-graticule-layer">${GRATICULE_SVG}</g>
+        <g class="wm-land-layer">${LAND_SVG}</g>
+        <g class="wm-arc-layer"></g>
+        <g class="wm-leader-layer"></g>
+        <g class="wm-node-layer"></g>
+      </svg>
+    `;
+    svgEl = container.querySelector("svg.wm-svg");
+    arcLayer = svgEl?.querySelector(".wm-arc-layer");
+    leaderLayer = svgEl?.querySelector(".wm-leader-layer");
+    nodeLayer = svgEl?.querySelector(".wm-node-layer");
+  }
 
   function render() {
     if (!container) return;
-    container.innerHTML = renderWorldMapSvg({
+    ensureBaseMounted();
+    if (!svgEl || !arcLayer || !leaderLayer || !nodeLayer) return;
+    const { vb, arcSvg, leaderSvg, nodeItems } = buildDynamicLayersMarkup({
       nodes: lastData.nodes,
       links: lastData.links,
       selectedNodeId: lastData.selectedNodeId,
       viewBox,
     });
+
+    const vbStr = `${vb.x} ${vb.y} ${vb.w} ${vb.h}`;
+    if (svgEl.getAttribute("viewBox") !== vbStr) {
+      svgEl.setAttribute("viewBox", vbStr);
+    }
+    if (arcSvg !== lastArcSvg) {
+      arcLayer.innerHTML = arcSvg;
+      lastArcSvg = arcSvg;
+    }
+    if (leaderSvg !== lastLeaderSvg) {
+      leaderLayer.innerHTML = leaderSvg;
+      lastLeaderSvg = leaderSvg;
+    }
+
+    const seenIds = new Set();
+    const SVG_NS = "http://www.w3.org/2000/svg";
+    for (const item of nodeItems) {
+      seenIds.add(item.id);
+      let entry = nodeDomMap.get(item.id);
+      if (!entry) {
+        const g = document.createElementNS(SVG_NS, "g");
+        g.setAttribute("data-node-id", item.id);
+        g.setAttribute("role", "button");
+        g.setAttribute("tabindex", "0");
+        nodeLayer.appendChild(g);
+        entry = { g, cls: "", transform: "", ariaLabel: "", inner: "" };
+        nodeDomMap.set(item.id, entry);
+      }
+      if (entry.cls !== item.cls) {
+        entry.g.setAttribute("class", item.cls);
+        entry.cls = item.cls;
+      }
+      if (entry.transform !== item.transform) {
+        entry.g.setAttribute("transform", item.transform);
+        entry.transform = item.transform;
+      }
+      if (entry.ariaLabel !== item.ariaLabel) {
+        entry.g.setAttribute("aria-label", item.ariaLabel);
+        entry.ariaLabel = item.ariaLabel;
+      }
+      if (entry.inner !== item.inner) {
+        entry.g.innerHTML = item.inner;
+        entry.inner = item.inner;
+      }
+    }
+    for (const [id, entry] of nodeDomMap.entries()) {
+      if (!seenIds.has(id)) {
+        entry.g.remove();
+        nodeDomMap.delete(id);
+      }
+    }
   }
 
   function setData({ nodes = [], links = [], selectedNodeId = "" }, { autoFit = false } = {}) {

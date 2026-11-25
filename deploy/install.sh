@@ -13,20 +13,25 @@ SYSTEMD_UNIT_FILE="${SYSTEMD_USER_DIR}/ops-console.service"
 IN_PLACE=0
 WITH_SYSTEMD=0
 UNINSTALL=0
+RENDER_SUDOERS=0
+SUDOERS_USER="${USER:-ops-console}"
+SUDOERS_CONFIG=""
 
 usage() {
   cat <<'EOF'
-Ops Console Installer (v2.0.0)
+Ops Console Installer (v0.3.0)
 
 Usage:
   ./deploy/install.sh [options]
 
 Options:
-  --prefix <dir>   Install directory (default: ~/.local/share/ops-console)
-  --in-place       Run directly from this repository checkout instead of copying files
-  --with-systemd   Install, reload, and enable the systemd user service
-  --uninstall      Stop/disable the user service and remove the installed copy
-  -h, --help       Show this help message
+  --prefix <dir>          Install directory (default: ~/.local/share/ops-console)
+  --in-place              Run directly from this repository checkout instead of copying files
+  --with-systemd          Install, reload, and enable the systemd user service
+  --render-sudoers [cfg]  Print least-privilege /etc/sudoers.d/ops-console drop-in for config and exit
+  --user <name>           Target OS username for --render-sudoers (default: current user)
+  --uninstall             Stop/disable the user service and remove the installed copy
+  -h, --help              Show this help message
 EOF
 }
 
@@ -45,6 +50,20 @@ while [[ $# -gt 0 ]]; do
       WITH_SYSTEMD=1
       shift
       ;;
+    --render-sudoers)
+      RENDER_SUDOERS=1
+      if [[ $# -ge 2 && "$2" != --* ]]; then
+        SUDOERS_CONFIG="$2"
+        shift 2
+      else
+        shift
+      fi
+      ;;
+    --user)
+      [[ $# -ge 2 ]] || { echo "Error: --user requires a username" >&2; exit 1; }
+      SUDOERS_USER="$2"
+      shift 2
+      ;;
     --uninstall)
       UNINSTALL=1
       shift
@@ -60,6 +79,48 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "${RENDER_SUDOERS}" -eq 1 ]]; then
+  CFG_TARGET="${SUDOERS_CONFIG:-${CONFIG_FILE}}"
+  [[ -f "${CFG_TARGET}" ]] || { echo "Error: config file not found: ${CFG_TARGET}" >&2; exit 1; }
+  command -v node >/dev/null 2>&1 || { echo "Error: node is required to parse ${CFG_TARGET}" >&2; exit 1; }
+  node -e '
+    const fs = require("node:fs");
+    const user = process.argv[1];
+    const cfg = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+    const unitRe = /^[A-Za-z0-9_.@-]+\.(service|timer)$/;
+    const cmds = [];
+    const services = Array.isArray(cfg.services) ? cfg.services : [];
+    for (const svc of services) {
+      if (svc.scope !== "system" || !unitRe.test(String(svc.unit || ""))) continue;
+      if (svc.risk === "critical" && !Array.isArray(svc.allowedActions)) continue;
+      const actions = Array.isArray(svc.allowedActions) ? svc.allowedActions : ["start", "stop", "restart", "reload"];
+      for (const act of actions) {
+        if (["start", "stop", "restart", "reload"].includes(act)) {
+          cmds.push(`/bin/systemctl ${act} ${svc.unit}`);
+        }
+      }
+    }
+    const timers = Array.isArray(cfg.timers) ? cfg.timers : [];
+    for (const t of timers) {
+      if (t.scope !== "system" || !unitRe.test(String(t.unit || ""))) continue;
+      for (const act of ["start", "stop", "enable --now", "disable --now"]) {
+        cmds.push(`/bin/systemctl ${act} ${t.unit}`);
+      }
+    }
+    if (cfg.connectors?.firewall?.enabled) {
+      cmds.push("/usr/sbin/iptables-save -c", "/usr/sbin/ip6tables-save -c", "/usr/sbin/nft -j list ruleset");
+    }
+    console.log("# /etc/sudoers.d/ops-console (install with: visudo -c -f <file>, chmod 0440 root:root)");
+    console.log("# Critical system services are excluded by default unless explicit allowedActions are set.");
+    if (cmds.length === 0) {
+      console.log("# No non-critical system units or privileged firewall readers configured.");
+      process.exit(0);
+    }
+    console.log(`${user} ALL=(root) NOPASSWD: ${cmds.join(", \\\n  ")}`);
+  ' "${SUDOERS_USER}" "${CFG_TARGET}"
+  exit 0
+fi
 
 if [[ "${UNINSTALL}" -eq 1 ]]; then
   echo "Uninstalling Ops Console..."
@@ -101,7 +162,7 @@ if [[ "${IN_PLACE}" -eq 1 ]]; then
 else
   TARGET_DIR="${INSTALL_DIR}"
   mkdir -p "${TARGET_DIR}" "${TARGET_DIR}/data"
-  for item in package.json ops-console.config.example.json bin src public; do
+  for item in package.json ops-console.config.example.json bin src public probe; do
     if [[ -e "${SOURCE_DIR}/${item}" ]]; then
       rm -rf "${TARGET_DIR:?}/${item}"
       cp -R "${SOURCE_DIR}/${item}" "${TARGET_DIR}/${item}"
@@ -131,7 +192,8 @@ if [[ ! -f "${ENV_FILE}" ]]; then
 # Ops Console optional environment overrides (chmod 600)
 # OPS_CONSOLE_HOSTS=127.0.0.1,100.64.0.10
 # OPS_CONSOLE_PORT=4320
-# OPS_CONSOLE_WEB_KEY=replace-with-at-least-16-char-random-secret
+# Recommended: point OPS_CONSOLE_WEB_KEY_FILE to a 0600 file containing the web key
+# OPS_CONSOLE_WEB_KEY_FILE=%h/.config/ops-console/webkey
 # OPS_CONSOLE_READ_ONLY=0
 # MIHOMO_API_SECRET=
 # SYNCTHING_API_KEY=
@@ -177,6 +239,7 @@ Environment=OPS_CONSOLE_CONFIG=${CONFIG_FILE}
 Environment=OPS_CONSOLE_DATA_DIR=${DATA_DIR}
 EnvironmentFile=-${ENV_FILE}
 ExecStart=${NODE_BIN} ${TARGET_DIR}/bin/ops-console.mjs
+UMask=0077
 Restart=always
 RestartSec=2
 MemoryMax=512M

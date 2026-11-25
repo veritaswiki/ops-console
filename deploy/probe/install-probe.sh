@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ops Console Probe Installer (v2.1.0)
+# Ops Console Probe Installer (v0.3.0)
 # Transparent, auditable installer for Linux (systemd) and macOS (LaunchAgent).
 # Guarantee: This script NEVER modifies firewall rules, SSH configuration, or Tailscale settings.
 set -euo pipefail
@@ -12,13 +12,14 @@ UNINSTALL=0
 HUB_URL=""
 NODE_ID=""
 TOKEN=""
+TOKEN_FILE=""
 DEVICE_TYPE=""
 INTERVAL_SEC="30"
 SOURCE_FILE="${DEFAULT_SOURCE}"
 
 usage() {
   cat <<'EOF'
-Ops Console Probe Installer (v2.1.0)
+Ops Console Probe Installer (v0.3.0)
 
 Installs the zero-dependency, push-only telemetry probe as an unprivileged service:
   - Linux: systemd service running as system user "ops-probe"
@@ -35,7 +36,8 @@ Usage:
 Options:
   --hub-url <url>       Ops Console hub base URL (e.g. https://hub.example.ts.net)
   --node-id <id>        Unique node identifier (default: current hostname)
-  --token <token>       Per-node scoped Bearer token (or pass via OPS_PROBE_TOKEN)
+  --token-file <path>   Read per-node token from a 0600 file or "-" for stdin (recommended)
+  --token <token>       Per-node scoped Bearer token (or pass via OPS_PROBE_TOKEN env)
   --device-type <type>  hub | server | edge | laptop | mobile | auto
   --interval <sec>      Push interval in seconds (5-3600, default: 30)
   --source <file>       Local path to ops-probe.mjs (default: ../../probe/ops-probe.mjs)
@@ -101,6 +103,11 @@ while [[ $# -gt 0 ]]; do
       TOKEN="$2"
       shift 2
       ;;
+    --token-file)
+      [[ $# -ge 2 ]] || die "--token-file requires a path or -"
+      TOKEN_FILE="$2"
+      shift 2
+      ;;
     --device-type)
       [[ $# -ge 2 ]] || die "--device-type requires a value"
       DEVICE_TYPE="$2"
@@ -125,6 +132,16 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ -n "${TOKEN_FILE}" ]]; then
+  if [[ "${TOKEN_FILE}" == "-" || "${TOKEN_FILE}" == "/dev/stdin" ]]; then
+    TOKEN="$(tr -d '\r\n' </dev/stdin)"
+  elif [[ -r "${TOKEN_FILE}" ]]; then
+    TOKEN="$(tr -d '\r\n' <"${TOKEN_FILE}")"
+  else
+    die "Cannot read --token-file: ${TOKEN_FILE}"
+  fi
+fi
 
 if [[ -z "${TOKEN}" && -n "${OPS_PROBE_TOKEN:-}" ]]; then
   TOKEN="${OPS_PROBE_TOKEN}"

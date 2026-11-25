@@ -1,6 +1,6 @@
 # `@ops-console/probe`
 
-Lightweight, zero-dependency, push-only telemetry probe for **Ops Console** (`v2.1.0`).
+Lightweight, zero-dependency, push-only telemetry probe for **Ops Console** (`v0.3.0`).
 
 Designed to be auditable in minutes: a single ES module (`ops-probe.mjs`) using only Node.js `>= 20` built-in APIs.
 
@@ -11,6 +11,7 @@ Designed to be auditable in minutes: a single ES module (`ops-probe.mjs`) using 
 - **Zero Runtime Dependencies**: Uses only Node.js built-ins (`node:fs`, `node:os`, `node:path`, `node:child_process` with `execFile` exclusively — never `exec` or `sh -c`, `node:net`, and global `fetch`).
 - **Non-Root by Default**: Runs as an unprivileged, sandboxed `ops-probe` system user on Linux (`systemd`) and as an unprivileged user LaunchAgent on macOS.
 - **Per-Node Scoped Tokens**: Authenticates with `Authorization: Bearer <token>` and `X-Ops-Probe-Id: <nodeId>`. Revoking one node's token never affects other nodes. The probe warns on `stderr` if its config file is readable by group or others (`mode & 0o077 !== 0`).
+- **Token Delivery Without `ps` Exposure**: Install with `--token-file -` and a heredoc so the one-time token arrives over stdin and never appears in `argv` or process listings. A `0600` file path is also accepted.
 - **Audit Before Sending**: Run `ops-probe --dry-run --once` to inspect the exact JSON payload printed to `stdout` without making any network connection.
 - **Privacy-First Collection**: Only checks services explicitly listed in `watchServices`. Agent detection reports aggregate category counts only and never emits process arguments, PIDs, usernames, or environment variables.
 - **Zero Third-Party Telemetry**: Never phones home to any external service.
@@ -53,7 +54,7 @@ node ./ops-probe.mjs --config ./config.json
 | — | `OPS_PROBE_TOKEN` | Override per-node Bearer token |
 | `--once` | — | Collect and send one snapshot, then exit |
 | `--dry-run` | — | Collect and print JSON payload to `stdout` without sending |
-| `--version` | — | Print probe version (`2.1.0`) |
+| `--version` | — | Print probe version (`0.3.0`) |
 | `-h, --help` | — | Show CLI help |
 
 Precedence: CLI flags > environment variables > config file > built-in defaults.
@@ -69,13 +70,17 @@ Use the auditable installer (never modifies firewall, SSH, or Tailscale settings
 ../deploy/probe/install-probe.sh --dry-run \
   --hub-url https://hub.example.ts.net \
   --node-id edge-node-01 \
-  --token REPLACE_WITH_PER_NODE_TOKEN
+  --token-file - <<'EOF'
+REPLACE_WITH_ONE_TIME_PROBE_TOKEN
+EOF
 
 # Install hardened systemd service as unprivileged user ops-probe
 sudo ../deploy/probe/install-probe.sh \
   --hub-url https://hub.example.ts.net \
   --node-id edge-node-01 \
-  --token REPLACE_WITH_PER_NODE_TOKEN
+  --token-file - <<'EOF'
+REPLACE_WITH_ONE_TIME_PROBE_TOKEN
+EOF
 ```
 
 Reference unit template: [`../deploy/probe/ops-probe.service`](../deploy/probe/ops-probe.service).
@@ -89,7 +94,9 @@ Install as an unprivileged user agent (do not run with `sudo`):
   --hub-url https://hub.example.ts.net \
   --node-id macbook-pro-01 \
   --device-type laptop \
-  --token REPLACE_WITH_PER_NODE_TOKEN
+  --token-file - <<'EOF'
+REPLACE_WITH_ONE_TIME_PROBE_TOKEN
+EOF
 ```
 
 Reference LaunchAgent template: [`../deploy/probe/com.ops-console.probe.plist`](../deploy/probe/com.ops-console.probe.plist). Logs write to `~/Library/Logs/ops-probe.log`.
@@ -105,7 +112,7 @@ Phones do not need a persistent background daemon. See [`../deploy/probe/mobile-
   - `Content-Type: application/json`
   - `Authorization: Bearer <token>`
   - `X-Ops-Probe-Id: <nodeId>`
-  - `User-Agent: ops-probe/2.1.0`
+  - `User-Agent: ops-probe/0.3.0`
 - **Payload fields**: `schemaVersion`, `probeVersion`, `nodeId`, `sentAt`, `deviceType`, `platform`, `arch`, `hostname`, `kernel`, `uptimeSec`, `cpu`, `memory`, `disks`, `network`, `battery`, `tailscale`, `services`, `agents`, `hubRttMs`.
 
 ## License

@@ -19,9 +19,12 @@ WorkingDirectory=/opt/ops-console
 Environment=NODE_ENV=production
 Environment=OPS_CONSOLE_CONFIG=/etc/ops-console/config.json
 Environment=OPS_CONSOLE_DATA_DIR=/var/lib/ops-console
-# Optional secrets/overrides (chmod 600): OPS_CONSOLE_WEB_KEY, OPS_CONSOLE_HOSTS, OPS_CONSOLE_READ_ONLY
+# Recommended: use systemd LoadCredential + OPS_CONSOLE_WEB_KEY_FILE=%d/webkey instead of plain env vars.
+# LoadCredential=webkey:/etc/ops-console/webkey
+# Environment=OPS_CONSOLE_WEB_KEY_FILE=%d/webkey
 EnvironmentFile=-/etc/ops-console/env
 ExecStart=/usr/bin/env node /opt/ops-console/bin/ops-console.mjs
+UMask=0077
 
 Restart=always
 RestartSec=2

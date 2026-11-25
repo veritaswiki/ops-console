@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+STAGED="$(git diff --cached --name-only)"
+if [[ -n "${STAGED}" ]]; then
+  while IFS= read -r file; do
+    case "${file}" in
+      .env|.env.*|*.pem|*.key|*config.local.json|data/probes.json|data/probes-state.json|data/telemetry.sqlite*)
+        echo "[pre-commit] Blocked sensitive file from being staged: ${file}" >&2
+        exit 1
+        ;;
+    esac
+  done <<< "${STAGED}"
+fi
+
+node scripts/check.mjs

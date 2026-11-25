@@ -11,9 +11,11 @@ WorkingDirectory=%h/.local/share/ops-console
 Environment=NODE_ENV=production
 Environment=OPS_CONSOLE_CONFIG=%h/.config/ops-console/config.json
 Environment=OPS_CONSOLE_DATA_DIR=%h/.local/share/ops-console/data
-# Optional secrets/overrides (chmod 600): OPS_CONSOLE_WEB_KEY, OPS_CONSOLE_HOSTS, OPS_CONSOLE_READ_ONLY
+# Recommended: store web key in a 0600 file and point OPS_CONSOLE_WEB_KEY_FILE to it.
+# Optional overrides (chmod 600): OPS_CONSOLE_WEB_KEY_FILE, OPS_CONSOLE_HOSTS, OPS_CONSOLE_READ_ONLY
 EnvironmentFile=-%h/.config/ops-console/env
 ExecStart=/usr/bin/env node %h/.local/share/ops-console/bin/ops-console.mjs
+UMask=0077
 Restart=always
 RestartSec=2
 MemoryMax=512M
