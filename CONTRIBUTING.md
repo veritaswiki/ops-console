@@ -11,7 +11,7 @@ By participating in this project, you agree to abide by our [Code of Conduct](./
 Ops Console has **zero runtime dependencies** and requires only **Node.js >= 20 LTS**:
 
 ```bash
-git clone https://github.com/veritaswiki/ops-console.git
+git clone https://github.com/ops-console/ops-console.git
 cd ops-console
 
 # Verify syntax and configuration checks

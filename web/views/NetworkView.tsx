@@ -2,8 +2,9 @@ import React from 'react';
 import { RefreshCw } from 'lucide-react';
 import type { MetaResponse, RemoteHostStatus, SnapshotResponse } from '../types';
 import { probeRemotes } from '../api';
-import { formatBytes } from '../utils/format';
-import { EmptyState, Panel, StatusIndicator } from '../components/ui';
+import { cn } from '../lib/cn';
+import { formatBytes, formatCompactNumber } from '../utils/format';
+import { Button, EmptyState, Panel, StatusIndicator } from '../components/ui';
 
 export function NetworkView({
   snapshot,
@@ -40,17 +41,17 @@ export function NetworkView({
   const fwSummary = fw?.summary;
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-[22px] font-semibold tracking-[-0.025em] text-[var(--ink)] leading-tight">
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">
             网络、组网与防火墙
           </h1>
-          <p className="mt-1 text-[13.5px] text-[var(--ink-muted)]">
+          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed text-pretty">
             Tailscale Mesh 设备连通性、Mihomo 代理流量、Syncthing 同步与只读端口暴露面审计。
           </p>
         </div>
-        <div className="font-mono text-[12.5px] text-[var(--ink-muted)]">
+        <div className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums truncate max-w-full">
           {ts?.tailnet ? `Tailnet ${ts.tailnet}` : '本地网络视图'}
         </div>
       </div>
@@ -72,12 +73,12 @@ export function NetworkView({
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
-                  <th className="py-2.5 pl-5 pr-3">节点名称</th>
+                  <th className="py-2.5 pl-5 sm:pl-6 pr-3">节点名称</th>
                   <th className="py-2.5 px-3">系统</th>
                   <th className="py-2.5 px-3">Tailscale IP</th>
                   <th className="py-2.5 px-3">状态</th>
                   <th className="py-2.5 px-3">连接路径</th>
-                  <th className="py-2.5 pl-3 pr-5 text-right">流量 (RX / TX)</th>
+                  <th className="py-2.5 pl-3 pr-5 sm:pr-6 text-right">流量 (RX / TX)</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
@@ -91,8 +92,8 @@ export function NetworkView({
                         ? `DERP ${dev.relay}`
                         : '-';
                   return (
-                    <tr key={dev.id || dev.name || idx} className="hover:bg-[var(--surface-hover)] transition-colors">
-                      <td className="py-2.5 pl-5 pr-3 font-medium text-[var(--ink)] whitespace-nowrap">
+                    <tr key={dev.id || dev.name || idx} className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out">
+                      <td className="py-2.5 pl-5 sm:pl-6 pr-3 font-medium text-[var(--ink)] max-w-[200px] truncate">
                         {dev.name || dev.hostName}
                         {dev.isSelf && (
                           <span className="ml-2 font-mono text-[11.5px] text-[var(--accent)]">本机</span>
@@ -101,16 +102,16 @@ export function NetworkView({
                       <td className="py-2.5 px-3 text-[var(--ink-muted)] whitespace-nowrap">
                         {dev.os || '-'}
                       </td>
-                      <td className="py-2.5 px-3 font-mono text-[12.5px] text-[var(--ink-muted)] whitespace-nowrap">
+                      <td className="py-2.5 px-3 font-mono text-[12.5px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
                         {ip}
                       </td>
                       <td className="py-2.5 px-3 whitespace-nowrap">
                         <StatusIndicator status={dev.online ? 'online' : 'offline'} />
                       </td>
-                      <td className="py-2.5 px-3 font-mono text-[12px] text-[var(--ink-muted)] whitespace-nowrap">
+                      <td className="py-2.5 px-3 font-mono text-[12px] text-[var(--ink-muted)] max-w-[220px] truncate" title={pathText}>
                         {pathText}
                       </td>
-                      <td className="py-2.5 pl-3 pr-5 text-right font-mono text-[12px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
+                      <td className="py-2.5 pl-3 pr-5 sm:pr-6 text-right font-mono text-[12px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
                         {dev.rxBytes != null || dev.txBytes != null
                           ? `${formatBytes(dev.rxBytes)} / ${formatBytes(dev.txBytes)}`
                           : '-'}
@@ -124,7 +125,7 @@ export function NetworkView({
         )}
       </Panel>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
         <Panel
           title="Mihomo 代理引擎"
           description={mihomo?.protocol || 'Mihomo REST Controller'}
@@ -135,21 +136,21 @@ export function NetworkView({
           ) : (
             <div className="space-y-4">
               <dl className="grid grid-cols-3 gap-4 pb-4 border-b border-[var(--border-subtle)]">
-                <div>
+                <div className="min-w-0">
                   <dt className="text-[12px] text-[var(--ink-subtle)]">活跃连接</dt>
-                  <dd className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums">
-                    {mihomo.activeConnections ?? 0}
+                  <dd className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums truncate">
+                    {formatCompactNumber(mihomo.activeConnections ?? 0)}
                   </dd>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <dt className="text-[12px] text-[var(--ink-subtle)]">运行模式</dt>
-                  <dd className="mt-1 font-mono text-[14px] font-semibold text-[var(--ink)]">
+                  <dd className="mt-1 font-mono text-[14px] font-semibold text-[var(--ink)] truncate">
                     {mihomo.mode || 'Rule'}
                   </dd>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <dt className="text-[12px] text-[var(--ink-subtle)]">累计下行</dt>
-                  <dd className="mt-1 font-mono text-[14px] font-semibold text-[var(--ink)] tabular-nums">
+                  <dd className="mt-1 font-mono text-[14px] font-semibold text-[var(--ink)] tabular-nums truncate">
                     {formatBytes(mihomo.downloadTotal)}
                   </dd>
                 </div>
@@ -158,8 +159,8 @@ export function NetworkView({
                 <ul className="divide-y divide-[var(--border-subtle)] text-[13px]">
                   {mihomo.proxyGroups.slice(0, 5).map((grp) => (
                     <li key={grp.name} className="py-2 flex items-center justify-between gap-2">
-                      <span className="font-medium text-[var(--ink)]">{grp.name}</span>
-                      <span className="font-mono text-[12.5px] text-[var(--ink-muted)]">
+                      <span className="font-medium text-[var(--ink)] truncate">{grp.name}</span>
+                      <span className="font-mono text-[12.5px] text-[var(--ink-muted)] truncate">
                         {grp.now || '-'}
                       </span>
                     </li>
@@ -174,22 +175,22 @@ export function NetworkView({
           title="Syncthing 与按需 SSH 远程节点"
           description="零常驻代理的按需 SSH 健康采集，与本地文件同步状态。"
           actions={
-            <button
-              type="button"
+            <Button
+              variant="secondary"
+              size="sm"
               onClick={handleProbeRemotes}
               disabled={probing}
-              className="inline-flex items-center gap-1.5 h-8 px-3 rounded-[6px] border border-[var(--border)] bg-[var(--surface)] text-[12.5px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer disabled:opacity-45"
             >
-              <RefreshCw className={`h-3.5 w-3.5 ${probing ? 'animate-spin' : ''}`} />
+              <RefreshCw className={cn('size-4', probing && 'animate-spin')} strokeWidth={1.75} />
               {probing ? '探测中...' : '按需探测远程主机'}
-            </button>
+            </Button>
           }
         >
           <div className="space-y-4">
-            <div className="flex items-center justify-between pb-3 border-b border-[var(--border-subtle)]">
-              <div>
+            <div className="flex items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
+              <div className="min-w-0">
                 <div className="text-[13.5px] font-medium text-[var(--ink)]">Syncthing 文件同步</div>
-                <div className="text-[12.5px] text-[var(--ink-muted)] font-mono">
+                <div className="text-[12.5px] text-[var(--ink-muted)] font-mono tabular-nums truncate">
                   {syncthing?.reachable
                     ? syncthing.folders != null || syncthing.devices != null
                       ? `${syncthing.folders ?? 0} 文件夹 · ${syncthing.devices ?? 0} 对端 · ${syncthing.latencyMs ?? 0}ms`
@@ -205,8 +206,8 @@ export function NetworkView({
                 {remotes.map((r) => (
                   <li key={r.id} className="py-2.5 flex items-center justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="font-medium text-[var(--ink)]">{r.name || r.id}</div>
-                      <div className="font-mono text-[12px] text-[var(--ink-subtle)] truncate">
+                      <div className="font-medium text-[var(--ink)] truncate">{r.name || r.id}</div>
+                      <div className="font-mono text-[12px] text-[var(--ink-subtle)] truncate tabular-nums">
                         {[r.host, r.load ? `负载 ${r.load}` : null, r.memory, r.error]
                           .filter(Boolean)
                           .join(' · ')}
@@ -217,7 +218,7 @@ export function NetworkView({
                 ))}
               </ul>
             ) : (
-              <p className="text-[13px] text-[var(--ink-subtle)]">
+              <p className="text-[13px] text-[var(--ink-subtle)] text-pretty">
                 {configuredRemotes.length > 0
                   ? `已配置 ${configuredRemotes.length} 台远程 SSH 主机，点击右上角按钮执行按需只读探测。`
                   : '未配置按需 SSH 远程主机，可在配置文件 remotes 字段添加。'}
@@ -232,7 +233,7 @@ export function NetworkView({
           title="只读防火墙与套接字暴露面审计"
           description={
             fwSummary
-              ? `总监听 ${fwSummary.totalListeners ?? 0} · 仅回环 ${fwSummary.loopback ?? fwSummary.loopbackListeners ?? 0} · Tailnet ${fwSummary.tailnet ?? fwSummary.tailnetListeners ?? 0} · 公网直露 ${fwSummary.publicUnfiltered ?? 0} · 丢弃 ${fwSummary.droppedPackets ?? 0} 包`
+              ? `总监听 ${fwSummary.totalListeners ?? 0} · 仅回环 ${fwSummary.loopback ?? fwSummary.loopbackListeners ?? 0} · Tailnet ${fwSummary.tailnet ?? fwSummary.tailnetListeners ?? 0} · 公网直露 ${fwSummary.publicUnfiltered ?? 0} · 丢弃 ${formatCompactNumber(fwSummary.droppedPackets ?? 0)} 包`
               : '实时套接字监听与入站包过滤策略审计'
           }
           bodyClassName="p-0"
@@ -250,11 +251,11 @@ export function NetworkView({
               <table className="w-full text-left border-collapse">
                 <thead>
                   <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
-                    <th className="py-2.5 pl-5 pr-3">监听地址</th>
+                    <th className="py-2.5 pl-5 sm:pl-6 pr-3">监听地址</th>
                     <th className="py-2.5 px-3">协议</th>
                     <th className="py-2.5 px-3">进程</th>
                     <th className="py-2.5 px-3">暴露范围</th>
-                    <th className="py-2.5 pl-3 pr-5">策略结论</th>
+                    <th className="py-2.5 pl-3 pr-5 sm:pr-6">策略结论</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
@@ -284,20 +285,20 @@ export function NetworkView({
                               ? '公网未过滤'
                               : rawPosture || '受控';
                     return (
-                      <tr key={`${addr}:${l.port}:${idx}`} className="hover:bg-[var(--surface-hover)] transition-colors">
-                        <td className="py-2.5 pl-5 pr-3 font-mono text-[12.5px] text-[var(--ink)] whitespace-nowrap">
+                      <tr key={`${addr}:${l.port}:${idx}`} className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out">
+                        <td className="py-2.5 pl-5 sm:pl-6 pr-3 font-mono text-[12.5px] text-[var(--ink)] tabular-nums whitespace-nowrap">
                           {addr}:{l.port}
                         </td>
                         <td className="py-2.5 px-3 font-mono text-[12px] text-[var(--ink-muted)] uppercase">
                           {l.proto || 'tcp'}
                         </td>
-                        <td className="py-2.5 px-3 font-mono text-[12.5px] text-[var(--ink-muted)]">
+                        <td className="py-2.5 px-3 font-mono text-[12.5px] text-[var(--ink-muted)] truncate max-w-[160px]">
                           {l.process || '-'}
                         </td>
                         <td className="py-2.5 px-3 text-[var(--ink-muted)] whitespace-nowrap">
                           {scopeLabel}
                         </td>
-                        <td className="py-2.5 pl-3 pr-5 whitespace-nowrap">
+                        <td className="py-2.5 pl-3 pr-5 sm:pr-6 whitespace-nowrap">
                           <StatusIndicator
                             status={isRisk ? 'degraded' : 'healthy'}
                             label={postureLabel}

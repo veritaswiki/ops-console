@@ -119,11 +119,17 @@ export class TelemetryStore {
         from_state TEXT NOT NULL,
         to_state TEXT NOT NULL,
         detail TEXT DEFAULT '',
-        resolved_ts INTEGER
+        resolved_ts INTEGER,
+        note TEXT DEFAULT ''
       );
       CREATE INDEX IF NOT EXISTS idx_incident_ts ON incident(ts DESC);
       CREATE INDEX IF NOT EXISTS idx_incident_open ON incident(entity_key) WHERE resolved_ts IS NULL;
     `);
+    try {
+      this.db.exec("ALTER TABLE incident ADD COLUMN note TEXT DEFAULT ''");
+    } catch {
+      // column already exists
+    }
 
     this.stmts = {
       insertSample: this.db.prepare(`
@@ -170,18 +176,35 @@ export class TelemetryStore {
       resolveOpenIncidents: this.db.prepare(`
         UPDATE incident SET resolved_ts = ? WHERE entity_key = ? AND resolved_ts IS NULL
       `),
+      selectSamplesRange: this.db.prepare(`
+        SELECT ts, cpu, mem, disk, load1, rtt, battery, online_nodes, total_nodes, services_ok_pct
+        FROM sample
+        WHERE series = ? AND ts >= ?
+        ORDER BY ts ASC
+        LIMIT ?
+      `),
+      selectRollupsRange: this.db.prepare(`
+        SELECT bucket AS ts, cpu_sum, cpu_count, cpu_max, mem_sum, mem_count, mem_max, n
+        FROM rollup
+        WHERE series = ? AND step = ? AND bucket >= ?
+        ORDER BY bucket ASC
+        LIMIT ?
+      `),
       selectIncidents: this.db.prepare(`
-        SELECT id, ts, entity_key, node, kind, from_state, to_state, detail, resolved_ts
+        SELECT id, ts, entity_key, node, kind, from_state, to_state, detail, resolved_ts, COALESCE(note, '') AS note
         FROM incident
         ORDER BY ts DESC, id DESC
         LIMIT ?
       `),
       selectOpenIncidents: this.db.prepare(`
-        SELECT id, ts, entity_key, node, kind, from_state, to_state, detail, resolved_ts
+        SELECT id, ts, entity_key, node, kind, from_state, to_state, detail, resolved_ts, COALESCE(note, '') AS note
         FROM incident
         WHERE resolved_ts IS NULL
         ORDER BY ts DESC, id DESC
         LIMIT ?
+      `),
+      updateIncidentNote: this.db.prepare(`
+        UPDATE incident SET note = ? WHERE id = ?
       `),
       countSamples: this.db.prepare('SELECT COUNT(*) AS cnt FROM sample'),
       countOpenIncidents: this.db.prepare('SELECT COUNT(*) AS cnt FROM incident WHERE resolved_ts IS NULL'),
@@ -470,6 +493,7 @@ export class TelemetryStore {
         fromState: row.from_state,
         toState: row.to_state,
         detail: row.detail || '',
+        note: row.note || '',
         resolvedAt: row.resolved_ts ? new Date(Number(row.resolved_ts)).toISOString() : null,
       }));
     }
@@ -478,6 +502,74 @@ export class TelemetryStore {
       ? this.memoryIncidents.filter((item) => !item.resolvedAt)
       : this.memoryIncidents;
     return filtered.slice(-capped).reverse();
+  }
+
+  updateIncidentNote(id, note) {
+    const numId = Number(id);
+    if (!Number.isInteger(numId) || numId <= 0) return null;
+    const cleanNote = String(note || '').trim().slice(0, 600);
+    if (this.driver === 'sqlite' && this.stmts) {
+      const info = this.stmts.updateIncidentNote.run(cleanNote, numId);
+      if (Number(info.changes || 0) === 0) return null;
+      return { id: numId, note: cleanNote };
+    }
+    const found = this.memoryIncidents.find((item) => Number(item.id) === numId);
+    if (!found) return null;
+    found.note = cleanNote;
+    return { id: numId, note: cleanNote };
+  }
+
+  querySeries({ series = 'fleet', range = '24h', limit = 120 } = {}) {
+    const cleanSeries = String(series || 'fleet').trim().slice(0, 64);
+    const rangeMap = {
+      '1h': { ms: 3600_000, source: 'raw', stepSec: 0 },
+      '6h': { ms: 6 * 3600_000, source: 'raw', stepSec: 0 },
+      '24h': { ms: 24 * 3600_000, source: 'rollup', stepSec: 60 },
+      '7d': { ms: 7 * DAY_MS, source: 'rollup', stepSec: 300 },
+      '30d': { ms: 30 * DAY_MS, source: 'rollup', stepSec: 300 },
+      '90d': { ms: 90 * DAY_MS, source: 'rollup', stepSec: 300 },
+    };
+    const spec = rangeMap[range] || rangeMap['24h'];
+    const sinceMs = Date.now() - spec.ms;
+    const capped = Math.min(240, Math.max(12, Number(limit) || 120));
+
+    if (this.driver === 'sqlite' && this.stmts) {
+      if (spec.source === 'rollup') {
+        const rows = this.stmts.selectRollupsRange.all(cleanSeries, spec.stepSec, sinceMs, capped);
+        if (rows.length > 0) {
+          return {
+            series: cleanSeries,
+            range,
+            source: `rollup_${spec.stepSec}s`,
+            points: rows.map((r) => ({
+              ts: Number(r.ts),
+              cpuPct: r.cpu_count > 0 ? Number((r.cpu_sum / r.cpu_count).toFixed(1)) : null,
+              cpuMaxPct: r.cpu_max != null ? Number(r.cpu_max) : null,
+              memPct: r.mem_count > 0 ? Number((r.mem_sum / r.mem_count).toFixed(1)) : null,
+              memMaxPct: r.mem_max != null ? Number(r.mem_max) : null,
+              samples: Number(r.n || 1),
+            })),
+          };
+        }
+      }
+      const rawRows = this.stmts.selectSamplesRange.all(cleanSeries, sinceMs, capped);
+      return {
+        series: cleanSeries,
+        range,
+        source: 'raw',
+        points: rawRows.map((r) => ({
+          ts: Number(r.ts),
+          cpuPct: r.cpu != null ? Number(r.cpu) : null,
+          memPct: r.mem != null ? Number(r.mem) : null,
+          diskPct: r.disk != null ? Number(r.disk) : null,
+          load1: r.load1 != null ? Number(r.load1) : null,
+          rttMs: r.rtt != null ? Number(r.rtt) : null,
+          servicesOkPct: r.services_ok_pct != null ? Number(r.services_ok_pct) : null,
+        })),
+      };
+    }
+
+    return { series: cleanSeries, range, source: this.driver, points: [] };
   }
 
   _maybePrune(nowMs) {

@@ -141,33 +141,33 @@ export function WorldMap({
           options={REGION_OPTIONS}
           ariaLabel="地图区域视角"
         />
-        <div className="inline-flex items-center gap-1">
+        <div className="inline-flex items-center rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] divide-x divide-[var(--border-subtle)] overflow-hidden">
           <button
             type="button"
             onClick={() => handleRegionChange('fit')}
             title="适配活跃节点"
             aria-label="适配活跃节点"
-            className="h-8 w-8 inline-flex items-center justify-center rounded-[6px] border border-[var(--border)] bg-[var(--surface)] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer"
+            className="h-8 w-8 inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] active:scale-[0.95] transition-[color,background-color,transform] duration-150 ease-out cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/45"
           >
-            <Crosshair className="h-3.5 w-3.5" />
+            <Crosshair className="size-4" strokeWidth={1.75} />
           </button>
           <button
             type="button"
             onClick={() => handleZoom(0.75)}
             title="放大"
             aria-label="放大地图"
-            className="h-8 w-8 inline-flex items-center justify-center rounded-[6px] border border-[var(--border)] bg-[var(--surface)] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer"
+            className="h-8 w-8 inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] active:scale-[0.95] transition-[color,background-color,transform] duration-150 ease-out cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/45"
           >
-            <Plus className="h-3.5 w-3.5" />
+            <Plus className="size-4" strokeWidth={1.75} />
           </button>
           <button
             type="button"
             onClick={() => handleZoom(1.33)}
             title="缩小"
             aria-label="缩小地图"
-            className="h-8 w-8 inline-flex items-center justify-center rounded-[6px] border border-[var(--border)] bg-[var(--surface)] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer"
+            className="h-8 w-8 inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] active:scale-[0.95] transition-[color,background-color,transform] duration-150 ease-out cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/45"
           >
-            <Minus className="h-3.5 w-3.5" />
+            <Minus className="size-4" strokeWidth={1.75} />
           </button>
         </div>
       </div>
@@ -178,7 +178,7 @@ export function WorldMap({
         onPointerMove={onPointerMove}
         onPointerUp={stopPan}
         onPointerCancel={stopPan}
-        className={`rounded-[8px] border border-[var(--border)] overflow-hidden bg-[var(--map-ocean)] ${
+        className={`rounded-xl border border-[var(--border-subtle)] overflow-hidden bg-[var(--map-ocean)] ${
           isPanning ? 'cursor-grabbing' : 'cursor-grab'
         }`}
       >

@@ -23,10 +23,11 @@ const DEFAULT_LAYERS = [
 ];
 
 const DEFAULT_AGENT_MATCHERS = [
-  { category: 'orchestrator', label: 'Orchestrator', pattern: '(^|/)t3(\\s|$)|t3-code' },
-  { category: 'gateway', label: 'Model Gateway', pattern: '(^|/)magpie(\\s|$)|magpie-.*bridge' },
-  { category: 'memory', label: 'Memory Engine', pattern: 'nmem-server|openviking|symbiote|rerank|embedding' },
-  { category: 'agent-runtime', label: 'Agent Runtime', pattern: '(^|/)codex(\\s|$)|(^|/)claude(\\s|$)|(^|/)pi(\\s|$)|(^|/)agy(\\s|$)|herdr|dsh' },
+  { category: 'orchestrator', label: 'Orchestrator', pattern: 'agent-orchestrator|langgraph|autogen|crewai' },
+  { category: 'mcp', label: 'MCP Server', pattern: 'mcp-server|modelcontextprotocol|fastmcp' },
+  { category: 'gateway', label: 'Model Gateway', pattern: 'litellm|ollama|vllm|(^|/)magpie(\\s|$)|magpie-.*bridge' },
+  { category: 'memory', label: 'Memory Engine', pattern: 'nmem-server|openviking|qdrant|milvus|rerank|embedding' },
+  { category: 'agent-runtime', label: 'Agent Runtime', pattern: '(^|/)codex(\\s|$)|(^|/)claude(\\s|$)|aider|opencode|goose' },
 ];
 
 const VALID_SCOPES = new Set(['user', 'system']);
@@ -81,6 +82,7 @@ export function parseCliArgs(argv = process.argv.slice(2)) {
     webKey: null,
     readOnly: null,
     demo: null,
+    allowIframe: null,
     checkConfig: false,
     showHelp: false,
     showVersion: false,
@@ -93,6 +95,7 @@ export function parseCliArgs(argv = process.argv.slice(2)) {
     else if (arg === '--check-config') out.checkConfig = true;
     else if (arg === '--read-only') out.readOnly = true;
     else if (arg === '--demo') out.demo = true;
+    else if (arg === '--allow-iframe') out.allowIframe = true;
     else if ((arg === '--config' || arg === '-c') && argv[i + 1]) {
       out.configPath = argv[++i];
     } else if (arg.startsWith('--config=')) {
@@ -294,6 +297,7 @@ export function loadConfig(options = {}) {
       mutatingRateLimitPerMinute: Math.max(5, Number(raw.security?.mutatingRateLimitPerMinute || 30)),
       maxSseStreams: Math.min(32, Math.max(1, Number(raw.security?.maxSseStreams || 8))),
       trustProxy: Boolean(parseBoolEnv(env.OPS_CONSOLE_TRUST_PROXY) ?? raw.security?.trustProxy ?? false),
+      allowIframe: Boolean(cli.allowIframe ?? parseBoolEnv(env.OPS_CONSOLE_ALLOW_IFRAME) ?? raw.security?.allowIframe ?? false),
       exposeClientIps: Boolean(raw.security?.exposeClientIps ?? false),
       requireCriticalConfirm: raw.security?.requireCriticalConfirm !== undefined
         ? Boolean(raw.security.requireCriticalConfirm)
@@ -444,6 +448,12 @@ export function loadConfig(options = {}) {
       healthLatestPath: raw.ops?.healthLatestPath ? path.resolve(String(raw.ops.healthLatestPath)) : '',
       backupLastRunPath: raw.ops?.backupLastRunPath ? path.resolve(String(raw.ops.backupLastRunPath)) : '',
       alertsLogPath: raw.ops?.alertsLogPath ? path.resolve(String(raw.ops.alertsLogPath)) : '',
+    },
+    plugins: {
+      dir: raw.plugins?.dir ? path.resolve(String(raw.plugins.dir)) : path.join(PACKAGE_ROOT, 'plugins'),
+      configs: raw.plugins?.configs && typeof raw.plugins.configs === 'object' && !Array.isArray(raw.plugins.configs)
+        ? raw.plugins.configs
+        : {},
     },
     agentMatchers: Array.isArray(raw.agentMatchers) && raw.agentMatchers.length > 0
       ? raw.agentMatchers

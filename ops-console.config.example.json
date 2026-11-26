@@ -301,9 +301,33 @@
       "targetService": "memory-snapshot.service"
     }
   ],
+  "plugins": {
+    "dir": "./plugins",
+    "configs": {
+      "mcp-server": {
+        "enabled": false,
+        "displayName": "Local MCP Hub",
+        "apiUrl": "http://127.0.0.1:8080/mcp",
+        "authToken": "env://MCP_AUTH_TOKEN"
+      },
+      "agent-runtime": {
+        "enabled": false,
+        "displayName": "Coding Agent Orchestrator",
+        "apiUrl": "http://127.0.0.1:3773",
+        "healthPath": "/health",
+        "authToken": ""
+      },
+      "openai-gateway": {
+        "enabled": false,
+        "displayName": "Local Ollama / LiteLLM",
+        "apiUrl": "http://127.0.0.1:11434",
+        "apiKey": "env://OPENAI_GATEWAY_KEY"
+      }
+    }
+  },
   "connectors": {
     "magpie": {
-      "enabled": true,
+      "enabled": false,
       "apiUrl": "http://127.0.0.1:3426",
       "webUrl": "http://127.0.0.1:3430",
       "cliBin": "magpie",
@@ -311,21 +335,21 @@
       "addr": "127.0.0.1:3426"
     },
     "nmem": {
-      "enabled": true,
+      "enabled": false,
       "apiUrl": "http://127.0.0.1:14242",
       "cliBin": "nmem"
     },
     "openviking": {
-      "enabled": true,
+      "enabled": false,
       "apiUrl": "http://127.0.0.1:1933",
       "cliBin": "ov"
     },
     "symbiote": {
-      "enabled": true,
+      "enabled": false,
       "apiUrl": "http://127.0.0.1:4318"
     },
     "rerank": {
-      "enabled": true,
+      "enabled": false,
       "apiUrl": "http://127.0.0.1:8893"
     },
     "tailscale": {
@@ -333,12 +357,12 @@
       "cliBin": "tailscale"
     },
     "mihomo": {
-      "enabled": true,
+      "enabled": false,
       "apiUrl": "http://127.0.0.1:19090",
       "secret": ""
     },
     "syncthing": {
-      "enabled": true,
+      "enabled": false,
       "apiUrl": "http://127.0.0.1:8384",
       "apiKey": ""
     },
@@ -465,22 +489,27 @@
     {
       "category": "orchestrator",
       "label": "Orchestrator",
-      "pattern": "(^|/)t3(\\s|$)|t3-code|agent-orchestrator"
+      "pattern": "agent-orchestrator|langgraph|autogen|crewai"
+    },
+    {
+      "category": "mcp",
+      "label": "MCP Server",
+      "pattern": "mcp-server|modelcontextprotocol|fastmcp"
     },
     {
       "category": "gateway",
       "label": "Model Gateway",
-      "pattern": "(^|/)magpie(\\s|$)|magpie-.*bridge"
+      "pattern": "litellm|ollama|vllm|(^|/)magpie(\\s|$)|magpie-.*bridge"
     },
     {
       "category": "memory",
       "label": "Memory Engine",
-      "pattern": "nmem-server|openviking|symbiote|rerank|embedding"
+      "pattern": "nmem-server|openviking|qdrant|milvus|rerank|embedding"
     },
     {
       "category": "agent-runtime",
       "label": "Agent Runtime",
-      "pattern": "(^|/)codex(\\s|$)|(^|/)claude(\\s|$)|(^|/)pi(\\s|$)|herdr"
+      "pattern": "(^|/)codex(\\s|$)|(^|/)claude(\\s|$)|aider|opencode|goose"
     }
   ]
 }

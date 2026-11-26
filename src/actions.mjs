@@ -193,7 +193,7 @@ export class ActionController {
         ok: result.ok,
         durationMs: 28,
         actor: ctx.actor || 'web',
-        ip: ctx.ip || '',
+        ip: this._maskIp(ctx.ip || ''),
         requestId: ctx.requestId || '',
         output: result.message || 'Demo timer updated',
       });
@@ -357,7 +357,7 @@ export class ActionController {
         ok: code === 0,
         durationMs: Date.now() - started,
         actor: ctx.actor || 'web',
-        ip: ctx.ip || '',
+        ip: this._maskIp(ctx.ip || ''),
         requestId: ctx.requestId || '',
         output: `Backup exited with code ${code}`,
       });
@@ -370,7 +370,7 @@ export class ActionController {
       ok: true,
       durationMs: 0,
       actor: ctx.actor || 'web',
-      ip: ctx.ip || '',
+      ip: this._maskIp(ctx.ip || ''),
       requestId: ctx.requestId || '',
       output: `Backup started in background (PID ${child.pid})`,
     });

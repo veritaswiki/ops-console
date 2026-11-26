@@ -343,7 +343,7 @@ install_linux() {
     cat > "${unit_file}" <<EOF
 [Unit]
 Description=Ops Console Probe — Lightweight Push-Only Telemetry Agent
-Documentation=https://github.com/veritaswiki/ops-console
+Documentation=https://github.com/ops-console/ops-console
 After=network-online.target
 Wants=network-online.target
 

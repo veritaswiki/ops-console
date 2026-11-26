@@ -52,7 +52,7 @@ flowchart LR
 无需 systemd 或后端依赖，在 Linux、macOS 或 Windows 上即可启动内置沙盒拓扑与模拟实时 SSE 日志流：
 
 ```bash
-git clone https://github.com/veritaswiki/ops-console.git
+git clone https://github.com/ops-console/ops-console.git
 cd ops-console
 npm run demo
 # 或直接调用 CLI：

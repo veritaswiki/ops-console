@@ -1,14 +1,51 @@
 import React from 'react';
-import { Archive, ShieldCheck } from 'lucide-react';
-import type { AuditEntry, IncidentItem, SnapshotResponse, TimerItem } from '../types';
-import { executeTimerAction, runOpsAction } from '../api';
+import {
+  Archive,
+  Check,
+  CheckCircle2,
+  Copy,
+  Play,
+  ShieldCheck,
+  XCircle,
+} from 'lucide-react';
+import type {
+  AuditEntry,
+  ConfigStudioResponse,
+  IncidentItem,
+  RunbookExecution,
+  RunbooksResponse,
+  SnapshotResponse,
+  TimerItem,
+} from '../types';
+import {
+  copyToClipboard,
+  executeTimerAction,
+  fetchConfigStudio,
+  fetchPrometheusMetrics,
+  fetchRunbooks,
+  runOpsAction,
+  runRunbook,
+  validateConfigStudio,
+} from '../api';
+import { cn, FOCUS_RING } from '../lib/cn';
 import { formatDateTime, statusLabel } from '../utils/format';
 import {
+  Button,
   EmptyState,
+  inputBaseClass,
   Panel,
+  SegmentedFilter,
   StatusIndicator,
   type ConfirmModalState,
 } from '../components/ui';
+
+const OPS_TABS = [
+  { value: 'tasks', label: '巡检与定时任务' },
+  { value: 'runbooks', label: 'Runbook 自愈预案' },
+  { value: 'studio', label: '配置中心与 RBAC' },
+] as const;
+
+type OpsTab = (typeof OPS_TABS)[number]['value'];
 
 export function OpsView({
   snapshot,
@@ -29,10 +66,67 @@ export function OpsView({
   onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
   onConfirm: (modal: ConfirmModalState) => void;
 }) {
+  const [tab, setTab] = React.useState<OpsTab>('tasks');
   const [opsBusy, setOpsBusy] = React.useState<'health-check' | 'backup' | null>(null);
   const [opsOutput, setOpsOutput] = React.useState('');
 
+  // Runbooks state
+  const [runbooksState, setRunbooksState] = React.useState<RunbooksResponse | null>(null);
+  const [runningRbId, setRunningRbId] = React.useState<string | null>(null);
+  const [latestExecution, setLatestExecution] = React.useState<RunbookExecution | null>(null);
+
+  // Config Studio & Prometheus state
+  const [studio, setStudio] = React.useState<ConfigStudioResponse | null>(null);
+  const [configDraft, setConfigDraft] = React.useState('');
+  const [validationResult, setValidationResult] = React.useState<{
+    valid: boolean;
+    errors: string[];
+  } | null>(null);
+  const [validating, setValidating] = React.useState(false);
+  const [promText, setPromText] = React.useState('');
+  const [copiedKey, setCopiedKey] = React.useState('');
+
   const timers: TimerItem[] = snapshot?.services?.timers || snapshot?.timers || [];
+
+  const loadRunbooks = React.useCallback(async () => {
+    try {
+      const res = await fetchRunbooks();
+      setRunbooksState(res);
+    } catch {
+      // Non-blocking
+    }
+  }, []);
+
+  const loadStudio = React.useCallback(async () => {
+    try {
+      const [cfgRes, promRes] = await Promise.all([
+        fetchConfigStudio(),
+        fetchPrometheusMetrics().catch(() => ''),
+      ]);
+      setStudio(cfgRes);
+      setConfigDraft(JSON.stringify(cfgRes.config, null, 2));
+      setPromText(promRes);
+    } catch {
+      // Non-blocking
+    }
+  }, []);
+
+  React.useEffect(() => {
+    if (tab === 'runbooks') {
+      void loadRunbooks();
+    } else if (tab === 'studio') {
+      void loadStudio();
+    }
+  }, [tab, loadRunbooks, loadStudio]);
+
+  const handleCopy = async (key: string, text: string) => {
+    const ok = await copyToClipboard(text);
+    if (ok) {
+      setCopiedKey(key);
+      onToast('已复制到剪贴板', 'ok');
+      window.setTimeout(() => setCopiedKey(''), 1800);
+    }
+  };
 
   const handleRunOps = (action: 'health-check' | 'backup') => {
     if (readOnly) {
@@ -85,213 +179,537 @@ export function OpsView({
     });
   };
 
+  const handleTriggerRunbook = (rbId: string, rbName: string) => {
+    if (readOnly) {
+      onToast('只读模式已禁用 Runbook 执行', 'err');
+      return;
+    }
+    onConfirm({
+      open: true,
+      title: `执行 Runbook：${rbName}`,
+      description: '将按编排顺序依次执行白名单诊断与恢复动作，受每小时自动熔断次数约束，并记录完整审计轨迹。',
+      confirmLabel: '确认执行预案',
+      onConfirm: async () => {
+        setRunningRbId(rbId);
+        try {
+          const res = await runRunbook(rbId);
+          setLatestExecution(res.run);
+          onToast(`Runbook「${rbName}」执行${res.run.ok ? '成功' : '部分异常'}`, res.run.ok ? 'ok' : 'err');
+          await Promise.all([loadRunbooks(), onRefreshOps(), onRefresh()]);
+        } catch (err) {
+          onToast(`Runbook 执行失败：${(err as Error).message}`, 'err');
+        } finally {
+          setRunningRbId(null);
+        }
+      },
+    });
+  };
+
+  const handleValidateConfig = async () => {
+    setValidating(true);
+    try {
+      const res = await validateConfigStudio(configDraft);
+      setValidationResult({ valid: res.valid, errors: res.errors || [] });
+      onToast(res.valid ? '配置 Schema 校验通过' : `发现 ${res.errors.length} 项配置问题`, res.valid ? 'ok' : 'err');
+    } catch (err) {
+      onToast(`校验请求失败：${(err as Error).message}`, 'err');
+    } finally {
+      setValidating(false);
+    }
+  };
+
   const allIncidents = incidents.length > 0 ? incidents : snapshot?.incidents || [];
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-[22px] font-semibold tracking-[-0.025em] text-[var(--ink)] leading-tight">
-            运维、定时任务与审计
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">
+            运维、Runbook 与配置治理
           </h1>
-          <p className="mt-1 text-[13.5px] text-[var(--ink-muted)]">
-            白名单巡检与备份任务、systemd 定时器控制、持久化事件与操作审计轨迹。
+          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed text-pretty">
+            白名单巡检备份、受控自愈预案 (Runbooks)、配置 Schema 校验、RBAC 权限态势与 Prometheus 指标导出。
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            disabled={opsBusy !== null || readOnly}
-            onClick={() => handleRunOps('health-check')}
-            className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-[7px] border border-[var(--border)] bg-[var(--surface)] text-[13px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer disabled:opacity-45"
-          >
-            <ShieldCheck className="h-4 w-4 text-[var(--accent)]" />
-            {opsBusy === 'health-check' ? '巡检中...' : '执行全栈健康巡检'}
-          </button>
-          <button
-            type="button"
-            disabled={opsBusy !== null || readOnly}
-            onClick={() => handleRunOps('backup')}
-            className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-[7px] bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-[13px] font-medium transition-colors cursor-pointer disabled:opacity-45"
-          >
-            <Archive className="h-4 w-4" />
-            {opsBusy === 'backup' ? '备份中...' : '触发配置备份'}
-          </button>
-        </div>
+        <SegmentedFilter
+          value={tab}
+          onChange={setTab}
+          options={OPS_TABS}
+          ariaLabel="运维子视图切换"
+        />
       </div>
 
-      {opsOutput && (
-        <Panel
-          title="运维命令输出"
-          actions={
-            <button
-              type="button"
-              onClick={() => setOpsOutput('')}
-              className="text-[12.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] cursor-pointer"
+      {tab === 'tasks' && (
+        <div className="space-y-6">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <Button
+              variant="secondary"
+              size="md"
+              disabled={opsBusy !== null || readOnly}
+              onClick={() => handleRunOps('health-check')}
             >
-              收起
-            </button>
-          }
-        >
-          <pre className="m-0 rounded-[8px] bg-[var(--terminal-bg)] text-[var(--terminal-ink)] p-4 font-mono text-[12px] overflow-x-auto whitespace-pre-wrap max-h-[260px]">
-            {opsOutput}
-          </pre>
-        </Panel>
+              <ShieldCheck className="size-4 text-[var(--accent)]" strokeWidth={1.75} />
+              {opsBusy === 'health-check' ? '巡检中...' : '执行全栈健康巡检'}
+            </Button>
+            <Button
+              variant="primary"
+              size="md"
+              disabled={opsBusy !== null || readOnly}
+              onClick={() => handleRunOps('backup')}
+            >
+              <Archive className="size-4" strokeWidth={1.75} />
+              {opsBusy === 'backup' ? '备份中...' : '触发配置备份'}
+            </Button>
+          </div>
+
+          {opsOutput && (
+            <Panel
+              title="运维命令输出"
+              actions={
+                <Button variant="ghost" size="sm" onClick={() => setOpsOutput('')}>
+                  收起
+                </Button>
+              }
+            >
+              <pre className="m-0 rounded-xl bg-[var(--terminal-bg)] text-[var(--terminal-ink)] border border-white/[0.08] p-4 font-mono text-[12px] overflow-x-auto whitespace-pre-wrap max-h-[260px]">
+                {opsOutput}
+              </pre>
+            </Panel>
+          )}
+
+          <Panel
+            title="systemd 定时任务"
+            description="自动化备份、索引维护与健康检查计划任务状态。"
+            bodyClassName="p-0"
+          >
+            {timers.length === 0 ? (
+              <EmptyState message="尚未配置受管 systemd 定时任务。" />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
+                      <th className="py-2.5 pl-5 sm:pl-6 pr-3">定时单元</th>
+                      <th className="py-2.5 px-3">状态</th>
+                      <th className="py-2.5 px-3">下次触发</th>
+                      <th className="py-2.5 px-3">上次运行</th>
+                      <th className="py-2.5 pl-3 pr-5 sm:pr-6 text-right">控制</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
+                    {timers.map((t) => (
+                      <tr key={t.unit} className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out">
+                        <td className="py-2.5 pl-5 sm:pl-6 pr-3 max-w-[260px]">
+                          <div className="font-medium text-[var(--ink)] truncate">{t.name || t.unit}</div>
+                          <div className="font-mono text-[12px] text-[var(--ink-subtle)] truncate">{t.unit}</div>
+                        </td>
+                        <td className="py-2.5 px-3 whitespace-nowrap">
+                          <StatusIndicator status={t.status || t.activeState} />
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-[12px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
+                          {t.nextElapse || '-'}
+                        </td>
+                        <td className="py-2.5 px-3 font-mono text-[12px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
+                          {t.lastTrigger || '-'}
+                        </td>
+                        <td className="py-2.5 pl-3 pr-5 sm:pr-6 text-right whitespace-nowrap">
+                          <select
+                            defaultValue=""
+                            disabled={readOnly}
+                            aria-label={`操作定时器 ${t.unit}`}
+                            onChange={(e) => {
+                              const val = e.target.value;
+                              e.target.value = '';
+                              if (val) handleTimerAction(t, val);
+                            }}
+                            className={cn(
+                              'ui-select h-8 pl-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg)] text-[12.5px] text-[var(--ink)] transition-colors duration-150 ease-out hover:border-[var(--border-strong)] focus:border-[var(--accent)] disabled:opacity-45 cursor-pointer',
+                              FOCUS_RING,
+                            )}
+                          >
+                            <option value="" disabled>
+                              操作
+                            </option>
+                            <option value="start">启动</option>
+                            <option value="stop">停止</option>
+                            <option value="enable">启用</option>
+                            <option value="disable">禁用</option>
+                          </select>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Panel>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
+            <Panel
+              title="持久化状态变更事件"
+              description="记录全栈服务与连接器的健康度漂移历史。"
+            >
+              {allIncidents.length === 0 ? (
+                <EmptyState message="暂无持久化状态变更记录。" />
+              ) : (
+                <ul className="divide-y divide-[var(--border-subtle)]">
+                  {allIncidents.slice(0, 12).map((inc, idx) => {
+                    const actor = inc.node || inc.component || inc.target || inc.entityKey || '系统';
+                    const fromS = inc.fromState || inc.fromStatus || inc.from;
+                    const toS = inc.toState || inc.toStatus || inc.to;
+                    const transition = fromS || toS ? `${statusLabel(fromS)} → ${statusLabel(toS)}` : '';
+                    const detail = inc.detail || inc.message || inc.summary || '';
+                    return (
+                      <li
+                        key={inc.id || `${inc.ts}-${idx}`}
+                        className="py-2.5 first:pt-0 last:pb-0 flex items-start justify-between gap-3 text-[13px]"
+                      >
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-baseline gap-1.5 min-w-0">
+                            <span className="font-medium text-[var(--ink)] truncate max-w-[180px]" title={actor}>
+                              {actor}
+                            </span>
+                            {transition && (
+                              <span className="font-mono text-[12px] text-[var(--ink-muted)] whitespace-nowrap">
+                                {transition}
+                              </span>
+                            )}
+                          </div>
+                          {detail && (
+                            <p className="mt-0.5 text-[12px] text-[var(--ink-subtle)] truncate" title={detail}>
+                              {detail}
+                            </p>
+                          )}
+                        </div>
+                        <span className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums shrink-0">
+                          {formatDateTime(inc.ts || inc.timestamp)}
+                        </span>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </Panel>
+
+            <Panel
+              title="不可变操作审计轨迹"
+              description="所有写操作、探针登记与命令触发均留痕可溯。"
+              bodyClassName="p-0"
+            >
+              {audit.length === 0 ? (
+                <EmptyState message="暂无操作审计记录。" />
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left border-collapse">
+                    <thead>
+                      <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
+                        <th className="py-2.5 pl-5 sm:pl-6 pr-3">时间</th>
+                        <th className="py-2.5 px-3">操作与目标</th>
+                        <th className="py-2.5 pl-3 pr-5 sm:pr-6 text-right">结果</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
+                      {audit.slice(0, 15).map((item, idx) => (
+                        <tr key={`${item.ts || idx}-${idx}`} className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out">
+                          <td className="py-2.5 pl-5 sm:pl-6 pr-3 font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap">
+                            {formatDateTime(item.ts || item.timestamp)}
+                          </td>
+                          <td className="py-2.5 px-3 max-w-[240px] truncate">
+                            <span className="font-medium text-[var(--ink)]">{item.action || '-'}</span>
+                            {item.target && (
+                              <span className="ml-1.5 font-mono text-[12px] text-[var(--ink-muted)]">
+                                {item.target}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 pl-3 pr-5 sm:pr-6 text-right whitespace-nowrap">
+                            <StatusIndicator
+                              status={item.ok === false || item.status === 'error' ? 'failed' : 'healthy'}
+                              label={item.ok === false ? '失败' : item.result || '成功'}
+                            />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </Panel>
+          </div>
+        </div>
       )}
 
-      <Panel
-        title="systemd 定时任务"
-        description="自动化备份、索引维护与健康检查计划任务状态。"
-        bodyClassName="p-0"
-      >
-        {timers.length === 0 ? (
-          <EmptyState message="尚未配置受管 systemd 定时任务。" />
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
-              <thead>
-                <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
-                  <th className="py-2.5 pl-5 pr-3">定时单元</th>
-                  <th className="py-2.5 px-3">状态</th>
-                  <th className="py-2.5 px-3">下次触发</th>
-                  <th className="py-2.5 px-3">上次运行</th>
-                  <th className="py-2.5 pl-3 pr-5 text-right">控制</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
-                {timers.map((t) => (
-                  <tr key={t.unit} className="hover:bg-[var(--surface-hover)] transition-colors">
-                    <td className="py-2.5 pl-5 pr-3">
-                      <div className="font-medium text-[var(--ink)]">{t.name || t.unit}</div>
-                      <div className="font-mono text-[12px] text-[var(--ink-subtle)]">{t.unit}</div>
-                    </td>
-                    <td className="py-2.5 px-3">
-                      <StatusIndicator status={t.status || t.activeState} />
-                    </td>
-                    <td className="py-2.5 px-3 font-mono text-[12px] text-[var(--ink-muted)]">
-                      {t.nextElapse || '-'}
-                    </td>
-                    <td className="py-2.5 px-3 font-mono text-[12px] text-[var(--ink-muted)]">
-                      {t.lastTrigger || '-'}
-                    </td>
-                    <td className="py-2.5 pl-3 pr-5 text-right">
-                      <select
-                        defaultValue=""
-                        disabled={readOnly}
-                        aria-label={`操作定时器 ${t.unit}`}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          e.target.value = '';
-                          if (val) handleTimerAction(t, val);
-                        }}
-                        className="h-8 px-2 rounded-[6px] border border-[var(--border)] bg-[var(--bg)] text-[12.5px] text-[var(--ink)] focus:outline-none focus:border-[var(--accent)] disabled:opacity-45 cursor-pointer"
-                      >
-                        <option value="" disabled>
-                          操作...
-                        </option>
-                        <option value="trigger">立即触发</option>
-                        <option value="start">启动</option>
-                        <option value="stop">停止</option>
-                      </select>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Panel>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Panel
-          title="持久化状态变更事件"
-          description="记录全栈服务与连接器的健康度漂移历史。"
-        >
-          {allIncidents.length === 0 ? (
-            <EmptyState message="暂无持久化状态变更记录。" />
-          ) : (
-            <ul className="divide-y divide-[var(--border-subtle)]">
-              {allIncidents.slice(0, 12).map((inc, idx) => {
-                const actor = inc.node || inc.component || inc.target || inc.entityKey || '系统';
-                const fromS = inc.fromState || inc.fromStatus || inc.from;
-                const toS = inc.toState || inc.toStatus || inc.to;
-                const transition = fromS || toS ? `${statusLabel(fromS)} → ${statusLabel(toS)}` : '';
-                const detail = inc.detail || inc.message || inc.summary || '';
-                return (
-                  <li
-                    key={inc.id || `${inc.ts}-${idx}`}
-                    className="py-2.5 first:pt-0 last:pb-0 flex items-start justify-between gap-3 text-[13px]"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex flex-wrap items-baseline gap-1.5">
-                        <span className="font-medium text-[var(--ink)]">{actor}</span>
-                        {transition && (
-                          <span className="font-mono text-[12px] text-[var(--ink-muted)]">
-                            {transition}
-                          </span>
-                        )}
-                      </div>
-                      {detail && (
-                        <p className="mt-0.5 text-[12px] text-[var(--ink-subtle)] truncate" title={detail}>
-                          {detail}
-                        </p>
-                      )}
+      {tab === 'runbooks' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+            {(runbooksState?.runbooks || []).map((rb) => {
+              const quotaUsed = rb.recentRunsLastHour ?? 0;
+              const quotaFull = quotaUsed >= rb.maxAutoRunsPerHour;
+              return (
+                <Panel
+                  key={rb.id}
+                  title={rb.name}
+                  description={rb.description}
+                  className="flex flex-col"
+                  bodyClassName="flex-1 flex flex-col justify-between gap-4"
+                >
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between text-[12px] text-[var(--ink-subtle)] font-mono tabular-nums">
+                      <span>{rb.approvalMode === 'auto-guarded' ? '受限自动保护' : '人工审批触发'}</span>
+                      <span>
+                        1h 配额 {quotaUsed}/{rb.maxAutoRunsPerHour}
+                      </span>
                     </div>
-                    <span className="font-mono text-[12px] text-[var(--ink-subtle)] shrink-0">
-                      {formatDateTime(inc.ts || inc.timestamp)}
+                    <ol className="space-y-1.5 text-[12.5px] text-[var(--ink-muted)] list-decimal pl-4">
+                      {rb.steps.map((s) => (
+                        <li key={s.id}>{s.label}</li>
+                      ))}
+                    </ol>
+                  </div>
+                  <div className="pt-3 border-t border-[var(--border-subtle)] flex items-center justify-between gap-2">
+                    <span className="font-mono text-[11.5px] text-[var(--ink-subtle)]">{rb.id}</span>
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={readOnly || runningRbId !== null || quotaFull}
+                      onClick={() => handleTriggerRunbook(rb.id, rb.name)}
+                      data-testid={`run-runbook-${rb.id}`}
+                    >
+                      <Play className="size-3.5 translate-x-[1px]" strokeWidth={1.75} />
+                      {runningRbId === rb.id ? '执行中...' : quotaFull ? '已达熔断上限' : '执行预案'}
+                    </Button>
+                  </div>
+                </Panel>
+              );
+            })}
+          </div>
+
+          {latestExecution && (
+            <Panel
+              title={`最新执行追踪：${latestExecution.runbookName}`}
+              description={`执行 ID ${latestExecution.id} · 耗时 ${latestExecution.durationMs}ms · 触发人 ${latestExecution.actor}`}
+              actions={
+                <StatusIndicator
+                  status={latestExecution.ok ? 'healthy' : 'failed'}
+                  label={latestExecution.ok ? '全部步骤通过' : '存在失败步骤'}
+                />
+              }
+            >
+              <ul className="divide-y divide-[var(--border-subtle)]" data-testid="runbook-trace">
+                {latestExecution.steps.map((step) => (
+                  <li key={step.id} className="py-2.5 first:pt-0 last:pb-0 flex items-start justify-between gap-3 text-[13px]">
+                    <div className="flex items-start gap-2.5 min-w-0">
+                      {step.ok ? (
+                        <CheckCircle2 className="size-4 text-[var(--ok)] shrink-0 mt-0.5" strokeWidth={1.75} />
+                      ) : (
+                        <XCircle className="size-4 text-[var(--err)] shrink-0 mt-0.5" strokeWidth={1.75} />
+                      )}
+                      <div className="min-w-0">
+                        <div className="font-medium text-[var(--ink)]">{step.label}</div>
+                        <div className="font-mono text-[12px] text-[var(--ink-subtle)]">{step.detail}</div>
+                      </div>
+                    </div>
+                    <span className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums shrink-0">
+                      {step.durationMs}ms
                     </span>
                   </li>
-                );
-              })}
-            </ul>
+                ))}
+              </ul>
+            </Panel>
           )}
-        </Panel>
 
-        <Panel
-          title="不可变操作审计轨迹"
-          description="所有写操作、探针登记与命令触发均留痕可溯。"
-          bodyClassName="p-0"
-        >
-          {audit.length === 0 ? (
-            <EmptyState message="暂无操作审计记录。" />
-          ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
-                    <th className="py-2.5 pl-5 pr-3">时间</th>
-                    <th className="py-2.5 px-3">操作与目标</th>
-                    <th className="py-2.5 pl-3 pr-5 text-right">结果</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
-                  {audit.slice(0, 15).map((item, idx) => (
-                    <tr key={`${item.ts || idx}-${idx}`} className="hover:bg-[var(--surface-hover)] transition-colors">
-                      <td className="py-2.5 pl-5 pr-3 font-mono text-[12px] text-[var(--ink-subtle)] whitespace-nowrap">
-                        {formatDateTime(item.ts || item.timestamp)}
-                      </td>
-                      <td className="py-2.5 px-3">
-                        <span className="font-medium text-[var(--ink)]">{item.action || '-'}</span>
-                        {item.target && (
-                          <span className="ml-1.5 font-mono text-[12px] text-[var(--ink-muted)]">
-                            {item.target}
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-2.5 pl-3 pr-5 text-right whitespace-nowrap">
-                        <StatusIndicator
-                          status={item.ok === false || item.status === 'error' ? 'failed' : 'healthy'}
-                          label={item.ok === false ? '失败' : item.result || '成功'}
-                        />
-                      </td>
+          <Panel
+            title="Runbook 历史执行记录"
+            description="所有编排预案的触发时间、结果与步骤数审计历史。"
+            bodyClassName="p-0"
+          >
+            {!runbooksState || runbooksState.runs.length === 0 ? (
+              <EmptyState message="尚未执行过任何自愈 Runbook 预案。" />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-left border-collapse">
+                  <thead>
+                    <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
+                      <th className="py-2.5 pl-5 sm:pl-6 pr-3">执行时间</th>
+                      <th className="py-2.5 px-3">预案名称</th>
+                      <th className="py-2.5 px-3">状态</th>
+                      <th className="py-2.5 px-3 text-right">步骤</th>
+                      <th className="py-2.5 pl-3 pr-5 sm:pr-6 text-right">耗时</th>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
+                  </thead>
+                  <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
+                    {runbooksState.runs.map((run) => (
+                      <tr key={run.id} className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out">
+                        <td className="py-2.5 pl-5 sm:pl-6 pr-3 font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap">
+                          {formatDateTime(run.startedAt)}
+                        </td>
+                        <td className="py-2.5 px-3 font-medium text-[var(--ink)]">{run.runbookName}</td>
+                        <td className="py-2.5 px-3 whitespace-nowrap">
+                          <StatusIndicator status={run.ok ? 'healthy' : 'failed'} label={run.ok ? '通过' : '异常'} />
+                        </td>
+                        <td className="py-2.5 px-3 text-right font-mono text-[12px] text-[var(--ink-muted)] tabular-nums">
+                          {run.steps.filter((s) => s.ok).length}/{run.steps.length}
+                        </td>
+                        <td className="py-2.5 pl-3 pr-5 sm:pr-6 text-right font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums">
+                          {run.durationMs}ms
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Panel>
+        </div>
+      )}
+
+      {tab === 'studio' && (
+        <div className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+            <Panel
+              className="lg:col-span-7"
+              title="脱敏配置快照与 Schema 预检 (Dry-Run)"
+              description="所有密钥字段已在服务端自动掩码脱敏。编辑 JSON 后可在线执行配置 Schema 校验。"
+              actions={
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={validating || !configDraft.trim()}
+                  onClick={() => void handleValidateConfig()}
+                  data-testid="validate-config-btn"
+                >
+                  {validating ? '校验中...' : '校验配置 Schema'}
+                </Button>
+              }
+            >
+              <textarea
+                value={configDraft}
+                onChange={(e) => setConfigDraft(e.target.value)}
+                rows={14}
+                spellCheck={false}
+                aria-label="配置 JSON 编辑器"
+                className={cn(
+                  'w-full p-3.5 font-mono text-[12px] leading-relaxed resize-y',
+                  inputBaseClass,
+                )}
+              />
+              {validationResult && (
+                <div
+                  data-testid="config-validation-result"
+                  className={cn(
+                    'mt-3 rounded-lg border px-3.5 py-2.5 text-[12.5px]',
+                    validationResult.valid
+                      ? 'border-[var(--ok)]/30 bg-[var(--ok)]/5 text-[var(--ok)]'
+                      : 'border-[var(--err)]/30 bg-[var(--err)]/5 text-[var(--err)]',
+                  )}
+                >
+                  {validationResult.valid ? (
+                    <span className="font-medium">Schema 预检通过：未发现结构或端口范围错误。</span>
+                  ) : (
+                    <ul className="list-disc pl-4 space-y-1">
+                      {validationResult.errors.map((err, i) => (
+                        <li key={i}>{err}</li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </Panel>
+
+            <div className="lg:col-span-5 space-y-6">
+              <Panel
+                title="RBAC 角色与 SSO 鉴权态势"
+                description="细粒度角色权限矩阵与零信任代理头接入能力。"
+              >
+                {studio?.config?.rbacPosture ? (
+                  <div className="space-y-4">
+                    <div className="text-[12.5px] text-[var(--ink-muted)]">
+                      当前会话主体：
+                      <span className="ml-1.5 font-mono font-medium text-[var(--ink)]">
+                        {studio.config.rbacPosture.currentActor}
+                      </span>
+                    </div>
+                    <ul className="divide-y divide-[var(--border-subtle)] text-[13px]">
+                      {studio.config.rbacPosture.roles.map((r) => (
+                        <li key={r.role} className="py-2.5 first:pt-0 last:pb-0 space-y-1">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="font-medium text-[var(--ink)]">{r.role}</span>
+                            <StatusIndicator
+                              status={r.active ? 'healthy' : 'standby'}
+                              label={r.active ? '已生效' : '可配置'}
+                            />
+                          </div>
+                          <div className="font-mono text-[11.5px] text-[var(--ink-subtle)]">
+                            {r.permissions.join(' · ')}
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                    <div className="pt-2 border-t border-[var(--border-subtle)] text-[12px] text-[var(--ink-subtle)]">
+                      支持前置鉴权：{studio.config.rbacPosture.ssoAdapters.join(' / ')}
+                    </div>
+                  </div>
+                ) : (
+                  <EmptyState message="正在加载 RBAC 配置..." />
+                )}
+              </Panel>
+
+              <Panel
+                title="最小权限 sudoers 模板"
+                description="仅授予白名单 systemd 单元的 NOPASSWD 启停权限。"
+                actions={
+                  studio?.sudoersPreview ? (
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void handleCopy('sudoers', studio.sudoersPreview)}
+                    >
+                      {copiedKey === 'sudoers' ? (
+                        <Check className="size-3.5 text-[var(--ok)]" strokeWidth={1.75} />
+                      ) : (
+                        <Copy className="size-3.5" strokeWidth={1.75} />
+                      )}
+                      复制规则
+                    </Button>
+                  ) : undefined
+                }
+              >
+                <pre className="m-0 rounded-xl bg-[var(--terminal-bg)] text-[var(--terminal-ink)] border border-white/[0.08] p-3.5 font-mono text-[11.5px] overflow-x-auto whitespace-pre-wrap">
+                  {studio?.sudoersPreview || '暂无 system-scope 服务需要 sudoers 授权。'}
+                </pre>
+              </Panel>
             </div>
-          )}
-        </Panel>
-      </div>
+          </div>
+
+          <Panel
+            title="Prometheus / OpenMetrics 抓取端点"
+            description="可直接被 Grafana Alloy / Prometheus 拉取的原生指标输出（GET /api/metrics）。"
+            actions={
+              promText ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => void handleCopy('prom', promText)}
+                >
+                  {copiedKey === 'prom' ? (
+                    <Check className="size-3.5 text-[var(--ok)]" strokeWidth={1.75} />
+                  ) : (
+                    <Copy className="size-3.5" strokeWidth={1.75} />
+                  )}
+                  复制指标文本
+                </Button>
+              ) : undefined
+            }
+          >
+            <pre
+              data-testid="prometheus-preview"
+              className="m-0 rounded-xl bg-[var(--terminal-bg)] text-[var(--terminal-ink)] border border-white/[0.08] p-4 font-mono text-[11.5px] overflow-x-auto whitespace-pre max-h-[240px]"
+            >
+              {promText || '正在抓取 /api/metrics ...'}
+            </pre>
+          </Panel>
+        </div>
+      )}
     </div>
   );
 }

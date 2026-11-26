@@ -1,9 +1,12 @@
 import React from 'react';
-import { Download, Play, Radio, Search, Square } from 'lucide-react';
+import { BookmarkPlus, Download, Play, Radio, Search, Square, Trash2 } from 'lucide-react';
 import type { LogEntry, MetaResponse, SnapshotResponse } from '../types';
 import { buildLogStreamUrl, fetchLogs } from '../api';
+import { cn, FOCUS_RING } from '../lib/cn';
 import { countLogLevels, formatClock } from '../utils/format';
 import {
+  Button,
+  inputBaseClass,
   Panel,
   SegmentedFilter,
   ToggleSwitch,
@@ -16,6 +19,38 @@ const LOG_SOURCES = [
 ] as const;
 
 type LogSource = (typeof LOG_SOURCES)[number]['value'];
+
+interface SavedLogPreset {
+  id: string;
+  name: string;
+  source: LogSource;
+  target: string;
+  since: string;
+  level: string;
+  query: string;
+  regex: boolean;
+}
+
+const PRESETS_STORAGE_KEY = 'ops-console-log-presets-v1';
+
+function loadSavedPresets(): SavedLogPreset[] {
+  try {
+    const raw = window.localStorage.getItem(PRESETS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.slice(0, 12) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistSavedPresets(presets: SavedLogPreset[]) {
+  try {
+    window.localStorage.setItem(PRESETS_STORAGE_KEY, JSON.stringify(presets.slice(0, 12)));
+  } catch {
+    // Ignore quota errors
+  }
+}
 
 export function LogsView({
   snapshot,
@@ -39,9 +74,13 @@ export function LogsView({
   const [query, setQuery] = React.useState('');
   const [regex, setRegex] = React.useState(false);
   const [autoScroll, setAutoScroll] = React.useState(true);
+  const [correlationMode, setCorrelationMode] = React.useState(false);
   const [entries, setEntries] = React.useState<LogEntry[]>([]);
   const [loading, setLoading] = React.useState(false);
   const [streaming, setStreaming] = React.useState(false);
+
+  const [presets, setPresets] = React.useState<SavedLogPreset[]>(() => loadSavedPresets());
+  const [presetName, setPresetName] = React.useState('');
 
   const esRef = React.useRef<EventSource | null>(null);
   const viewportRef = React.useRef<HTMLDivElement>(null);
@@ -145,6 +184,42 @@ export function LogsView({
     };
   };
 
+  const handleSavePreset = () => {
+    const label = presetName.trim() || `${target || source} · ${level.toUpperCase()}`;
+    const next: SavedLogPreset = {
+      id: `preset-${Date.now()}`,
+      name: label,
+      source,
+      target,
+      since,
+      level,
+      query,
+      regex,
+    };
+    const updated = [next, ...presets].slice(0, 8);
+    setPresets(updated);
+    persistSavedPresets(updated);
+    setPresetName('');
+    onToast(`已保存常用筛选视图「${label}」`, 'ok');
+  };
+
+  const handleApplyPreset = (preset: SavedLogPreset) => {
+    stopStream();
+    setSource(preset.source);
+    setTarget(preset.target);
+    setSince(preset.since);
+    setLevel(preset.level);
+    setQuery(preset.query);
+    setRegex(preset.regex);
+    onToast(`已应用筛选视图「${preset.name}」`, 'info');
+  };
+
+  const handleDeletePreset = (id: string) => {
+    const updated = presets.filter((p) => p.id !== id);
+    setPresets(updated);
+    persistSavedPresets(updated);
+  };
+
   const exportJsonl = () => {
     const content = entries.map((e) => JSON.stringify(e)).join('\n');
     const blob = new Blob([content], { type: 'application/x-ndjson;charset=utf-8' });
@@ -160,50 +235,48 @@ export function LogsView({
   const counts = React.useMemo(() => countLogLevels(entries), [entries]);
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-[22px] font-semibold tracking-[-0.025em] text-[var(--ink)] leading-tight">
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">
             结构化日志中心
           </h1>
-          <p className="mt-1 text-[13.5px] text-[var(--ink-muted)]">
-            支持 journald、白名单文件与记忆引擎日志查询、正则高亮及 SSE 实时流式追踪。
+          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed text-pretty">
+            支持 journald、白名单文件与记忆引擎日志查询、正则过滤、常用视图保存、异常高亮时间线及 SSE 实时追踪。
           </p>
         </div>
-        <div className="font-mono text-[12.5px] text-[var(--ink-muted)] tabular-nums">
+        <div className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap">
           总计 {counts.total} · 错误 {counts.error} · 警告 {counts.warn} · 信息 {counts.info}
         </div>
       </div>
 
-      <Panel
-        actions={
-          <div className="flex flex-wrap items-center justify-between gap-3 w-full">
-            <SegmentedFilter
-              value={source}
-              onChange={(next) => {
-                stopStream();
-                setSource(next);
-              }}
-              options={LOG_SOURCES}
-              ariaLabel="日志源切换"
-            />
-            <div className="flex flex-wrap items-center gap-3">
-              <ToggleSwitch checked={regex} onCheckedChange={setRegex} label="正则匹配" />
-              <ToggleSwitch checked={autoScroll} onCheckedChange={setAutoScroll} label="自动滚底" />
-              <button
-                type="button"
-                onClick={exportJsonl}
-                disabled={entries.length === 0}
-                className="inline-flex items-center gap-1.5 h-8 px-3 rounded-[6px] border border-[var(--border)] bg-[var(--surface)] text-[12.5px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer disabled:opacity-40"
-              >
-                <Download className="h-3.5 w-3.5" />
-                导出 JSONL
-              </button>
-            </div>
+      <Panel bodyClassName="p-0">
+        <div className="px-5 sm:px-6 py-4 border-b border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3">
+          <SegmentedFilter
+            value={source}
+            onChange={(next) => {
+              stopStream();
+              setSource(next);
+            }}
+            options={LOG_SOURCES}
+            ariaLabel="日志源切换"
+          />
+          <div className="flex flex-wrap items-center gap-3">
+            <ToggleSwitch checked={regex} onCheckedChange={setRegex} label="正则匹配" />
+            <ToggleSwitch checked={correlationMode} onCheckedChange={setCorrelationMode} label="异常关联高亮" />
+            <ToggleSwitch checked={autoScroll} onCheckedChange={setAutoScroll} label="自动滚底" />
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={exportJsonl}
+              disabled={entries.length === 0}
+            >
+              <Download className="size-4" strokeWidth={1.75} />
+              导出 JSONL
+            </Button>
           </div>
-        }
-      >
-        <div className="space-y-4">
+        </div>
+        <div className="p-5 sm:p-6 space-y-4">
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -215,7 +288,7 @@ export function LogsView({
               value={target}
               onChange={(e) => setTarget(e.target.value)}
               aria-label="日志目标单元"
-              className="h-9 min-w-[200px] px-3 rounded-[7px] border border-[var(--border)] bg-[var(--bg)] text-[13px] text-[var(--ink)] focus:outline-none focus:border-[var(--accent)]"
+              className={cn('ui-select h-9 min-w-[200px] pl-3 cursor-pointer', inputBaseClass)}
             >
               {targetOptions.map((opt) => (
                 <option key={opt.value} value={opt.value}>
@@ -228,7 +301,7 @@ export function LogsView({
               value={since}
               onChange={(e) => setSince(e.target.value)}
               aria-label="时间范围"
-              className="h-9 px-2.5 rounded-[7px] border border-[var(--border)] bg-[var(--bg)] text-[13px] text-[var(--ink)] focus:outline-none focus:border-[var(--accent)]"
+              className={cn('ui-select h-9 pl-2.5 cursor-pointer', inputBaseClass)}
             >
               <option value="15m">近 15 分钟</option>
               <option value="30m">近 30 分钟</option>
@@ -240,7 +313,7 @@ export function LogsView({
               value={level}
               onChange={(e) => setLevel(e.target.value)}
               aria-label="日志级别"
-              className="h-9 px-2.5 rounded-[7px] border border-[var(--border)] bg-[var(--bg)] text-[13px] text-[var(--ink)] focus:outline-none focus:border-[var(--accent)]"
+              className={cn('ui-select h-9 pl-2.5 cursor-pointer', inputBaseClass)}
             >
               <option value="all">全部级别</option>
               <option value="error">ERROR</option>
@@ -249,73 +322,143 @@ export function LogsView({
             </select>
 
             <div className="relative flex-1 min-w-[200px]">
-              <Search className="h-3.5 w-3.5 text-[var(--ink-subtle)] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <Search
+                className="size-4 text-[var(--ink-subtle)] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+                strokeWidth={1.75}
+              />
               <input
                 type="search"
                 value={query}
                 onChange={(e) => setQuery(e.target.value)}
                 placeholder={regex ? '输入正则表达式过滤...' : '输入关键词过滤日志...'}
                 aria-label="过滤日志关键词"
-                className="w-full h-9 pl-8 pr-3 rounded-[7px] border border-[var(--border)] bg-[var(--bg)] text-[13px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)] focus:outline-none focus:border-[var(--accent)]"
+                className={cn('w-full h-9 pl-9 pr-3', inputBaseClass)}
               />
             </div>
 
-            <button
-              type="submit"
-              disabled={loading}
-              className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-[7px] bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-[13px] font-medium transition-colors cursor-pointer disabled:opacity-45"
-            >
-              <Play className="h-3.5 w-3.5" />
+            <Button type="submit" variant="primary" size="md" disabled={loading}>
+              <Play className="size-3.5 translate-x-[1px]" strokeWidth={1.75} />
               {loading ? '查询中...' : '查询'}
-            </button>
+            </Button>
 
-            <button
-              type="button"
+            <Button
+              variant={streaming ? 'danger' : 'secondary'}
+              size="md"
               onClick={toggleStream}
-              className={`inline-flex items-center gap-1.5 h-9 px-3.5 rounded-[7px] border text-[13px] font-medium transition-colors cursor-pointer ${
-                streaming
-                  ? 'border-[var(--err-dot)] bg-[var(--err-dot)] text-white'
-                  : 'border-[var(--border)] bg-[var(--surface)] text-[var(--ink)] hover:bg-[var(--surface-hover)]'
-              }`}
             >
-              {streaming ? <Square className="h-3.5 w-3.5" /> : <Radio className="h-3.5 w-3.5 text-[var(--accent)]" />}
+              {streaming ? (
+                <Square className="size-3.5" strokeWidth={1.75} />
+              ) : (
+                <Radio className="size-4 text-[var(--accent)]" strokeWidth={1.75} />
+              )}
               {streaming ? '停止实时流' : '实时流 (SSE)'}
-            </button>
+            </Button>
           </form>
+
+          {/* Saved Filter Presets Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-2.5 pt-2 border-t border-[var(--border-subtle)]">
+            <div className="flex flex-wrap items-center gap-2 min-w-0">
+              <span className="text-[12px] font-medium text-[var(--ink-subtle)] shrink-0">
+                常用视图
+              </span>
+              {presets.length === 0 ? (
+                <span className="text-[12px] text-[var(--ink-subtle)]">
+                  可将当前过滤条件存为快捷视图
+                </span>
+              ) : (
+                presets.map((p) => (
+                  <div
+                    key={p.id}
+                    className="inline-flex items-center rounded-lg border border-[var(--border)] bg-[var(--surface-subtle)] overflow-hidden text-[12px]"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => handleApplyPreset(p)}
+                      className={cn(
+                        'px-2.5 py-1 text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors duration-150 cursor-pointer',
+                        FOCUS_RING,
+                      )}
+                    >
+                      {p.name}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeletePreset(p.id)}
+                      aria-label={`删除视图 ${p.name}`}
+                      className="px-1.5 py-1 text-[var(--ink-subtle)] hover:text-[var(--err)] transition-colors duration-150 cursor-pointer border-l border-[var(--border-subtle)]"
+                    >
+                      <Trash2 className="size-3" strokeWidth={1.75} />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <input
+                type="text"
+                value={presetName}
+                onChange={(e) => setPresetName(e.target.value)}
+                placeholder="视图名称（可选）"
+                aria-label="保存筛选视图名称"
+                data-testid="log-preset-name"
+                className={cn('h-8 w-36 px-2.5 text-[12px]', inputBaseClass)}
+              />
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleSavePreset}
+                data-testid="save-log-preset"
+              >
+                <BookmarkPlus className="size-3.5 text-[var(--accent)]" strokeWidth={1.75} />
+                保存当前视图
+              </Button>
+            </div>
+          </div>
 
           <div
             ref={viewportRef}
-            className="rounded-[8px] bg-[var(--terminal-bg)] text-[var(--terminal-ink)] border border-[var(--border)] h-[460px] overflow-auto p-3.5 font-mono text-[12.5px] leading-[1.6]"
+            className="rounded-xl bg-[var(--terminal-bg)] text-[var(--terminal-ink)] border border-[var(--border)] h-[460px] overflow-auto p-4 font-mono text-[12.5px] leading-[1.6]"
             role="log"
             aria-label="日志输出终端"
           >
             {entries.length === 0 ? (
-              <div className="h-full flex items-center justify-center text-slate-400">
+              <div className="h-full flex items-center justify-center text-zinc-400">
                 {loading ? '正在采集日志...' : '当前筛选条件下暂无日志输出。'}
               </div>
             ) : (
               entries.map((entry, idx) => {
                 const lv = String(entry.level || entry.severity || 'INFO').toUpperCase();
-                const lvClass =
-                  lv.includes('ERR') || lv.includes('CRIT') || lv.includes('FATAL')
-                    ? 'text-rose-400'
-                    : lv.includes('WARN')
-                      ? 'text-amber-300'
-                      : lv.includes('DEBUG')
-                        ? 'text-slate-400'
-                        : 'text-sky-400';
+                const isErr = lv.includes('ERR') || lv.includes('CRIT') || lv.includes('FATAL');
+                const isWarn = lv.includes('WARN');
+                const lvClass = isErr
+                  ? 'text-rose-400'
+                  : isWarn
+                    ? 'text-amber-300'
+                    : lv.includes('DEBUG')
+                      ? 'text-zinc-400'
+                      : 'text-sky-400';
+                const rowHighlight = correlationMode
+                  ? isErr
+                    ? 'bg-rose-500/12 border-l-2 border-l-rose-400 pl-2'
+                    : isWarn
+                      ? 'bg-amber-500/10 border-l-2 border-l-amber-300 pl-2'
+                      : 'opacity-65'
+                  : '';
                 return (
                   <div
                     key={`${entry.ts || entry.timestamp || idx}-${idx}`}
-                    className="grid grid-cols-[72px_54px_1fr] gap-2.5 py-0.5 border-b border-white/[0.04] last:border-0"
+                    className={cn(
+                      'grid grid-cols-[72px_54px_1fr] gap-2.5 py-0.5 border-b border-white/[0.04] last:border-0',
+                      rowHighlight,
+                    )}
                   >
-                    <span className="text-slate-500 select-none">
+                    <span className="text-zinc-500 select-none tabular-nums">
                       {formatClock(entry.ts || entry.timestamp)}
                     </span>
-                    <span className={`font-semibold select-none ${lvClass}`}>
+                    <span className={cn('font-semibold select-none', lvClass)}>
                       {lv.slice(0, 5)}
                     </span>
-                    <span className="whitespace-pre-wrap break-all text-slate-200">
+                    <span className="whitespace-pre-wrap break-all text-zinc-200">
                       {entry.message || entry.raw || ''}
                     </span>
                   </div>

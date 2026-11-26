@@ -1,4 +1,7 @@
 import React from 'react';
+import { cva, type VariantProps } from 'class-variance-authority';
+import { Command as Cmdk } from 'cmdk';
+import NumberFlow from '@number-flow/react';
 import {
   SegmentedControl,
   SegmentedControlIndicator,
@@ -19,23 +22,68 @@ import {
   DialogDescription,
   DialogTitle,
 } from '@ui-sdk/react/dialog';
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandGroupLabel,
-  CommandInput,
-  CommandItem,
-  CommandItemText,
-  CommandList,
-  CommandSeparator,
-  CommandShortcut,
-} from '@ui-sdk/react/command';
 import { Switch, SwitchThumb } from '@ui-sdk/react/switch';
 import { Meter, MeterIndicator, MeterTrack } from '@ui-sdk/react/meter';
 import { Inbox, Search, X } from 'lucide-react';
 import type { StatusTone } from '../types';
+import { cn, FOCUS_RING } from '../lib/cn';
 import { clampPercent, classifyLatency, statusLabel, statusTone } from '../utils/format';
+
+export const buttonVariants = cva(
+  cn(
+    'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium select-none whitespace-nowrap shrink-0 cursor-pointer',
+    'transition-[color,background-color,border-color,transform,opacity] duration-150 ease-out',
+    'active:scale-[0.97] disabled:opacity-45 disabled:pointer-events-none',
+    FOCUS_RING,
+  ),
+  {
+    variants: {
+      variant: {
+        primary:
+          'bg-[var(--accent)] text-white hover:bg-[var(--accent-hover)] shadow-[inset_0_1px_0_rgba(255,255,255,0.16),0_1px_2px_rgba(0,0,0,0.14)]',
+        secondary:
+          'border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--ink)] hover:bg-[var(--surface-hover)] hover:border-[var(--border-strong)] shadow-[0_1px_2px_rgba(0,0,0,0.04)]',
+        ghost:
+          'text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)]',
+        danger:
+          'bg-[var(--err-dot)] text-white hover:bg-[var(--err)] shadow-[inset_0_1px_0_rgba(255,255,255,0.14),0_1px_2px_rgba(0,0,0,0.18)]',
+      },
+      size: {
+        sm: 'h-8 px-2.5 text-[12.5px]',
+        md: 'h-9 px-3.5 text-[13px]',
+        lg: 'h-10 px-4 text-[13.5px]',
+        icon: 'h-8 w-8 p-0',
+      },
+    },
+    defaultVariants: {
+      variant: 'secondary',
+      size: 'md',
+    },
+  },
+);
+
+export interface ButtonProps
+  extends React.ButtonHTMLAttributes<HTMLButtonElement>,
+    VariantProps<typeof buttonVariants> {}
+
+export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
+  ({ className, variant, size, type = 'button', ...props }, ref) => (
+    <button
+      ref={ref}
+      type={type}
+      className={cn(buttonVariants({ variant, size }), className)}
+      {...props}
+    />
+  ),
+);
+Button.displayName = 'Button';
+
+export const inputBaseClass = cn(
+  'rounded-lg border border-[var(--border)] bg-[var(--bg)] text-[16px] sm:text-[13px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)]',
+  'transition-[border-color,box-shadow,background-color] duration-150 ease-out',
+  'hover:border-[var(--border-strong)] focus:border-[var(--accent)]',
+  FOCUS_RING,
+);
 
 export interface SegmentedOption<T extends string = string> {
   value: T;
@@ -62,7 +110,7 @@ export function SegmentedFilter<T extends string>({
         if (v) onChange(v as T);
       }}
       aria-label={ariaLabel}
-      className={`ui-seg-root ${className}`}
+      className={cn('ui-seg-root', className)}
     >
       <SegmentedControlIndicator className="ui-seg-indicator" />
       {options.map((opt) => (
@@ -101,8 +149,8 @@ export function StatusIndicator({
           : 'text-[var(--ink-muted)]';
 
   return (
-    <span className={`inline-flex items-center gap-1.5 text-[13px] font-medium whitespace-nowrap ${textColor}`}>
-      <span className={`h-2 w-2 rounded-full shrink-0 ${dotColor}`} aria-hidden="true" />
+    <span className={cn('inline-flex items-center gap-1.5 text-[13px] font-medium whitespace-nowrap select-none', textColor)}>
+      <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', dotColor)} aria-hidden="true" />
       <span>{text}</span>
     </span>
   );
@@ -127,8 +175,10 @@ export function ResourceMeter({
     <Meter value={pct} min={0} max={100} aria-label={label || '利用率'} className="w-full space-y-1.5">
       {(label || valueText) && (
         <div className="flex items-baseline justify-between gap-2 text-[13px]">
-          <span className="truncate font-medium text-[var(--ink)]">{label}</span>
-          <span className="font-mono text-[12.5px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
+          <span className="truncate font-medium text-[var(--ink)] min-w-0" title={label}>
+            {label}
+          </span>
+          <span className="font-mono text-[12px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap shrink-0">
             {valueText ?? `${pct}%`}
           </span>
         </div>
@@ -137,7 +187,7 @@ export function ResourceMeter({
         <MeterIndicator
           className="ui-meter-indicator"
           data-tone={resolvedTone}
-          style={{ width: `${pct}%` }}
+          style={{ transform: `scaleX(${pct / 100})` }}
         />
       </MeterTrack>
     </Meter>
@@ -157,14 +207,14 @@ export function LatencyMeter({
 }) {
   if (!ok) {
     return (
-      <div className="min-w-[144px] max-w-[196px]">
+      <div className="min-w-[140px] max-w-[192px]">
         <div className="flex items-center justify-between gap-2 text-[12px]">
           <span className="font-mono font-medium text-[var(--err)] truncate" title={error || '探针异常'}>
             {error || '探针异常'}
           </span>
         </div>
         <div className="mt-1.5 ui-latency-track">
-          <div className="ui-latency-indicator" data-tier="critical" style={{ width: '100%' }} />
+          <div className="ui-latency-indicator" data-tier="critical" style={{ transform: 'scaleX(1)' }} />
         </div>
       </div>
     );
@@ -172,7 +222,7 @@ export function LatencyMeter({
 
   const info = classifyLatency(latencyMs);
   if (!info) {
-    return <span className="font-mono text-[12px] text-[var(--ink-subtle)]">-</span>;
+    return <span className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums">-</span>;
   }
 
   const tierTextColor =
@@ -193,7 +243,7 @@ export function LatencyMeter({
       className="min-w-[124px] max-w-[156px]"
     >
       <div className="flex items-baseline justify-between gap-2 text-[12px]">
-        <span className="font-mono font-semibold text-[var(--ink)] tabular-nums">
+        <span className="font-mono font-medium text-[var(--ink)] tabular-nums">
           {info.ms}ms
           {statusCode ? (
             <span className="ml-1.5 font-normal text-[11px] text-[var(--ink-subtle)]">
@@ -201,7 +251,7 @@ export function LatencyMeter({
             </span>
           ) : null}
         </span>
-        <span className={`text-[11px] font-medium whitespace-nowrap ${tierTextColor}`}>
+        <span className={cn('text-[11px] font-medium whitespace-nowrap', tierTextColor)}>
           {info.label}
         </span>
       </div>
@@ -209,7 +259,7 @@ export function LatencyMeter({
         <MeterIndicator
           className="ui-latency-indicator"
           data-tier={info.tier}
-          style={{ width: `${info.pct}%` }}
+          style={{ transform: `scaleX(${info.pct / 100})` }}
         />
       </MeterTrack>
     </Meter>
@@ -226,7 +276,7 @@ export function ToggleSwitch({
   label: string;
 }) {
   return (
-    <label className="inline-flex items-center gap-2 cursor-pointer select-none text-[13px] text-[var(--ink-muted)] hover:text-[var(--ink)] transition-colors">
+    <label className="inline-flex items-center gap-2 cursor-pointer select-none text-[13px] text-[var(--ink-muted)] hover:text-[var(--ink)] transition-colors duration-150 ease-out">
       <Switch
         checked={checked}
         onCheckedChange={(next) => onCheckedChange(Boolean(next))}
@@ -257,92 +307,240 @@ export function Panel({
 }) {
   return (
     <section
-      className={`rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-card)] ${className}`}
+      className={cn(
+        'rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-card)] overflow-hidden',
+        className,
+      )}
     >
       {(title || actions) && (
-        <div className="flex flex-wrap items-center justify-between gap-4 px-6 py-4 border-b border-[var(--border-subtle)]">
-          <div className="min-w-0">
+        <div className="flex flex-wrap items-center justify-between gap-4 px-5 sm:px-6 py-4 border-b border-[var(--border-subtle)]">
+          <div className="min-w-0 flex-1">
             {title && (
-              <h2 className="text-[15px] font-semibold tracking-tight text-[var(--ink)] leading-snug">
+              <h2 className="text-[15px] font-semibold tracking-tight text-[var(--ink)] leading-snug text-balance">
                 {title}
               </h2>
             )}
             {description && (
-              <p className="mt-1 text-[13px] text-[var(--ink-muted)] leading-relaxed">
+              <p className="mt-1 text-[13px] text-[var(--ink-muted)] leading-relaxed text-pretty">
                 {description}
               </p>
             )}
           </div>
-          {actions && <div className="flex flex-wrap items-center gap-2.5 min-w-0 max-w-full">{actions}</div>}
+          {actions && (
+            <div className="flex flex-wrap items-center gap-2.5 min-w-0 max-w-full shrink-0">
+              {actions}
+            </div>
+          )}
         </div>
       )}
-      <div className={`p-6 ${bodyClassName}`}>{children}</div>
+      <div className={cn('p-5 sm:p-6', bodyClassName)}>{children}</div>
     </section>
   );
 }
 
-export interface KpiCellData {
-  label: string;
-  kicker?: string;
-  value: string;
-  sub?: string;
-  tone?: StatusTone;
+export interface KpiNumericValue {
+  primary: number;
+  suffix?: string;
+  prefix?: string;
+  denominator?: number;
 }
 
-export function KpiStrip({ cells }: { cells: KpiCellData[] }) {
+export interface KpiCellData {
+  label: string;
+  meta?: string;
+  value: string;
+  numeric?: KpiNumericValue;
+  sub?: string;
+  tone?: StatusTone;
+  ratioPct?: number;
+}
+
+function KpiValueDisplay({ cell, large = false }: { cell: KpiCellData; large?: boolean }) {
+  const valColor =
+    cell.tone === 'err'
+      ? 'text-[var(--err)]'
+      : cell.tone === 'warn'
+        ? 'text-[var(--warn)]'
+        : 'text-[var(--ink)]';
+
+  const sizeClass = large ? 'text-[30px]' : 'text-[24px]';
+
+  if (cell.numeric && Number.isFinite(cell.numeric.primary)) {
+    return (
+      <div
+        className={cn(
+          'font-mono font-semibold tracking-tight leading-none tabular-nums flex items-baseline gap-0.5',
+          sizeClass,
+          valColor,
+        )}
+      >
+        {cell.numeric.prefix && <span className="text-[0.72em] text-[var(--ink-muted)]">{cell.numeric.prefix}</span>}
+        <NumberFlow value={cell.numeric.primary} />
+        {cell.numeric.denominator != null && (
+          <span className="text-[0.65em] font-medium text-[var(--ink-subtle)] ml-0.5">
+            /{cell.numeric.denominator}
+          </span>
+        )}
+        {cell.numeric.suffix && (
+          <span className="text-[0.62em] font-medium text-[var(--ink-muted)] ml-0.5">
+            {cell.numeric.suffix}
+          </span>
+        )}
+      </div>
+    );
+  }
+
   return (
-    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 rounded-xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-card)] divide-y sm:divide-y-0 sm:divide-x divide-[var(--border-subtle)] overflow-hidden">
-      {cells.map((cell, idx) => {
-        const valColor =
-          cell.tone === 'err'
-            ? 'text-[var(--err)]'
-            : cell.tone === 'warn'
-              ? 'text-[var(--warn)]'
-              : 'text-[var(--ink)]';
-        return (
-          <div
-            key={cell.label}
-            className={`px-6 py-5 min-w-0 transition-colors duration-150 ease-out hover:bg-[var(--surface-hover)] ${
-              idx === 0 ? 'bg-[var(--surface-hover)]/40' : ''
-            }`}
-          >
-            <div className="flex items-center justify-between gap-2">
-              <span className="text-[12px] font-medium text-[var(--ink-muted)]">
-                {cell.label}
-              </span>
-              {cell.kicker && (
-                <span className="text-[10.5px] font-medium uppercase tracking-wider text-[var(--ink-subtle)]">
-                  {cell.kicker}
-                </span>
-              )}
-            </div>
-            <div
-              className={`mt-2.5 font-mono text-[26px] font-semibold tracking-tight leading-none tabular-nums ${valColor}`}
-            >
-              {cell.value}
-            </div>
-            {cell.sub && (
-              <div
-                className="mt-2.5 text-[12.5px] text-[var(--ink-subtle)] leading-snug truncate"
-                title={cell.sub}
-              >
-                {cell.sub}
-              </div>
-            )}
-          </div>
-        );
-      })}
+    <div
+      className={cn(
+        'font-mono font-semibold tracking-tight leading-none tabular-nums truncate',
+        sizeClass,
+        valColor,
+      )}
+      title={cell.value}
+    >
+      {cell.value}
     </div>
   );
 }
 
-export function EmptyState({ message }: { message: string }) {
-  return (
-    <div className="py-12 px-6 flex flex-col items-center justify-center text-center gap-2.5">
-      <div className="h-9 w-9 rounded-lg border border-[var(--border)] bg-[var(--surface-subtle)] flex items-center justify-center text-[var(--ink-subtle)]">
-        <Inbox className="w-4 h-4" strokeWidth={1.75} aria-hidden="true" />
+/**
+ * Asymmetric Bento KPI strip: leads with a slightly wider primary anchor cell
+ * with an inline health proportion bar, paired with compact telemetry tiles.
+ */
+export function KpiStrip({ cells, asymmetric = false }: { cells: KpiCellData[]; asymmetric?: boolean }) {
+  if (asymmetric && cells.length === 4) {
+    const [lead, ...rest] = cells;
+    return (
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        <div className="lg:col-span-5 rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-card)] p-5 sm:p-6 flex flex-col justify-between min-w-0">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[12.5px] font-medium text-[var(--ink-muted)] truncate">
+              {lead.label}
+            </span>
+            {lead.meta && (
+              <span className="font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums shrink-0">
+                {lead.meta}
+              </span>
+            )}
+          </div>
+          <div className="mt-3">
+            <KpiValueDisplay cell={lead} large />
+          </div>
+          <div className="mt-4 space-y-2">
+            {lead.ratioPct != null && (
+              <div className="h-1.5 w-full rounded-full bg-[var(--surface-subtle)] overflow-hidden">
+                <div
+                  className={cn(
+                    'h-full w-full rounded-full origin-left transition-transform duration-200 ease-out',
+                    lead.tone === 'err'
+                      ? 'bg-[var(--err-dot)]'
+                      : lead.tone === 'warn'
+                        ? 'bg-[var(--warn-dot)]'
+                        : 'bg-[var(--ok-dot)]',
+                  )}
+                  style={{ transform: `scaleX(${clampPercent(lead.ratioPct) / 100})` }}
+                />
+              </div>
+            )}
+            {lead.sub && (
+              <div className="text-[12.5px] text-[var(--ink-subtle)] leading-snug truncate" title={lead.sub}>
+                {lead.sub}
+              </div>
+            )}
+          </div>
+        </div>
+
+        <div className="lg:col-span-7 grid grid-cols-1 sm:grid-cols-3 rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-card)] divide-y sm:divide-y-0 sm:divide-x divide-[var(--border-subtle)] overflow-hidden">
+          {rest.map((cell) => (
+            <div
+              key={cell.label}
+              className="px-5 py-5 flex flex-col justify-between min-w-0 transition-colors duration-150 ease-out hover:bg-[var(--surface-hover)]"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[12.5px] font-medium text-[var(--ink-muted)] truncate">
+                  {cell.label}
+                </span>
+              </div>
+              <div className="mt-3">
+                <KpiValueDisplay cell={cell} />
+              </div>
+              {cell.sub && (
+                <div
+                  className="mt-3 text-[12px] text-[var(--ink-subtle)] leading-snug truncate"
+                  title={cell.sub}
+                >
+                  {cell.sub}
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
-      <p className="text-[13px] text-[var(--ink-subtle)] max-w-sm leading-relaxed">{message}</p>
+    );
+  }
+
+  return (
+    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-card)] divide-y sm:divide-y-0 sm:divide-x divide-[var(--border-subtle)] overflow-hidden">
+      {cells.map((cell) => (
+        <div
+          key={cell.label}
+          className="px-5 sm:px-6 py-5 min-w-0 transition-colors duration-150 ease-out hover:bg-[var(--surface-hover)]"
+        >
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-[12.5px] font-medium text-[var(--ink-muted)] truncate">
+              {cell.label}
+            </span>
+            {cell.meta && (
+              <span className="font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums shrink-0">
+                {cell.meta}
+              </span>
+            )}
+          </div>
+          <div className="mt-2.5">
+            <KpiValueDisplay cell={cell} />
+          </div>
+          {cell.sub && (
+            <div
+              className="mt-2.5 text-[12.5px] text-[var(--ink-subtle)] leading-snug truncate"
+              title={cell.sub}
+            >
+              {cell.sub}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+export function EmptyState({
+  title,
+  message,
+  action,
+}: {
+  title?: string;
+  message: string;
+  action?: { label: string; onClick: () => void };
+}) {
+  return (
+    <div className="py-12 px-6 flex flex-col items-center justify-center text-center gap-3">
+      <div className="h-10 w-10 rounded-xl border border-[var(--border)] bg-[var(--surface-subtle)] flex items-center justify-center text-[var(--ink-subtle)]">
+        <Inbox className="size-4" strokeWidth={1.75} aria-hidden="true" />
+      </div>
+      <div className="space-y-1 max-w-sm">
+        {title && (
+          <p className="text-[14px] font-medium text-[var(--ink)] text-balance">{title}</p>
+        )}
+        <p className="text-[13px] text-[var(--ink-subtle)] leading-relaxed text-pretty">
+          {message}
+        </p>
+      </div>
+      {action && (
+        <Button variant="secondary" size="sm" onClick={action.onClick} className="mt-1">
+          {action.label}
+        </Button>
+      )}
     </div>
   );
 }
@@ -395,10 +593,10 @@ export function ConfirmAlertDialog({
     >
       <AlertDialogBackdrop className="ui-dialog-backdrop" />
       <AlertDialogContent className="ui-alert-content">
-        <AlertDialogTitle className="text-[16px] font-semibold tracking-[-0.01em] text-[var(--ink)]">
+        <AlertDialogTitle className="text-[16px] font-semibold tracking-tight text-[var(--ink)] text-balance">
           {state?.title || '确认操作'}
         </AlertDialogTitle>
-        <AlertDialogDescription className="mt-2 text-[13.5px] text-[var(--ink-muted)] leading-relaxed">
+        <AlertDialogDescription className="mt-2 text-[13.5px] text-[var(--ink-muted)] leading-relaxed text-pretty">
           {state?.description || ''}
         </AlertDialogDescription>
 
@@ -406,7 +604,7 @@ export function ConfirmAlertDialog({
           <div className="mt-4 space-y-2">
             <label className="block text-[13px] text-[var(--ink-muted)]">
               关键基础设施二次确认：请输入{' '}
-              <code className="px-1.5 py-0.5 rounded bg-[var(--surface-subtle)] text-[var(--ink)] font-semibold">
+              <code className="px-1.5 py-0.5 rounded-md bg-[var(--surface-subtle)] border border-[var(--border-subtle)] text-[var(--ink)] font-semibold">
                 {state?.requireToken}
               </code>
             </label>
@@ -416,7 +614,7 @@ export function ConfirmAlertDialog({
               onChange={(e) => setTokenInput(e.target.value)}
               placeholder={state?.requireToken}
               autoComplete="off"
-              className="w-full h-9 px-3 rounded-[7px] border border-[var(--border)] bg-[var(--bg)] text-[13.5px] font-mono text-[var(--ink)] focus:outline-none focus:border-[var(--accent)]"
+              className={cn('w-full h-9 px-3 font-mono', inputBaseClass)}
             />
           </div>
         )}
@@ -425,22 +623,18 @@ export function ConfirmAlertDialog({
           <AlertDialogClose
             type="button"
             disabled={busy}
-            className="h-9 px-3.5 rounded-[7px] border border-[var(--border)] bg-[var(--surface)] text-[13px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer"
+            className={buttonVariants({ variant: 'secondary', size: 'md' })}
           >
             取消
           </AlertDialogClose>
-          <button
-            type="button"
+          <Button
+            variant={state?.danger ? 'danger' : 'primary'}
+            size="md"
             disabled={!canSubmit}
             onClick={handleConfirm}
-            className={`h-9 px-4 rounded-[7px] text-[13px] font-medium text-white transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
-              state?.danger
-                ? 'bg-[var(--err-dot)] hover:bg-[var(--err)]'
-                : 'bg-[var(--accent)] hover:bg-[var(--accent-hover)]'
-            }`}
           >
             {busy ? '执行中...' : state?.confirmLabel || '确认执行'}
-          </button>
+          </Button>
         </div>
       </AlertDialogContent>
     </AlertDialog>
@@ -483,122 +677,71 @@ export function CommandPalette({
         <DialogDescription className="sr-only">
           搜索并跳转视图、受管服务、全球节点或执行快捷运维命令
         </DialogDescription>
-        <Command
-          onAction={(val) => {
-            const match = entries.find((e) => e.id === val);
-            if (match) {
-              onOpenChange(false);
-              match.onSelect();
-            }
-          }}
-        >
+        <Cmdk label="全局命令菜单" loop>
           <div className="flex items-center gap-2.5 px-4 border-b border-[var(--border)]">
-            <Search className="h-4 w-4 text-[var(--ink-subtle)] shrink-0" aria-hidden="true" />
-            <CommandInput
+            <Search className="size-4 text-[var(--ink-subtle)] shrink-0" strokeWidth={1.75} aria-hidden="true" />
+            <Cmdk.Input
+              autoFocus
               aria-label="搜索视图、服务、日志级别、PID 进程或快捷操作"
               placeholder="搜索视图、Error/Warn 日志、输入 PID 查找 Agent 进程..."
-              className="h-12 w-full bg-transparent text-[14px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)] focus:outline-none"
+              className="h-12 w-full bg-transparent text-[16px] sm:text-[14px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)] focus:outline-none"
             />
             <button
               type="button"
               onClick={() => onOpenChange(false)}
               aria-label="关闭命令面板"
-              className="p-1 rounded text-[var(--ink-subtle)] hover:text-[var(--ink)] transition-colors cursor-pointer"
+              className={cn(
+                'h-7 w-7 inline-flex items-center justify-center rounded-md text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out cursor-pointer shrink-0',
+                FOCUS_RING,
+              )}
             >
-              <X className="h-4 w-4" />
+              <X className="size-4" strokeWidth={1.75} />
             </button>
           </div>
-          <CommandList className="max-h-[360px] overflow-y-auto p-2">
+          <Cmdk.List className="max-h-[380px] overflow-y-auto p-2">
+            <Cmdk.Empty className="py-10 text-center text-[13px] text-[var(--ink-subtle)]">
+              未匹配到相关视图、节点或运维操作
+            </Cmdk.Empty>
             {groups.map(([groupName, items], idx) => (
               <React.Fragment key={groupName}>
-                {idx > 0 && <CommandSeparator className="my-1.5 h-px bg-[var(--border-subtle)]" />}
-                <CommandGroup>
-                  <CommandGroupLabel className="px-2.5 py-1.5 text-[12px] font-medium text-[var(--ink-subtle)]">
-                    {groupName}
-                  </CommandGroupLabel>
+                {idx > 0 && <Cmdk.Separator className="my-1.5 h-px bg-[var(--border-subtle)]" />}
+                <Cmdk.Group heading={groupName}>
                   {items.map((item) => (
-                    <CommandItem
+                    <Cmdk.Item
                       key={item.id}
-                      value={item.id}
-                      label={item.label}
-                      keywords={item.keywords}
-                      shortcut={item.shortcut}
-                      className="ui-cmd-item flex items-center justify-between gap-3 px-2.5 py-2 rounded-[6px] text-[13.5px] text-[var(--ink-muted)] cursor-pointer"
+                      value={`${item.label} ${item.meta || ''} ${(item.keywords || []).join(' ')}`}
+                      onSelect={() => {
+                        onOpenChange(false);
+                        item.onSelect();
+                      }}
                     >
-                      <div className="flex items-center gap-2 min-w-0">
-                        <CommandItemText className="truncate font-medium text-[var(--ink)]">
-                          {item.label}
-                        </CommandItemText>
+                      <span className="truncate font-medium text-[var(--ink)]">
+                        {item.label}
+                      </span>
+                      <div className="flex items-center gap-2.5 shrink-0 ml-auto">
                         {item.meta && (
-                          <span className="font-mono text-[12px] text-[var(--ink-subtle)] truncate">
+                          <span className="font-mono text-[11.5px] text-[var(--ink-subtle)] truncate max-w-[180px]">
                             {item.meta}
                           </span>
                         )}
+                        {item.shortcut && (
+                          <kbd className="font-mono text-[11px] text-[var(--ink-muted)] px-1.5 py-0.5 rounded bg-[var(--surface-subtle)] border border-[var(--border-subtle)] tabular-nums">
+                            {item.shortcut}
+                          </kbd>
+                        )}
                       </div>
-                      {item.shortcut && (
-                        <CommandShortcut className="font-mono text-[11.5px] text-[var(--ink-subtle)] shrink-0" />
-                      )}
-                    </CommandItem>
+                    </Cmdk.Item>
                   ))}
-                </CommandGroup>
+                </Cmdk.Group>
               </React.Fragment>
             ))}
-          </CommandList>
-          <CommandEmpty className="py-10 text-center text-[13px] text-[var(--ink-subtle)]">
-            未匹配到相关视图、节点或运维操作
-          </CommandEmpty>
-        </Command>
+          </Cmdk.List>
+          <div className="hidden sm:flex items-center justify-between px-4 py-2 border-t border-[var(--border-subtle)] bg-[var(--surface-subtle)]/50 text-[11.5px] text-[var(--ink-subtle)] select-none">
+            <span>↑ ↓ 切换条目 · Enter 确认执行</span>
+            <span className="font-mono">ESC 关闭</span>
+          </div>
+        </Cmdk>
       </DialogContent>
     </Dialog>
-  );
-}
-
-export interface ToastMessage {
-  id: string;
-  text: string;
-  tone: 'info' | 'ok' | 'err';
-}
-
-export function ToastStack({
-  toasts,
-  onDismiss,
-}: {
-  toasts: ToastMessage[];
-  onDismiss: (id: string) => void;
-}) {
-  if (!toasts.length) return null;
-  return (
-    <div
-      className="fixed bottom-5 right-5 z-50 flex flex-col gap-2 max-w-[360px]"
-      aria-live="polite"
-    >
-      {toasts.map((t) => {
-        const dot =
-          t.tone === 'ok'
-            ? 'bg-[var(--ok-dot)]'
-            : t.tone === 'err'
-              ? 'bg-[var(--err-dot)]'
-              : 'bg-[var(--accent)]';
-        return (
-          <div
-            key={t.id}
-            className="flex items-center justify-between gap-3 px-4 py-2.5 rounded-[8px] border border-[var(--border)] bg-[var(--surface)] shadow-lg text-[13px] text-[var(--ink)]"
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <span className={`h-2 w-2 rounded-full shrink-0 ${dot}`} aria-hidden="true" />
-              <span className="truncate">{t.text}</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => onDismiss(t.id)}
-              aria-label="关闭通知"
-              className="text-[var(--ink-subtle)] hover:text-[var(--ink)] transition-colors cursor-pointer"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </div>
-        );
-      })}
-    </div>
   );
 }

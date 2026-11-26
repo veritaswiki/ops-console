@@ -28,10 +28,11 @@ const TAILSCALE_BINARIES = [
 ];
 
 const DEFAULT_AGENT_MATCHERS = [
-  { category: 'orchestrator', pattern: /(^|\/)t3(\s|$)|t3-code|agent-orchestrator/i },
-  { category: 'gateway', pattern: /(^|\/)magpie(\s|$)|magpie-.*bridge/i },
-  { category: 'memory', pattern: /nmem-server|openviking|symbiote|rerank|embedding/i },
-  { category: 'agent-runtime', pattern: /(^|\/)codex(\s|$)|(^|\/)claude(\s|$)|(^|\/)pi(\s|$)|herdr/i },
+  { category: 'orchestrator', pattern: /agent-orchestrator|langgraph|autogen|crewai/i },
+  { category: 'mcp', pattern: /mcp-server|modelcontextprotocol|fastmcp/i },
+  { category: 'gateway', pattern: /litellm|ollama|vllm|(^|\/)magpie(\s|$)|magpie-.*bridge/i },
+  { category: 'memory', pattern: /nmem-server|openviking|qdrant|milvus|rerank|embedding/i },
+  { category: 'agent-runtime', pattern: /(^|\/)codex(\s|$)|(^|\/)claude(\s|$)|aider|opencode|goose/i },
 ];
 
 function roundDecimal(value, digits = 1) {

@@ -8,6 +8,7 @@ import {
   buildSessionCookie,
   checkRequestAuth,
   deriveSessionToken,
+  getSecurityHeaders,
   parseCookies,
   resolveSafePath,
   safeEqualString,
@@ -23,6 +24,7 @@ test('parseCliArgs parses all supported flags', () => {
     '--web-key=super-secret-web-key-1234',
     '--read-only',
     '--demo',
+    '--allow-iframe',
     '--check-config',
   ]);
   assert.equal(cli.configPath, '/tmp/ops.json');
@@ -31,6 +33,7 @@ test('parseCliArgs parses all supported flags', () => {
   assert.equal(cli.webKey, 'super-secret-web-key-1234');
   assert.equal(cli.readOnly, true);
   assert.equal(cli.demo, true);
+  assert.equal(cli.allowIframe, true);
   assert.equal(cli.checkConfig, true);
 });
 
@@ -119,6 +122,26 @@ test('verifySameOrigin enforces same-origin CSRF protection', () => {
     true,
   );
   assert.equal(verifySameOrigin({ headers: { host: '127.0.0.1:4320', authorization: 'Bearer abc', origin: 'https://evil.example' } }), true);
+  assert.equal(
+    verifySameOrigin(
+      { headers: { host: '127.0.0.1:3000', 'x-forwarded-host': 'preview.example.app', origin: 'https://preview.example.app' } },
+      [],
+      { trustProxy: true },
+    ),
+    true,
+  );
+});
+
+test('getSecurityHeaders enforces DENY by default and permits iframe embedding when allowIframe is enabled', () => {
+  const strict = getSecurityHeaders({ isHtml: true });
+  assert.equal(strict['X-Frame-Options'], 'DENY');
+  assert.ok(strict['Content-Security-Policy'].includes("frame-ancestors 'none'"));
+  assert.ok(strict['Content-Security-Policy'].includes("script-src 'self'"));
+
+  const embeddable = getSecurityHeaders({ isHtml: true, allowIframe: true });
+  assert.equal(embeddable['X-Frame-Options'], undefined);
+  assert.equal(embeddable['Content-Security-Policy'].includes('frame-ancestors'), false);
+  assert.ok(embeddable['Content-Security-Policy'].includes("script-src 'self'"));
 });
 
 test('SlidingWindowRateLimiter enforces per-key request quota', () => {

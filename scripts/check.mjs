@@ -7,10 +7,17 @@ import { APP_VERSION, loadConfig, PACKAGE_ROOT, validateConfig } from '../src/co
 
 const execFileAsync = promisify(execFile);
 
-const IGNORED_DIRS = new Set(['.git', 'node_modules', 'data', '.work']);
+const IGNORED_DIRS = new Set(['.git', 'node_modules', 'data', '.work', 'assets']);
 const IGNORED_FILES = new Set(['config.local.json', 'ops-console.jsonl', 'audit.jsonl']);
 
 const PII_PATTERNS = [
+  { name: 'personal-github-handle', re: /\bveritaswiki\b/i },
+  {
+    name: 'personal-email',
+    re: /\b[A-Za-z0-9._%+-]+@(?!example\.com\b|example\.org\b|example\.net\b|users\.noreply\.github\.com\b|ops-console\.local\b|[A-Za-z0-9._-]+\.(?:service|timer|socket|target)\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/,
+  },
+  { name: 'personal-derp-code', re: /\bvolcbj\b/i },
+  { name: 'private-lan-ipv4', re: /\b192\.168\.\d{1,3}\.\d{1,3}\b/, skipTests: true },
   { name: 'non-example-cgnat-ip', re: /\b100\.(6[5-9]|[7-9]\d|1[0-2]\d)\.\d{1,3}\.\d{1,3}\b/ },
   { name: 'real-tailnet-domain', re: /tail[0-9a-f]{4,}\.ts\.net/i },
   { name: 'private-key-header', re: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----/ },
@@ -91,7 +98,7 @@ async function main() {
     failures.push(`Example config failed to load: ${err.message}`);
   }
 
-  const textExts = new Set(['.mjs', '.js', '.json', '.md', '.yml', '.yaml', '.sh', '.service', '.html', '.css', '.svg', '']);
+  const textExts = new Set(['.mjs', '.js', '.ts', '.tsx', '.json', '.md', '.yml', '.yaml', '.sh', '.service', '.html', '.css', '.svg', '']);
   let scanned = 0;
   for (const file of files) {
     const rel = path.relative(PACKAGE_ROOT, file);
@@ -100,7 +107,9 @@ async function main() {
     if (!textExts.has(ext) && path.basename(file) !== 'Dockerfile' && path.basename(file) !== 'LICENSE') continue;
     const content = await fs.readFile(file, 'utf8');
     scanned += 1;
+    const isTestFile = rel.startsWith('test/');
     for (const rule of PII_PATTERNS) {
+      if (rule.skipTests && isTestFile) continue;
       if (rule.re.test(content)) {
         failures.push(`PII/Secret rule [${rule.name}] matched in ${rel}`);
       }

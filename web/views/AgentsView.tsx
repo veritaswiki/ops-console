@@ -1,14 +1,39 @@
 import React from 'react';
-import { X } from 'lucide-react';
-import type { SnapshotResponse } from '../types';
-import { formatBytes } from '../utils/format';
+import {
+  Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from 'recharts';
+import { Cpu, X } from 'lucide-react';
+import type { GatewayTelemetryResponse, SnapshotResponse } from '../types';
+import { fetchGatewayTelemetry } from '../api';
+import { cn, FOCUS_RING } from '../lib/cn';
+import { formatBytes, formatCompactNumber, formatUptime } from '../utils/format';
 import {
   EmptyState,
+  KpiStrip,
   Panel,
   ResourceMeter,
+  SegmentedFilter,
   StatusIndicator,
 } from '../components/ui';
 import { ArchitectureGraph } from '../components/ArchitectureGraph';
+
+const TELEMETRY_MODES = [
+  { value: 'tokens', label: 'Token 吞吐 (K)' },
+  { value: 'latency', label: 'TTFT / P95 延迟 (ms)' },
+] as const;
+
+type TelemetryMode = (typeof TELEMETRY_MODES)[number]['value'];
+
+function formatHourLabel(ts: number): string {
+  const d = new Date(ts);
+  return `${String(d.getHours()).padStart(2, '0')}:00`;
+}
 
 export function AgentsView({
   snapshot,
@@ -26,6 +51,23 @@ export function AgentsView({
   const magpie = snapshot?.magpie;
   const processes = snapshot?.agents?.processes || [];
   const rowRefs = React.useRef<Record<number, HTMLTableRowElement | null>>({});
+
+  const [telemetry, setTelemetry] = React.useState<GatewayTelemetryResponse | null>(null);
+  const [chartMode, setChartMode] = React.useState<TelemetryMode>('tokens');
+
+  React.useEffect(() => {
+    let alive = true;
+    fetchGatewayTelemetry()
+      .then((res) => {
+        if (alive) setTelemetry(res);
+      })
+      .catch(() => {
+        // Non-blocking secondary telemetry
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   React.useEffect(() => {
     if (selectedPid != null && rowRefs.current[selectedPid]) {
@@ -48,23 +90,331 @@ export function AgentsView({
   const totalModels = magpie?.totalModels || providers.reduce((sum, p) => sum + p.count, 0) || 1;
   const agents = magpie?.agents || [];
 
+  const summary = telemetry?.summary;
+  const budgetPct = summary && summary.dailyBudgetUsd > 0
+    ? Math.min(100, Math.round((summary.estimatedCostUsd24h / summary.dailyBudgetUsd) * 100))
+    : 0;
+
   return (
     <div className="space-y-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight">
+        <div className="min-w-0">
+          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">
             网关与 Agent 运行时
           </h1>
-          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed">
-            Magpie 模型网关、上游渠道目录、共享 MCP 桥接与本地活跃 Agent 进程监控。
+          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed text-pretty">
+            Magpie 模型网关 Token/成本治理、渠道熔断状态、活跃 Agent 会话、本地加速器与进程监控。
           </p>
         </div>
-        <div className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums">
+        <div className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap">
           {magpie?.reachable
-            ? `${magpie.totalModels ?? 0} 模型 · ${providers.length} 渠道 · ${processes.length} 活跃进程`
+            ? `${formatCompactNumber(magpie.totalModels ?? 0)} 模型 · ${providers.length} 渠道 · ${processes.length} 活跃进程`
             : `${processes.length} 活跃进程`}
         </div>
       </div>
+
+      {summary && (
+        <KpiStrip
+          asymmetric
+          cells={[
+            {
+              label: '24h 估算成本与预算水位',
+              meta: `日预算 $${summary.dailyBudgetUsd.toFixed(0)}`,
+              value: `$${summary.estimatedCostUsd24h.toFixed(2)}`,
+              ratioPct: budgetPct,
+              sub: `累计 ${formatCompactNumber(summary.totalTokens)} Tokens · 缓存命中 ${summary.cacheHitPct}%`,
+              tone: budgetPct >= 85 ? 'warn' : 'ok',
+            },
+            {
+              label: '24h 网关请求量',
+              value: formatCompactNumber(summary.totalRequests),
+              numeric: { primary: summary.totalRequests },
+              sub: `异常率 ${summary.errorRatePct}% (429/5xx)`,
+              tone: summary.errorRatePct > 2 ? 'warn' : 'ok',
+            },
+            {
+              label: '平均 TTFT 首字延迟',
+              value: `${summary.avgTtftMs}ms`,
+              numeric: { primary: summary.avgTtftMs, suffix: 'ms' },
+              sub: `P95 端到端 ${summary.p95LatencyMs}ms`,
+            },
+            {
+              label: '活跃 Agent 会话',
+              value: String(telemetry?.sessions?.length ?? 0),
+              numeric: { primary: telemetry?.sessions?.length ?? 0 },
+              sub: `${processes.length} 个宿主机进程在线`,
+            },
+          ]}
+        />
+      )}
+
+      {telemetry && telemetry.hourly.length > 0 && (
+        <Panel
+          title="模型网关 24h 吞吐与延迟遥测"
+          description="追踪 Prompt / Completion Token 消耗趋势，以及首字响应 (TTFT) 与 P95 尾延迟变化。"
+          actions={
+            <SegmentedFilter
+              value={chartMode}
+              onChange={setChartMode}
+              options={TELEMETRY_MODES}
+              ariaLabel="切换网关图表维度"
+            />
+          }
+        >
+          <div className="h-[220px] w-full" data-testid="gateway-telemetry-chart">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={telemetry.hourly} margin={{ top: 8, right: 8, left: -16, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="gwPrimaryFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--accent)" stopOpacity={0.22} />
+                    <stop offset="95%" stopColor="var(--accent)" stopOpacity={0.01} />
+                  </linearGradient>
+                  <linearGradient id="gwSecondaryFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="var(--ok-dot)" stopOpacity={0.18} />
+                    <stop offset="95%" stopColor="var(--ok-dot)" stopOpacity={0.01} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid stroke="var(--border-subtle)" strokeDasharray="3 3" vertical={false} />
+                <XAxis
+                  dataKey="ts"
+                  tickFormatter={(v) => formatHourLabel(Number(v))}
+                  tick={{ fill: 'var(--ink-subtle)', fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  minTickGap={28}
+                />
+                <YAxis
+                  tick={{ fill: 'var(--ink-subtle)', fontSize: 11 }}
+                  axisLine={false}
+                  tickLine={false}
+                  tickFormatter={(v) => (chartMode === 'tokens' ? `${v}K` : `${v}ms`)}
+                />
+                <Tooltip
+                  contentStyle={{
+                    backgroundColor: 'var(--surface-elevated)',
+                    border: '1px solid var(--border)',
+                    borderRadius: '10px',
+                    fontSize: '12px',
+                    color: 'var(--ink)',
+                  }}
+                  labelFormatter={(label) => formatHourLabel(Number(label))}
+                />
+                {chartMode === 'tokens' ? (
+                  <>
+                    <Area
+                      type="monotone"
+                      dataKey="promptK"
+                      name="Prompt (K)"
+                      stroke="var(--accent)"
+                      strokeWidth={1.75}
+                      fill="url(#gwPrimaryFill)"
+                      isAnimationActive={false}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="completionK"
+                      name="Completion (K)"
+                      stroke="var(--ok-dot)"
+                      strokeWidth={1.75}
+                      fill="url(#gwSecondaryFill)"
+                      isAnimationActive={false}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <Area
+                      type="monotone"
+                      dataKey="p95Ms"
+                      name="P95 延迟 (ms)"
+                      stroke="var(--warn-dot)"
+                      strokeWidth={1.75}
+                      fill="url(#gwPrimaryFill)"
+                      isAnimationActive={false}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="ttftMs"
+                      name="TTFT 首字 (ms)"
+                      stroke="var(--accent)"
+                      strokeWidth={1.75}
+                      fill="url(#gwSecondaryFill)"
+                      isAnimationActive={false}
+                    />
+                  </>
+                )}
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        </Panel>
+      )}
+
+      {telemetry && (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+          <Panel
+            className="lg:col-span-7"
+            bodyClassName="p-0"
+            title="上游 Provider 成本与熔断状态"
+            description="监控各模型供应商的请求占比、平均 TTFT、错误率与熔断器状态。"
+          >
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
+                    <th className="py-2.5 pl-5 sm:pl-6 pr-3">Provider</th>
+                    <th className="py-2.5 px-3">熔断器</th>
+                    <th className="py-2.5 px-3 text-right">请求 / Token</th>
+                    <th className="py-2.5 px-3 text-right">TTFT</th>
+                    <th className="py-2.5 pl-3 pr-5 sm:pr-6 text-right">24h 成本</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
+                  {telemetry.providers.map((p) => (
+                    <tr
+                      key={p.name}
+                      className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out"
+                    >
+                      <td className="py-2.5 pl-5 sm:pl-6 pr-3 font-medium text-[var(--ink)]">
+                        {p.name}
+                      </td>
+                      <td className="py-2.5 px-3 whitespace-nowrap">
+                        <StatusIndicator
+                          status={
+                            p.circuitState === 'closed'
+                              ? 'healthy'
+                              : p.circuitState === 'half-open'
+                                ? 'degraded'
+                                : 'failed'
+                          }
+                          label={
+                            p.circuitState === 'closed'
+                              ? '闭合正常'
+                              : p.circuitState === 'half-open'
+                                ? '半开探活'
+                                : '已熔断'
+                          }
+                        />
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-[12px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
+                        {formatCompactNumber(p.requests)} · {p.tokensK}K
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-[12px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
+                        {p.avgTtftMs}ms
+                      </td>
+                      <td className="py-2.5 pl-3 pr-5 sm:pr-6 text-right font-mono text-[12.5px] font-medium text-[var(--ink)] tabular-nums whitespace-nowrap">
+                        ${p.costUsd.toFixed(2)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </Panel>
+
+          <Panel
+            className="lg:col-span-5"
+            title="本地推理加速器 (MLX / GPU)"
+            description="监控统一内存 / 显存水位、温度及常驻本地模型。"
+          >
+            {telemetry.accelerators.length === 0 ? (
+              <EmptyState message="未检测到本地推理加速器。" />
+            ) : (
+              <div className="space-y-4">
+                {telemetry.accelerators.map((acc) => {
+                  const vramPct = acc.vramTotalGb > 0
+                    ? Math.round((acc.vramUsedGb / acc.vramTotalGb) * 100)
+                    : 0;
+                  return (
+                    <div key={acc.id} className="space-y-3">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 font-medium text-[13.5px] text-[var(--ink)]">
+                            <Cpu className="size-4 text-[var(--accent)] shrink-0" strokeWidth={1.75} />
+                            <span className="truncate">{acc.name}</span>
+                          </div>
+                          <div className="mt-0.5 font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums">
+                            {acc.backend} · {acc.tempC}°C
+                          </div>
+                        </div>
+                        <span className="font-mono text-[12px] font-medium text-[var(--ink)] tabular-nums shrink-0">
+                          计算 {acc.utilizationPct}%
+                        </span>
+                      </div>
+                      <ResourceMeter
+                        label="显存 / 统一内存"
+                        value={vramPct}
+                        valueText={`${acc.vramUsedGb} / ${acc.vramTotalGb} GB (${vramPct}%)`}
+                      />
+                      {acc.activeModels.length > 0 && (
+                        <div className="font-mono text-[11.5px] text-[var(--ink-muted)] truncate" title={acc.activeModels.join(', ')}>
+                          常驻模型：{acc.activeModels.join(' · ')}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </Panel>
+        </div>
+      )}
+
+      {telemetry && telemetry.sessions.length > 0 && (
+        <Panel
+          title="活跃 Agent 会话与上下文水位"
+          description="追踪正在运行的自主代理会话、工具调用成功率与上下文窗口占用。"
+          bodyClassName="p-0"
+        >
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
+                  <th className="py-2.5 pl-5 sm:pl-6 pr-3">会话 / Agent</th>
+                  <th className="py-2.5 px-3">当前模型</th>
+                  <th className="py-2.5 px-3">状态</th>
+                  <th className="py-2.5 px-3">上下文水位</th>
+                  <th className="py-2.5 px-3 text-right">工具调用</th>
+                  <th className="py-2.5 pl-3 pr-5 sm:pr-6 text-right">时长 / 内存</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
+                {telemetry.sessions.map((s) => (
+                  <tr key={s.id} className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out">
+                    <td className="py-2.5 pl-5 sm:pl-6 pr-3">
+                      <div className="font-medium text-[var(--ink)]">{s.agent}</div>
+                      <div className="font-mono text-[11.5px] text-[var(--ink-subtle)]">{s.id}</div>
+                    </td>
+                    <td className="py-2.5 px-3 font-mono text-[12px] text-[var(--ink-muted)]">
+                      {s.model}
+                    </td>
+                    <td className="py-2.5 px-3 whitespace-nowrap">
+                      <StatusIndicator
+                        status={s.state === 'running' ? 'healthy' : 'standby'}
+                        label={s.state === 'running' ? '推理中' : '待机'}
+                      />
+                    </td>
+                    <td className="py-2.5 px-3 min-w-[140px]">
+                      <ResourceMeter
+                        value={s.contextPct}
+                        valueText={`${s.contextPct}%`}
+                        tone={s.contextPct >= 80 ? 'warn' : 'ok'}
+                      />
+                    </td>
+                    <td className="py-2.5 px-3 text-right font-mono text-[12px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
+                      {s.toolCalls} 次
+                      {s.failedTools > 0 && (
+                        <span className="ml-1 text-[var(--err)]">({s.failedTools} 失败)</span>
+                      )}
+                    </td>
+                    <td className="py-2.5 pl-3 pr-5 sm:pr-6 text-right font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap">
+                      {formatUptime(s.uptimeSec)} · {s.memoryMb}MB
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
 
       <Panel
         title="Agent 路由与模型分发图谱"
@@ -77,7 +427,7 @@ export function AgentsView({
         />
       </Panel>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         <Panel
           className="lg:col-span-6"
           title="Magpie 模型供给分布"
@@ -93,7 +443,7 @@ export function AgentsView({
                   key={p.name}
                   label={p.name}
                   value={(p.count / totalModels) * 100}
-                  valueText={`${p.count} 模型`}
+                  valueText={`${formatCompactNumber(p.count)} 模型`}
                   tone="ok"
                 />
               ))}
@@ -110,11 +460,13 @@ export function AgentsView({
             {agents.length > 0 ? (
               <ul className="divide-y divide-[var(--border-subtle)] text-[13px]">
                 {agents.slice(0, 6).map((a, i) => (
-                  <li key={a.id || a.name || i} className="py-2 first:pt-0 flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <span className="font-medium text-[var(--ink)]">{a.name || a.id}</span>
+                  <li key={a.id || a.name || i} className="py-2.5 first:pt-0 flex items-center justify-between gap-3">
+                    <div className="min-w-0 flex-1 flex items-baseline gap-2">
+                      <span className="font-medium text-[var(--ink)] truncate" title={a.name || a.id}>
+                        {a.name || a.id}
+                      </span>
                       {a.model && (
-                        <span className="ml-2 font-mono text-[12px] text-[var(--ink-subtle)]">
+                        <span className="font-mono text-[12px] text-[var(--ink-subtle)] truncate" title={a.model}>
                           {a.model}
                         </span>
                       )}
@@ -136,7 +488,7 @@ export function AgentsView({
                   </span>
                 </div>
                 {Array.isArray(magpie.library.mcps) && magpie.library.mcps.length > 0 && (
-                  <p className="mt-1.5 font-mono text-[12px] text-[var(--ink-subtle)]">
+                  <p className="mt-1.5 font-mono text-[12px] text-[var(--ink-subtle)] leading-relaxed text-pretty">
                     {magpie.library.mcps
                       .map((m) => (typeof m === 'string' ? m : m.name))
                       .filter(Boolean)
@@ -161,20 +513,26 @@ export function AgentsView({
                   type="button"
                   data-testid="clear-pid-filter"
                   onClick={() => onSelectPid(null)}
-                  className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-[6px] border border-[var(--accent)] bg-[var(--accent-soft)] text-[12.5px] font-mono font-medium text-[var(--accent)] hover:opacity-85 transition-opacity cursor-pointer"
+                  className={cn(
+                    'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[12.5px] font-mono font-medium text-[var(--accent)] hover:opacity-85 active:scale-[0.97] transition-[opacity,transform] duration-150 ease-out cursor-pointer select-none',
+                    FOCUS_RING,
+                  )}
                 >
-                  <span>PID {selectedPid}</span>
-                  <X className="h-3.5 w-3.5" />
+                  <span className="tabular-nums">PID {selectedPid}</span>
+                  <X className="size-3.5" strokeWidth={1.75} />
                 </button>
               )}
               {selectedCategory && (
                 <button
                   type="button"
                   onClick={() => onSelectCategory('')}
-                  className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-[6px] border border-[var(--border)] bg-[var(--surface-subtle)] text-[12.5px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer"
+                  className={cn(
+                    'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-subtle)] text-[12.5px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] active:scale-[0.97] transition-[background-color,transform] duration-150 ease-out cursor-pointer select-none',
+                    FOCUS_RING,
+                  )}
                 >
                   <span>筛选：{selectedCategory}</span>
-                  <X className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
+                  <X className="size-3.5 text-[var(--ink-muted)]" strokeWidth={1.75} />
                 </button>
               )}
             </div>
@@ -182,17 +540,31 @@ export function AgentsView({
         }
       >
         {filteredProcesses.length === 0 ? (
-          <EmptyState message="当前主机没有匹配到活跃 Agent 进程。" />
+          <EmptyState
+            title="未匹配到活跃进程"
+            message="当前主机没有匹配到活跃 Agent 进程。"
+            action={
+              selectedCategory || selectedPid != null
+                ? {
+                    label: '清除筛选',
+                    onClick: () => {
+                      onSelectCategory('');
+                      onSelectPid?.(null);
+                    },
+                  }
+                : undefined
+            }
+          />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
-                  <th className="py-2.5 pl-5 pr-3">PID</th>
+                  <th className="py-2.5 pl-5 sm:pl-6 pr-3">PID</th>
                   <th className="py-2.5 px-3">分类</th>
                   <th className="py-2.5 px-3 text-right">CPU</th>
                   <th className="py-2.5 px-3 text-right">内存</th>
-                  <th className="py-2.5 pl-3 pr-5">命令行</th>
+                  <th className="py-2.5 pl-3 pr-5 sm:pr-6">命令行</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
@@ -206,13 +578,14 @@ export function AgentsView({
                       }}
                       data-pid={proc.pid}
                       data-selected-pid={isPidSelected ? 'true' : undefined}
-                      className={`transition-colors ${
+                      className={cn(
+                        'transition-colors duration-150 ease-out',
                         isPidSelected
                           ? 'bg-[var(--accent-soft)]'
-                          : 'hover:bg-[var(--surface-hover)]'
-                      }`}
+                          : 'hover:bg-[var(--surface-hover)]',
+                      )}
                     >
-                      <td className="py-2.5 pl-5 pr-3 font-mono text-[12.5px] font-medium text-[var(--ink)] tabular-nums">
+                      <td className="py-2.5 pl-5 sm:pl-6 pr-3 font-mono text-[12.5px] font-medium text-[var(--ink)] tabular-nums">
                         {proc.pid}
                       </td>
                       <td className="py-2.5 px-3 font-medium text-[var(--ink)] whitespace-nowrap">
@@ -224,7 +597,10 @@ export function AgentsView({
                       <td className="py-2.5 px-3 text-right font-mono text-[12.5px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
                         {formatBytes(proc.memoryBytes ?? proc.rssBytes)}
                       </td>
-                      <td className="py-2.5 pl-3 pr-5 font-mono text-[12px] text-[var(--ink-muted)] max-w-[460px] truncate" title={proc.cmd || proc.command}>
+                      <td
+                        className="py-2.5 pl-3 pr-5 sm:pr-6 font-mono text-[12px] text-[var(--ink-muted)] max-w-[460px] truncate"
+                        title={proc.cmd || proc.command}
+                      >
                         {proc.cmd || proc.command || '-'}
                       </td>
                     </tr>

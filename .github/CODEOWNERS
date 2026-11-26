@@ -1,7 +1,7 @@
 # Default owners for everything in the repository
-* @veritaswiki
+* @ops-console/maintainers
 
 # Security-critical modules & policies
-/src/security.mjs @veritaswiki
-/SECURITY.md @veritaswiki
-/.github/workflows/ @veritaswiki
+/src/security.mjs @ops-console/maintainers
+/SECURITY.md @ops-console/maintainers
+/.github/workflows/ @ops-console/maintainers

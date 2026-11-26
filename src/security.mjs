@@ -77,11 +77,14 @@ export function checkRequestAuth(req, url, webKey) {
   return { authorized: false, method: 'denied' };
 }
 
-export function verifySameOrigin(req, allowedOrigins = []) {
+export function verifySameOrigin(req, allowedOrigins = [], opts = {}) {
   const authHeader = String(req.headers.authorization || '');
   if (authHeader.startsWith('Bearer ')) return true;
 
   const host = String(req.headers.host || '').toLowerCase();
+  const forwardedHost = opts.trustProxy
+    ? String(req.headers['x-forwarded-host'] || '').split(',')[0].trim().toLowerCase()
+    : '';
   const origin = req.headers.origin ? String(req.headers.origin) : '';
   const referer = req.headers.referer ? String(req.headers.referer) : '';
 
@@ -90,7 +93,9 @@ export function verifySameOrigin(req, allowedOrigins = []) {
   const checkHeaderUrl = (raw) => {
     try {
       const parsed = new URL(raw);
-      if (parsed.host.toLowerCase() === host) return true;
+      const parsedHost = parsed.host.toLowerCase();
+      if (parsedHost === host) return true;
+      if (forwardedHost && parsedHost === forwardedHost) return true;
       if (allowedOrigins.includes(parsed.origin)) return true;
       return false;
     } catch {
@@ -105,23 +110,29 @@ export function verifySameOrigin(req, allowedOrigins = []) {
 
 export function getSecurityHeaders(opts = {}) {
   const isHtml = Boolean(opts.isHtml);
+  const allowIframe = Boolean(opts.allowIframe);
   const headers = {
     'X-Content-Type-Options': 'nosniff',
-    'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'no-referrer',
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
   };
+  if (!allowIframe) {
+    headers['X-Frame-Options'] = 'DENY';
+  }
   if (isHtml) {
-    headers['Content-Security-Policy'] = [
+    const directives = [
       "default-src 'self'",
       "script-src 'self'",
       "style-src 'self' 'unsafe-inline'",
       "font-src 'self' data:",
       "img-src 'self' data:",
       "connect-src 'self'",
-      "frame-ancestors 'none'",
       "base-uri 'self'",
-    ].join('; ');
+    ];
+    if (!allowIframe) {
+      directives.push("frame-ancestors 'none'");
+    }
+    headers['Content-Security-Policy'] = directives.join('; ');
   }
   return headers;
 }

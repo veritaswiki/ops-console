@@ -4,14 +4,18 @@ import http from 'node:http';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { ActionController } from './actions.mjs';
+import { AlertEngine } from './alerts.mjs';
 import { SingleFlightCache } from './cache.mjs';
-import { APP_VERSION, PACKAGE_ROOT } from './config.mjs';
+import { APP_VERSION, PACKAGE_ROOT, validateConfig } from './config.mjs';
 import { createDemoProvider } from './connectors/demo.mjs';
 import { ConnectorHub } from './connectors/index.mjs';
+import { ControlPlaneEventBus } from './events.mjs';
 import { StructuredLogger } from './logger.mjs';
 import { LogService } from './logs.mjs';
 import { isTailscaleOrLoopbackIp, ProbeRegistry, validateNodeId } from './probes.mjs';
+import { PluginManager } from './plugins/manager.mjs';
 import { maskClientIp } from './redact.mjs';
+import { RunbookEngine } from './runbooks.mjs';
 import { TelemetryStore } from './store.mjs';
 import { TimeSeriesStore } from './timeseries.mjs';
 import {
@@ -32,6 +36,7 @@ const MIME_TYPES = {
   '.js': 'application/javascript; charset=utf-8',
   '.mjs': 'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
+  '.webmanifest': 'application/manifest+json; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
   '.ico': 'image/x-icon',
@@ -81,14 +86,14 @@ function isHttpsRequest(req, trustProxy = false) {
   return false;
 }
 
-function sendJson(res, statusCode, payload, extraHeaders = {}, req = null) {
+function sendJsonWithHeaders(res, statusCode, payload, extraHeaders = {}, req = null, securityHeaders = {}) {
   const rawBuf = Buffer.from(JSON.stringify(payload), 'utf8');
   const encoding = rawBuf.length >= COMPRESS_MIN_BYTES ? chooseEncoding(req) : '';
   let outBuf = rawBuf;
   const headers = {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
-    ...getSecurityHeaders({ isHtml: false }),
+    ...securityHeaders,
     ...extraHeaders,
   };
   if (encoding) {
@@ -107,11 +112,11 @@ function sendJson(res, statusCode, payload, extraHeaders = {}, req = null) {
   }
 }
 
-function sendHtml(res, statusCode, html, extraHeaders = {}) {
+function sendHtmlWithHeaders(res, statusCode, html, extraHeaders = {}, securityHeaders = {}) {
   res.writeHead(statusCode, {
     'Content-Type': 'text/html; charset=utf-8',
     'Cache-Control': 'no-store',
-    ...getSecurityHeaders({ isHtml: true }),
+    ...securityHeaders,
     ...extraHeaders,
   });
   res.end(html);
@@ -208,9 +213,20 @@ export function createOpsConsole(options = {}) {
     store,
   });
   const probeRegistry = options.probeRegistry || new ProbeRegistry({ config, logger, timeseries });
-  const hub = options.hub || new ConnectorHub({ config, cache, demoProvider, probeRegistry, store });
+  const eventBus = options.eventBus || new ControlPlaneEventBus({ maxStreams: config.security?.maxSseStreams || 8 });
+  const pluginManager = options.pluginManager || new PluginManager({ config, logger });
+  const hub = options.hub || new ConnectorHub({ config, cache, demoProvider, probeRegistry, store, pluginManager });
   const logs = options.logs || new LogService({ config, logger, demoProvider });
   const actions = options.actions || new ActionController({ config, logger, cache, demoProvider });
+  const alertEngine = options.alertEngine || new AlertEngine({ eventBus, logger, demo: config.demo });
+  const runbookEngine = options.runbookEngine || new RunbookEngine({
+    config,
+    connectors: hub,
+    actions,
+    logs,
+    logger,
+    eventBus,
+  });
 
   const generalLimiter = new SlidingWindowRateLimiter({
     windowMs: 60_000,
@@ -225,6 +241,12 @@ export function createOpsConsole(options = {}) {
     maxRequests: 30,
   });
   const staticCache = new Map();
+  const allowIframe = Boolean(config.security?.allowIframe);
+  const secHeaders = (isHtml = false) => getSecurityHeaders({ isHtml, allowIframe });
+  const sendJson = (res, statusCode, payload, extraHeaders = {}, req = null) =>
+    sendJsonWithHeaders(res, statusCode, payload, extraHeaders, req, secHeaders(false));
+  const sendHtml = (res, statusCode, html, extraHeaders = {}) =>
+    sendHtmlWithHeaders(res, statusCode, html, extraHeaders, secHeaders(true));
 
   function auditIp(rawIp) {
     return config.security?.exposeClientIps ? rawIp : maskClientIp(rawIp);
@@ -248,7 +270,7 @@ export function createOpsConsole(options = {}) {
     if (!resolved) {
       res.writeHead(404, {
         'Content-Type': 'text/plain; charset=utf-8',
-        ...getSecurityHeaders({ isHtml: false }),
+        ...secHeaders(false),
       });
       res.end('Not Found');
       return;
@@ -258,12 +280,12 @@ export function createOpsConsole(options = {}) {
     try {
       stat = await fs.stat(resolved);
       if (!stat.isFile()) {
-        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...getSecurityHeaders() });
+        res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...secHeaders(false) });
         res.end('Not Found');
         return;
       }
     } catch {
-      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...getSecurityHeaders() });
+      res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8', ...secHeaders(false) });
       res.end('Not Found');
       return;
     }
@@ -289,12 +311,13 @@ export function createOpsConsole(options = {}) {
       staticCache.set(resolved, cached);
     }
 
+    const isServiceWorker = path.basename(resolved) === 'sw.js';
     const headers = {
       'Content-Type': contentType,
-      'Cache-Control': isHtml ? 'no-cache' : 'public, max-age=60',
+      'Cache-Control': isHtml || isServiceWorker ? 'no-cache, no-store, must-revalidate' : 'public, max-age=60',
       ETag: cached.etag,
       Vary: 'Accept-Encoding',
-      ...getSecurityHeaders({ isHtml }),
+      ...secHeaders(isHtml),
     };
     if (String(req.headers['if-none-match'] || '').trim() === cached.etag) {
       res.writeHead(304, headers);
@@ -381,7 +404,9 @@ export function createOpsConsole(options = {}) {
             sourceIp: clientIp,
             via: 'probe-token',
           });
-          sendJson(res, 200, ingestResult);
+          const pendingCommands = probeRegistry.drainPendingCommands(record.id);
+          eventBus.emit('probe_heartbeat', { nodeId: record.id, pendingCommands: pendingCommands.length });
+          sendJson(res, 200, { ...ingestResult, pendingCommands });
         } catch (ingestErr) {
           sendJson(res, 400, { ok: false, error: ingestErr.message });
         }
@@ -395,7 +420,7 @@ export function createOpsConsole(options = {}) {
       }
 
       if (MUTATING_METHODS.has(method)) {
-        if (!verifySameOrigin(req, config.security.allowedOrigins)) {
+        if (!verifySameOrigin(req, config.security.allowedOrigins, { trustProxy: Boolean(config.security.trustProxy) })) {
           logger.warn('csrf_rejected', { requestId, ip: clientIp, method, path: pathname });
           sendJson(res, 403, { ok: false, error: 'Cross-origin request rejected' });
           return;
@@ -412,7 +437,7 @@ export function createOpsConsole(options = {}) {
         const candidate = String(data.key ?? data.webKey ?? '');
         if (!config.auth.webKey) {
           if (isForm) {
-            res.writeHead(303, { Location: '/', ...getSecurityHeaders() });
+            res.writeHead(303, { Location: '/', ...secHeaders(false) });
             res.end();
           } else {
             sendJson(res, 200, { ok: true, authEnabled: false });
@@ -439,7 +464,7 @@ export function createOpsConsole(options = {}) {
           res.writeHead(303, {
             Location: '/',
             'Set-Cookie': cookieHeader,
-            ...getSecurityHeaders(),
+            ...secHeaders(false),
           });
           res.end();
         } else {
@@ -461,7 +486,7 @@ export function createOpsConsole(options = {}) {
           res.writeHead(302, {
             Location: cleanTarget,
             'Set-Cookie': buildSessionCookie(auth.setCookieToken, isHttps),
-            ...getSecurityHeaders(),
+            ...secHeaders(false),
           });
           res.end();
           return;
@@ -503,6 +528,7 @@ export function createOpsConsole(options = {}) {
           requireTailscaleCidr: config.fleet?.requireTailscaleCidr !== false,
           localNodeId: config.fleet?.localNode?.id || 'hub-primary',
           enrolledProbesCount: probeRegistry.records.size,
+          pluginsCount: pluginManager.plugins.size,
           hosts: config.console.hosts,
           port: config.console.port,
           layers: config.layers,
@@ -513,6 +539,125 @@ export function createOpsConsole(options = {}) {
           },
         }, {}, req);
         return;
+      }
+
+      if (method === 'GET' && pathname === '/api/plugins') {
+        const force = url.searchParams.get('refresh') === '1';
+        const snapshot = await hub.collectSnapshot(force);
+        sendJson(res, 200, pluginManager.listPlugins(snapshot), {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/plugins/custom') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Plugin creation is disabled in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const created = await pluginManager.addCustomPlugin(data);
+        if (created.ok) {
+          cache.invalidate?.('snapshot');
+          cache.invalidate?.('extra-plugins');
+          await logger.appendAudit({
+            category: 'plugin',
+            action: 'plugin_custom_add',
+            target: created.id,
+            actor: 'web',
+            ip: auditIp(clientIp),
+            requestId,
+            ok: true,
+            output: `kind=${data.kind || 'custom'} url=${data.apiUrl || ''}`,
+          });
+          eventBus.emit('plugins_updated', { action: 'add', id: created.id });
+        }
+        sendJson(res, created.statusCode || (created.ok ? 201 : 400), created);
+        return;
+      }
+
+      if (method === 'DELETE' && pathname.startsWith('/api/plugins/custom/')) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Plugin deletion is disabled in read-only mode' });
+          return;
+        }
+        const pluginId = decodeURIComponent(pathname.slice('/api/plugins/custom/'.length)).trim();
+        const removed = await pluginManager.removeCustomPlugin(pluginId);
+        if (removed.ok) {
+          cache.invalidate?.('snapshot');
+          cache.invalidate?.('extra-plugins');
+          await logger.appendAudit({
+            category: 'plugin',
+            action: 'plugin_custom_remove',
+            target: pluginId,
+            actor: 'web',
+            ip: auditIp(clientIp),
+            requestId,
+            ok: true,
+            output: 'removed',
+          });
+          eventBus.emit('plugins_updated', { action: 'remove', id: pluginId });
+        }
+        sendJson(res, removed.statusCode || (removed.ok ? 200 : 400), removed);
+        return;
+      }
+
+      if (method === 'POST' && /^\/api\/plugins\/[a-z0-9-]+\/(toggle|config|test)$/.test(pathname)) {
+        const [, , , pluginId, pluginAction] = pathname.split('/');
+        if ((pluginAction === 'toggle' || pluginAction === 'config') && config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Plugin changes are disabled in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        if (pluginAction === 'toggle') {
+          const toggled = await pluginManager.togglePlugin(pluginId, data.enabled);
+          if (toggled.ok) {
+            cache.invalidate?.('snapshot');
+            cache.invalidate?.('extra-plugins');
+            cache.invalidate?.('memory');
+            cache.invalidate?.('network');
+            cache.invalidate?.('magpie');
+            await logger.appendAudit({
+              category: 'plugin',
+              action: toggled.enabled ? 'plugin_enable' : 'plugin_disable',
+              target: pluginId,
+              actor: 'web',
+              ip: auditIp(clientIp),
+              requestId,
+              ok: true,
+              output: `enabled=${toggled.enabled}`,
+            });
+            eventBus.emit('plugins_updated', { action: 'toggle', id: pluginId, enabled: toggled.enabled });
+          }
+          sendJson(res, toggled.statusCode || (toggled.ok ? 200 : 400), toggled);
+          return;
+        }
+        if (pluginAction === 'config') {
+          const updated = await pluginManager.updatePluginConfig(pluginId, data.config || data);
+          if (updated.ok) {
+            cache.invalidate?.('snapshot');
+            cache.invalidate?.('extra-plugins');
+            cache.invalidate?.('memory');
+            cache.invalidate?.('network');
+            cache.invalidate?.('magpie');
+            await logger.appendAudit({
+              category: 'plugin',
+              action: 'plugin_config',
+              target: pluginId,
+              actor: 'web',
+              ip: auditIp(clientIp),
+              requestId,
+              ok: true,
+              output: `keys=${Object.keys(data.config || data).join(',')}`,
+            });
+            eventBus.emit('plugins_updated', { action: 'config', id: pluginId });
+          }
+          sendJson(res, updated.statusCode || (updated.ok ? 200 : 400), updated);
+          return;
+        }
+        if (pluginAction === 'test') {
+          const tested = await pluginManager.testPlugin(pluginId, data.config || null);
+          sendJson(res, tested.statusCode || 200, tested);
+          return;
+        }
       }
 
       if (method === 'GET' && (pathname === '/api/nodes' || pathname === '/api/fleet')) {
@@ -647,12 +792,345 @@ export function createOpsConsole(options = {}) {
         return;
       }
 
+      if (method === 'GET' && pathname === '/api/events/stream') {
+        eventBus.attachSse(req, res, secHeaders(false));
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/metrics/series') {
+        const series = String(url.searchParams.get('series') || 'fleet').trim();
+        const range = String(url.searchParams.get('range') || '24h').trim();
+        const stored = store.querySeries({ series, range });
+        const result = stored.points.length >= 12 || !config.demo || !demoProvider
+          ? stored
+          : demoProvider.getHistoricalSeries(series, range);
+        sendJson(res, 200, { ok: true, ...result }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/metrics') {
+        const snapshot = await hub.collectSnapshot(false);
+        const host = snapshot.host || {};
+        const svcs = snapshot.services?.items || [];
+        const healthyCount = svcs.filter((s) => s.status === 'healthy').length;
+        const lines = [
+          '# HELP ops_console_host_memory_used_percent Host memory utilization percentage',
+          '# TYPE ops_console_host_memory_used_percent gauge',
+          `ops_console_host_memory_used_percent ${Number(host.memory?.usedPercent ?? 0).toFixed(2)}`,
+          '# HELP ops_console_host_load1 Host 1-minute load average',
+          '# TYPE ops_console_host_load1 gauge',
+          `ops_console_host_load1 ${Number(host.load1 ?? 0).toFixed(2)}`,
+          '# HELP ops_console_services_healthy Number of healthy managed services',
+          '# TYPE ops_console_services_healthy gauge',
+          `ops_console_services_healthy ${healthyCount}`,
+          '# HELP ops_console_services_total Total configured managed services',
+          '# TYPE ops_console_services_total gauge',
+          `ops_console_services_total ${svcs.length}`,
+          '# HELP ops_console_fleet_nodes_online Number of online fleet nodes',
+          '# TYPE ops_console_fleet_nodes_online gauge',
+          `ops_console_fleet_nodes_online ${Number(snapshot.fleet?.summary?.online ?? 0)}`,
+          '# HELP ops_console_alerts_active Active unacknowledged alerts',
+          '# TYPE ops_console_alerts_active gauge',
+          `ops_console_alerts_active ${alertEngine.alerts.filter((a) => a.status === 'active').length}`,
+        ];
+        res.writeHead(200, {
+          'Content-Type': 'text/plain; version=0.0.4; charset=utf-8',
+          'Cache-Control': 'no-store',
+          ...secHeaders(false),
+        });
+        res.end(`${lines.join('\n')}\n`);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/alerts') {
+        const snapshot = await hub.collectSnapshot(false);
+        const incidents = config.demo && demoProvider
+          ? demoProvider.getIncidents()
+          : store.listIncidents({ limit: 100 });
+        alertEngine.evaluateSnapshot(snapshot);
+        sendJson(res, 200, alertEngine.getState({ snapshot, incidents }), {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/alerts/rules') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: '只读模式已禁用新增告警规则' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const rule = alertEngine.createRule(data);
+        await logger.appendAudit({
+          category: 'alerts',
+          target: rule.id,
+          action: 'create-rule',
+          ok: true,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          requestId,
+          output: `${rule.name} (${rule.metric} ${rule.operator} ${rule.threshold})`,
+        });
+        sendJson(res, 201, { ok: true, rule }, {}, req);
+        return;
+      }
+
+      if (method === 'PATCH' && pathname.startsWith('/api/alerts/rules/')) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: '只读模式已禁用修改告警规则' });
+          return;
+        }
+        const ruleId = decodeURIComponent(pathname.slice('/api/alerts/rules/'.length)).trim();
+        const { data } = await readBody(req);
+        const rule = alertEngine.updateRule(ruleId, data);
+        sendJson(res, 200, { ok: true, rule }, {}, req);
+        return;
+      }
+
+      if (method === 'DELETE' && pathname.startsWith('/api/alerts/rules/')) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: '只读模式已禁用删除告警规则' });
+          return;
+        }
+        const ruleId = decodeURIComponent(pathname.slice('/api/alerts/rules/'.length)).trim();
+        const removed = alertEngine.deleteRule(ruleId);
+        sendJson(res, 200, { ok: true, removed }, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/alerts/silence') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: '只读模式已禁用告警静默' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = alertEngine.setSilence(data.minutes);
+        sendJson(res, 200, { ok: true, ...result }, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && /^\/api\/alerts\/[^/]+\/ack$/.test(pathname)) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: '只读模式已禁用告警认领' });
+          return;
+        }
+        const alertId = decodeURIComponent(pathname.split('/')[3] || '').trim();
+        const acked = alertEngine.ackAlert(alertId, 'web');
+        sendJson(res, 200, { ok: true, alert: acked }, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && /^\/api\/incidents\/[^/]+\/note$/.test(pathname)) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: '只读模式已禁用事件复盘备注' });
+          return;
+        }
+        const incId = decodeURIComponent(pathname.split('/')[3] || '').trim();
+        const { data } = await readBody(req);
+        const updated = config.demo && demoProvider
+          ? demoProvider.updateIncidentNote(incId, data.note)
+          : store.updateIncidentNote(incId, data.note);
+        if (!updated) {
+          sendJson(res, 404, { ok: false, error: `未找到事件 ID: ${incId}` });
+          return;
+        }
+        eventBus.emit('incident_updated', updated);
+        sendJson(res, 200, { ok: true, ...updated }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/gateway/telemetry') {
+        if (config.demo && demoProvider) {
+          sendJson(res, 200, demoProvider.getGatewayTelemetry(), {}, req);
+          return;
+        }
+        const snap = await hub.collectSnapshot(false);
+        const providers = (snap.magpie?.providers || []).map((p) => ({
+          name: p.name,
+          requests: p.count || 0,
+          tokensK: 0,
+          avgTtftMs: snap.magpie?.latencyMs ?? 0,
+          errorRatePct: 0,
+          costUsd: 0,
+          circuitState: 'closed',
+        }));
+        sendJson(res, 200, {
+          ok: true,
+          window: '24h',
+          summary: {
+            totalRequests: providers.reduce((a, b) => a + b.requests, 0),
+            totalTokens: 0,
+            avgTtftMs: snap.magpie?.latencyMs ?? 0,
+            p95LatencyMs: snap.magpie?.latencyMs ?? 0,
+            cacheHitPct: 0,
+            estimatedCostUsd24h: 0,
+            dailyBudgetUsd: 10,
+            errorRatePct: 0,
+          },
+          providers,
+          sessions: [],
+          accelerators: [],
+          hourly: [],
+        }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/memory/compare') {
+        const q = String(url.searchParams.get('q') || '').trim();
+        if (config.demo && demoProvider) {
+          sendJson(res, 200, demoProvider.compareMemory(q), {}, req);
+          return;
+        }
+        const resAll = await hub.searchMemory('all', q, 8);
+        const items = (resAll.items || []).map((item, idx) => ({
+          id: item.id || `cmp-${idx}`,
+          title: item.title || item.uri || 'Untitled',
+          snippet: item.snippet || '',
+          nmemScore: item.provider === 'nmem' ? Number(item.score ?? 0.8) : 0,
+          ovScore: item.provider === 'openviking' ? Number(item.score ?? 0.8) : 0,
+          rerankScore: Number(item.score ?? 0.8),
+          delta: 0,
+          source: item.provider || 'memory',
+        }));
+        sendJson(res, 200, {
+          ok: true,
+          query: q,
+          timingsMs: { nmem: 0, openviking: 0, rerank: 0, total: 0 },
+          items,
+        }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/runbooks') {
+        sendJson(res, 200, runbookEngine.list(), {}, req);
+        return;
+      }
+
+      if (method === 'POST' && /^\/api\/runbooks\/[^/]+\/run$/.test(pathname)) {
+        const runbookId = decodeURIComponent(pathname.split('/')[3] || '').trim();
+        const result = await runbookEngine.execute(runbookId, {
+          actor: 'web',
+          ip: clientIp,
+          requestId,
+        });
+        sendJson(res, result.ok ? 200 : 500, result, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && /^\/api\/probes\/[^/]+\/commands$/.test(pathname)) {
+        const nodeId = decodeURIComponent(pathname.split('/')[3] || '').trim();
+        sendJson(res, 200, { ok: true, nodeId, items: probeRegistry.listCommands(nodeId) }, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && /^\/api\/probes\/[^/]+\/commands$/.test(pathname)) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: '只读模式已禁用探针指令队列' });
+          return;
+        }
+        const nodeId = decodeURIComponent(pathname.split('/')[3] || '').trim();
+        const { data } = await readBody(req);
+        const queued = probeRegistry.enqueueCommand(nodeId, data.command, 'web');
+        await logger.appendAudit({
+          category: 'probe',
+          target: nodeId,
+          action: `queue:${queued.command}`,
+          ok: true,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          requestId,
+          output: `Queued pull command ${queued.id} (expires ${queued.expiresAt})`,
+        });
+        eventBus.emit('probe_command', { nodeId, command: queued.command, id: queued.id });
+        sendJson(res, 201, { ok: true, command: queued }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/config/studio') {
+        const redactedConfig = {
+          console: {
+            name: config.console.name,
+            hosts: config.console.hosts,
+            port: config.console.port,
+            readOnly: config.console.readOnly,
+            demo: config.demo,
+          },
+          security: {
+            requireCriticalConfirm: Boolean(config.security?.requireCriticalConfirm),
+            exposeClientIps: Boolean(config.security?.exposeClientIps),
+            rateLimitPerMinute: config.security?.rateLimitPerMinute || 240,
+            mutatingRateLimitPerMinute: config.security?.mutatingRateLimitPerMinute || 30,
+            maxSseStreams: config.security?.maxSseStreams || 8,
+            authMode: config.auth?.webKey ? 'web-key + session-cookie' : 'tailnet-loopback',
+          },
+          storage: {
+            driver: store.driver,
+            rawRetentionDays: config.storage?.rawRetentionDays || 7,
+            rollup1mDays: config.storage?.rollup1mDays || 30,
+            rollup5mDays: config.storage?.rollup5mDays || 365,
+          },
+          services: (config.services || []).map((s) => ({
+            id: s.id,
+            unit: s.unit,
+            scope: s.scope,
+            layer: s.layer,
+            risk: s.risk || 'standard',
+            allowedActions: s.allowedActions || ['start', 'stop', 'restart', 'reload'],
+          })),
+          rbacPosture: {
+            currentActor: config.console.readOnly ? 'Viewer (Read-Only)' : 'Admin (Local / Web Key)',
+            roles: [
+              { role: 'Viewer', permissions: ['只读观测', '指标趋势', '日志检索'], active: config.console.readOnly },
+              { role: 'Operator', permissions: ['非关键服务启停', '告警认领', 'Runbook 手动执行'], active: !config.console.readOnly },
+              { role: 'Admin', permissions: ['关键服务双确认操作', '探针签发/吊销', '配置校验与导出'], active: !config.console.readOnly },
+            ],
+            ssoAdapters: ['Tailscale-User-Login Header', 'WebAuthn / Passkey (Schema Ready)', 'OIDC Proxy Header'],
+          },
+        };
+        const serviceListForSudoers =
+          (config.services && config.services.length > 0)
+            ? config.services
+            : (config.demo && demoProvider ? demoProvider.getSnapshot(config).services?.items || [] : []);
+        const sudoersLines = serviceListForSudoers
+          .filter((s) => s.scope === 'system')
+          .map((s) => {
+            const verbs = (s.allowedActions || ['restart']).join(',');
+            return `ops-user ALL=(root) NOPASSWD: /usr/bin/systemctl ${verbs} ${s.unit}`;
+          });
+        sendJson(res, 200, {
+          ok: true,
+          config: redactedConfig,
+          sudoersPreview: sudoersLines.length
+            ? sudoersLines.join('\n')
+            : '# 当前无系统级 systemd 服务需要 sudoers 授权',
+          prometheusEndpoint: '/api/metrics',
+        }, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/config/validate') {
+        const { data } = await readBody(req);
+        let parsed = data.config;
+        if (typeof data.rawJson === 'string') {
+          try {
+            parsed = JSON.parse(data.rawJson);
+          } catch (parseErr) {
+            sendJson(res, 200, { ok: false, valid: false, errors: [`JSON 语法错误: ${parseErr.message}`] }, {}, req);
+            return;
+          }
+        }
+        const check = validateConfig(parsed || {});
+        sendJson(res, 200, { ok: true, valid: check.valid, errors: check.errors || [] }, {}, req);
+        return;
+      }
+
       if (method === 'GET' && pathname === '/api/snapshot') {
-        const force = url.searchParams.get('refresh') === '1';
+        const force = url.searchParams.get('refresh') === '1' || url.searchParams.get('force') === '1';
         const snapshot = await hub.collectSnapshot(force);
+        alertEngine.evaluateSnapshot(snapshot);
         sendJson(res, 200, {
           ...snapshot,
           runningJobs: actions.getRunningJobs(),
+          activeAlertsCount: alertEngine.alerts.filter((a) => a.status === 'active').length,
+          sseConnectedClients: eventBus.getActiveCount(),
         }, {}, req);
         return;
       }
@@ -749,7 +1227,7 @@ export function createOpsConsole(options = {}) {
           'Content-Type': exported.contentType,
           'Content-Disposition': `attachment; filename="ops-console-${targetLabel}-${stamp}.${exported.ext}"`,
           'Cache-Control': 'no-store',
-          ...getSecurityHeaders({ isHtml: false }),
+          ...secHeaders(false),
         });
         res.end(exported.body);
         return;
@@ -777,6 +1255,7 @@ export function createOpsConsole(options = {}) {
           requestId,
           confirmToken: String(data.confirmToken || ''),
         });
+        if (result.ok) eventBus.emit('service_action', { unit: data.unit || data.id, action: data.action });
         sendJson(res, result.ok ? 200 : 500, result, {}, req);
         return;
       }
@@ -788,6 +1267,7 @@ export function createOpsConsole(options = {}) {
           ip: clientIp,
           requestId,
         });
+        if (result.ok) eventBus.emit('timer_action', { unit: data.unit || data.id, action: data.action });
         sendJson(res, result.ok ? 200 : 500, result);
         return;
       }
@@ -798,6 +1278,7 @@ export function createOpsConsole(options = {}) {
           ip: clientIp,
           requestId,
         });
+        eventBus.emit('ops_health', { ok: result.ok });
         sendJson(res, result.ok ? 200 : 500, result);
         return;
       }
@@ -808,6 +1289,7 @@ export function createOpsConsole(options = {}) {
           ip: clientIp,
           requestId,
         });
+        eventBus.emit('ops_backup', { ok: result.ok });
         sendJson(res, result.statusCode || (result.ok ? 200 : 500), result);
         return;
       }
@@ -855,6 +1337,7 @@ export function createOpsConsole(options = {}) {
     const port = config.console.port;
     try {
       await store.init();
+      await pluginManager.loadExternalPlugins();
       await store.hydrateTimeSeries(timeseries, { limitPerSeries: config.fleet?.historyPoints || 60 });
       for (const host of hosts) {
         const srv = http.createServer(handleRequest);
@@ -893,6 +1376,7 @@ export function createOpsConsole(options = {}) {
 
   async function stop() {
     logs.closeAllStreams();
+    eventBus.closeAll();
     await probeRegistry.flush();
     const closing = servers.splice(0, servers.length).map(
       (srv) =>
@@ -920,6 +1404,10 @@ export function createOpsConsole(options = {}) {
     store,
     timeseries,
     probeRegistry,
+    pluginManager,
+    eventBus,
+    alertEngine,
+    runbookEngine,
     hub,
     logs,
     actions,

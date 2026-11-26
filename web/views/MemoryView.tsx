@@ -1,9 +1,13 @@
 import React from 'react';
-import { Search, Stethoscope } from 'lucide-react';
-import type { MemorySearchResultItem, SnapshotResponse } from '../types';
-import { runMemoryDoctor, searchMemory } from '../api';
+import { FlaskConical, Search, Stethoscope } from 'lucide-react';
+import type { MemoryCompareResponse, MemorySearchResultItem, SnapshotResponse } from '../types';
+import { compareMemoryRetrieval, runMemoryDoctor, searchMemory } from '../api';
+import { cn } from '../lib/cn';
+import { formatCompactNumber, formatInteger } from '../utils/format';
 import {
+  Button,
   EmptyState,
+  inputBaseClass,
   Panel,
   SegmentedFilter,
   StatusIndicator,
@@ -34,6 +38,11 @@ export function MemoryView({
   const [doctorBusy, setDoctorBusy] = React.useState(false);
   const [doctorOutput, setDoctorOutput] = React.useState('');
 
+  // Cross-engine Rerank Comparison Lab
+  const [compareQuery, setCompareQuery] = React.useState('gateway circuit breaker');
+  const [comparing, setComparing] = React.useState(false);
+  const [compareRes, setCompareRes] = React.useState<MemoryCompareResponse | null>(null);
+
   const mem = snapshot?.memory;
 
   const handleSearch = async (e: React.FormEvent) => {
@@ -48,6 +57,21 @@ export function MemoryView({
       onToast(`检索失败：${(err as Error).message}`, 'err');
     } finally {
       setSearching(false);
+    }
+  };
+
+  const handleCompare = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const q = compareQuery.trim();
+    if (!q) return;
+    setComparing(true);
+    try {
+      const res = await compareMemoryRetrieval(q);
+      setCompareRes(res);
+    } catch (err) {
+      onToast(`召回对比失败：${(err as Error).message}`, 'err');
+    } finally {
+      setComparing(false);
     }
   };
 
@@ -73,45 +97,137 @@ export function MemoryView({
   };
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-[22px] font-semibold tracking-[-0.025em] text-[var(--ink)] leading-tight">
+    <div className="space-y-8">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div className="min-w-0">
+          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">
             记忆与上下文引擎
           </h1>
-          <p className="mt-1 text-[13.5px] text-[var(--ink-muted)]">
-            通过官方 REST API 与 CLI 直连 Nowledge Mem、OpenViking、Symbiote 与 Rerank 重排服务。
+          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed text-pretty">
+            按需启用可选记忆引擎插件（Nowledge Mem、OpenViking、Symbiote、Rerank），通过官方 REST API 与 CLI 采集并进行跨引擎召回质量对照评估。
           </p>
         </div>
-        <button
-          type="button"
+        <Button
+          variant="secondary"
+          size="md"
           onClick={handleDoctor}
           disabled={doctorBusy || readOnly}
-          className="inline-flex items-center gap-1.5 h-9 px-3.5 rounded-[7px] border border-[var(--border)] bg-[var(--surface)] text-[13px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer disabled:opacity-45"
         >
-          <Stethoscope className="h-4 w-4 text-[var(--accent)]" />
+          <Stethoscope className="size-4 text-[var(--accent)]" strokeWidth={1.75} />
           {doctorBusy ? '诊断中...' : '运行官方自检'}
-        </button>
+        </Button>
       </div>
 
       {doctorOutput && (
         <Panel
           title="官方诊断报告"
           actions={
-            <button
-              type="button"
-              onClick={() => setDoctorOutput('')}
-              className="text-[12.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] cursor-pointer"
-            >
+            <Button variant="ghost" size="sm" onClick={() => setDoctorOutput('')}>
               收起
-            </button>
+            </Button>
           }
         >
-          <pre className="m-0 rounded-[8px] bg-[var(--terminal-bg)] text-[var(--terminal-ink)] p-4 font-mono text-[12px] overflow-x-auto whitespace-pre-wrap max-h-[260px]">
+          <pre className="m-0 rounded-xl bg-[var(--terminal-bg)] text-[var(--terminal-ink)] border border-white/[0.08] p-4 font-mono text-[12px] overflow-x-auto whitespace-pre-wrap max-h-[260px]">
             {doctorOutput}
           </pre>
         </Panel>
       )}
+
+      <Panel
+        title="跨引擎召回与 Rerank 重排对比实验室"
+        description="并行向 Nowledge Mem 与 OpenViking 发起相同查询，量化重排模型 (Rerank) 带来的排序增益与端到端耗时。"
+        actions={
+          compareRes ? (
+            <span className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums">
+              nmem {compareRes.timingsMs.nmem}ms · ov {compareRes.timingsMs.openviking}ms · rerank {compareRes.timingsMs.rerank}ms
+            </span>
+          ) : undefined
+        }
+      >
+        <form onSubmit={handleCompare} className="flex flex-wrap items-center gap-2.5">
+          <div className="relative flex-1 min-w-[220px]">
+            <FlaskConical
+              className="size-4 text-[var(--accent)] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+              strokeWidth={1.75}
+            />
+            <input
+              type="search"
+              value={compareQuery}
+              onChange={(e) => setCompareQuery(e.target.value)}
+              placeholder="输入测试 Query，对比两路召回与 Rerank 重排得分..."
+              aria-label="跨引擎召回对比查询"
+              data-testid="memory-compare-input"
+              className={cn('w-full h-10 pl-9 pr-3', inputBaseClass)}
+            />
+          </div>
+          <Button
+            type="submit"
+            variant="primary"
+            size="lg"
+            disabled={comparing || !compareQuery.trim()}
+            data-testid="memory-compare-submit"
+          >
+            {comparing ? '评测中...' : '运行召回对比'}
+          </Button>
+        </form>
+
+        {compareRes && (
+          <div className="mt-4 pt-4 border-t border-[var(--border-subtle)] overflow-x-auto" data-testid="memory-compare-results">
+            {compareRes.items.length === 0 ? (
+              <EmptyState message="未检索到可供重排对比的候选项。" />
+            ) : (
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
+                    <th className="py-2 pr-3">候选片段</th>
+                    <th className="py-2 px-3">来源</th>
+                    <th className="py-2 px-3 text-right">Nmem</th>
+                    <th className="py-2 px-3 text-right">OpenViking</th>
+                    <th className="py-2 px-3 text-right">Rerank 终分</th>
+                    <th className="py-2 pl-3 text-right">重排增益</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
+                  {compareRes.items.map((item) => (
+                    <tr key={item.id} className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out">
+                      <td className="py-2.5 pr-3 max-w-[340px]">
+                        <div className="font-medium text-[var(--ink)] truncate" title={item.title}>
+                          {item.title}
+                        </div>
+                        {item.snippet && (
+                          <div className="text-[12px] text-[var(--ink-subtle)] truncate" title={item.snippet}>
+                            {item.snippet}
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-2.5 px-3 font-mono text-[12px] text-[var(--ink-muted)] whitespace-nowrap">
+                        {item.source}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-[12px] text-[var(--ink-muted)] tabular-nums">
+                        {item.nmemScore.toFixed(3)}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-[12px] text-[var(--ink-muted)] tabular-nums">
+                        {item.ovScore.toFixed(3)}
+                      </td>
+                      <td className="py-2.5 px-3 text-right font-mono text-[12.5px] font-semibold text-[var(--ink)] tabular-nums">
+                        {item.rerankScore.toFixed(3)}
+                      </td>
+                      <td
+                        className={cn(
+                          'py-2.5 pl-3 text-right font-mono text-[12px] font-medium tabular-nums whitespace-nowrap',
+                          item.delta >= 0 ? 'text-[var(--ok)]' : 'text-[var(--err)]',
+                        )}
+                      >
+                        {item.delta >= 0 ? `+${item.delta.toFixed(3)}` : item.delta.toFixed(3)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+      </Panel>
 
       <Panel
         title="跨引擎联合记忆检索"
@@ -126,39 +242,48 @@ export function MemoryView({
         }
       >
         <form onSubmit={handleSearch} className="flex flex-wrap items-center gap-2.5">
-          <div className="relative flex-1 min-w-[240px]">
-            <Search className="h-4 w-4 text-[var(--ink-subtle)] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+          <div className="relative flex-1 min-w-[220px]">
+            <Search
+              className="size-4 text-[var(--ink-subtle)] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
+              strokeWidth={1.75}
+            />
             <input
               type="search"
               value={query}
               onChange={(e) => setQuery(e.target.value)}
               placeholder="输入关键词语义检索记忆库、对话历史或技能上下文..."
               aria-label="记忆关键词检索"
-              className="w-full h-10 pl-9 pr-3 rounded-[7px] border border-[var(--border)] bg-[var(--bg)] text-[13.5px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)] focus:outline-none focus:border-[var(--accent)]"
+              className={cn('w-full h-10 pl-9 pr-3', inputBaseClass)}
             />
           </div>
-          <button
-            type="submit"
-            disabled={searching || !query.trim()}
-            className="h-10 px-4 rounded-[7px] bg-[var(--accent)] hover:bg-[var(--accent-hover)] text-white text-[13px] font-medium transition-colors cursor-pointer disabled:opacity-45"
-          >
+          <Button type="submit" variant="primary" size="lg" disabled={searching || !query.trim()}>
             {searching ? '检索中...' : '执行检索'}
-          </button>
+          </Button>
         </form>
 
         {results !== null && (
           <div className="mt-4 pt-4 border-t border-[var(--border-subtle)]">
             {results.length === 0 ? (
-              <EmptyState message="未检索到匹配的记忆条目。" />
+              <EmptyState
+                title="未检索到匹配条目"
+                message="可以尝试更换关键词或切换到「联合检索」扩大范围。"
+                action={{
+                  label: '清空检索词',
+                  onClick: () => {
+                    setQuery('');
+                    setResults(null);
+                  },
+                }}
+              />
             ) : (
               <ul className="divide-y divide-[var(--border-subtle)]">
                 {results.map((item, idx) => (
                   <li key={`${item.uri || item.title}-${idx}`} className="py-3 first:pt-0 last:pb-0">
                     <div className="flex flex-wrap items-baseline justify-between gap-2">
-                      <div className="font-medium text-[13.5px] text-[var(--ink)]">
+                      <div className="font-medium text-[13.5px] text-[var(--ink)] truncate max-w-full">
                         {item.title || item.uri || item.path || `结果 #${idx + 1}`}
                       </div>
-                      <div className="font-mono text-[12px] text-[var(--ink-subtle)]">
+                      <div className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums shrink-0">
                         {[
                           item.provider || item.engine,
                           item.space,
@@ -169,7 +294,7 @@ export function MemoryView({
                       </div>
                     </div>
                     {(item.snippet || item.content) && (
-                      <p className="mt-1 text-[13px] text-[var(--ink-muted)] line-clamp-3">
+                      <p className="mt-1 text-[13px] text-[var(--ink-muted)] line-clamp-3 text-pretty">
                         {item.snippet || item.content}
                       </p>
                     )}
@@ -188,7 +313,7 @@ export function MemoryView({
         <ArchitectureGraph snapshot={snapshot} mode="memory" />
       </Panel>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
         <Panel
           title="Nowledge Mem"
           description={mem?.nmem?.protocol || 'REST API + nmem CLI'}
@@ -199,22 +324,25 @@ export function MemoryView({
           ) : (
             <div className="space-y-4">
               <dl className="grid grid-cols-3 gap-4 pb-4 border-b border-[var(--border-subtle)]">
-                <div>
+                <div className="min-w-0">
                   <dt className="text-[12px] text-[var(--ink-subtle)]">长期记忆</dt>
-                  <dd className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums">
-                    {mem.nmem.stats?.memories ?? '-'}
+                  <dd
+                    className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums truncate"
+                    title={formatInteger(mem.nmem.stats?.memories)}
+                  >
+                    {formatCompactNumber(mem.nmem.stats?.memories)}
                   </dd>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <dt className="text-[12px] text-[var(--ink-subtle)]">对话线程</dt>
-                  <dd className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums">
-                    {mem.nmem.stats?.threads ?? '-'}
+                  <dd className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums truncate">
+                    {formatCompactNumber(mem.nmem.stats?.threads)}
                   </dd>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <dt className="text-[12px] text-[var(--ink-subtle)]">知识空间</dt>
-                  <dd className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums">
-                    {mem.nmem.spaces?.length ?? mem.nmem.stats?.spaces ?? '-'}
+                  <dd className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums truncate">
+                    {formatCompactNumber(mem.nmem.spaces?.length ?? mem.nmem.stats?.spaces)}
                   </dd>
                 </div>
               </dl>
@@ -223,10 +351,10 @@ export function MemoryView({
                   <h3 className="text-[12.5px] font-semibold text-[var(--ink-muted)] mb-2">空间分布</h3>
                   <ul className="divide-y divide-[var(--border-subtle)] text-[13px]">
                     {mem.nmem.spaces.slice(0, 6).map((sp, i) => (
-                      <li key={sp.id || sp.name || i} className="py-2 flex justify-between gap-2">
-                        <span className="text-[var(--ink)] font-medium">{sp.name || sp.id}</span>
-                        <span className="font-mono text-[12.5px] text-[var(--ink-muted)] tabular-nums">
-                          {sp.count ?? sp.memoryCount ?? 0} 条
+                      <li key={sp.id || sp.name || i} className="py-2 flex items-center justify-between gap-2">
+                        <span className="text-[var(--ink)] font-medium truncate">{sp.name || sp.id}</span>
+                        <span className="font-mono text-[12.5px] text-[var(--ink-muted)] tabular-nums shrink-0">
+                          {formatInteger(sp.count ?? sp.memoryCount ?? 0)} 条
                         </span>
                       </li>
                     ))}
@@ -247,22 +375,25 @@ export function MemoryView({
           ) : (
             <div className="space-y-4">
               <dl className="grid grid-cols-3 gap-4 pb-4 border-b border-[var(--border-subtle)]">
-                <div>
+                <div className="min-w-0">
                   <dt className="text-[12px] text-[var(--ink-subtle)]">VikingDB 向量</dt>
-                  <dd className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums">
-                    {mem.openviking.vikingdb?.vectorCount ?? '-'}
+                  <dd
+                    className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums truncate"
+                    title={formatInteger(mem.openviking.vikingdb?.vectorCount)}
+                  >
+                    {formatCompactNumber(mem.openviking.vikingdb?.vectorCount)}
                   </dd>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <dt className="text-[12px] text-[var(--ink-subtle)]">已载入技能</dt>
-                  <dd className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums">
-                    {mem.openviking.skillsCount ?? 0}
+                  <dd className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums truncate">
+                    {formatCompactNumber(mem.openviking.skillsCount ?? 0)}
                   </dd>
                 </div>
-                <div>
+                <div className="min-w-0">
                   <dt className="text-[12px] text-[var(--ink-subtle)]">待处理队列</dt>
-                  <dd className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums">
-                    {mem.openviking.queue?.pending ?? 0}
+                  <dd className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums truncate">
+                    {formatCompactNumber(mem.openviking.queue?.pending ?? 0)}
                   </dd>
                 </div>
               </dl>
@@ -275,9 +406,9 @@ export function MemoryView({
                       const desc = typeof sk === 'string' ? '' : sk.description || '';
                       return (
                         <li key={name} className="py-2 flex items-baseline justify-between gap-3">
-                          <span className="font-mono text-[12.5px] text-[var(--ink)]">{name}</span>
+                          <span className="font-mono text-[12.5px] text-[var(--ink)] shrink-0">{name}</span>
                           {desc && (
-                            <span className="text-[12.5px] text-[var(--ink-subtle)] truncate">
+                            <span className="text-[12.5px] text-[var(--ink-subtle)] truncate" title={desc}>
                               {desc}
                             </span>
                           )}
@@ -300,21 +431,24 @@ export function MemoryView({
             <EmptyState message="Symbiote 连接器未启用。" />
           ) : (
             <dl className="grid grid-cols-3 gap-4">
-              <div>
+              <div className="min-w-0">
                 <dt className="text-[12px] text-[var(--ink-subtle)]">Vault 文档数</dt>
-                <dd className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums">
-                  {mem.symbiote.vaultFileCount ?? '-'}
+                <dd
+                  className="mt-1 font-mono text-[18px] font-semibold text-[var(--ink)] tabular-nums truncate"
+                  title={formatInteger(mem.symbiote.vaultFileCount)}
+                >
+                  {formatCompactNumber(mem.symbiote.vaultFileCount)}
                 </dd>
               </div>
-              <div>
+              <div className="min-w-0">
                 <dt className="text-[12px] text-[var(--ink-subtle)]">运行模式</dt>
-                <dd className="mt-1 font-mono text-[14px] font-semibold text-[var(--ink)]">
+                <dd className="mt-1 font-mono text-[14px] font-semibold text-[var(--ink)] truncate">
                   {mem.symbiote.mode || '-'}
                 </dd>
               </div>
-              <div>
+              <div className="min-w-0">
                 <dt className="text-[12px] text-[var(--ink-subtle)]">接口延迟</dt>
-                <dd className="mt-1 font-mono text-[14px] font-semibold text-[var(--ink)] tabular-nums">
+                <dd className="mt-1 font-mono text-[14px] font-semibold text-[var(--ink)] tabular-nums truncate">
                   {mem.symbiote.latencyMs != null ? `${mem.symbiote.latencyMs}ms` : '-'}
                 </dd>
               </div>
@@ -331,15 +465,15 @@ export function MemoryView({
             <EmptyState message="Rerank 重排服务未启用。" />
           ) : (
             <dl className="grid grid-cols-3 gap-4">
-              <div className="col-span-2">
+              <div className="col-span-2 min-w-0">
                 <dt className="text-[12px] text-[var(--ink-subtle)]">重排模型</dt>
-                <dd className="mt-1 font-mono text-[14px] font-semibold text-[var(--ink)] truncate">
+                <dd className="mt-1 font-mono text-[14px] font-semibold text-[var(--ink)] truncate" title={mem.rerank.model || 'Ready'}>
                   {mem.rerank.model || 'Ready'}
                 </dd>
               </div>
-              <div>
+              <div className="min-w-0">
                 <dt className="text-[12px] text-[var(--ink-subtle)]">推理延迟</dt>
-                <dd className="mt-1 font-mono text-[14px] font-semibold text-[var(--ink)] tabular-nums">
+                <dd className="mt-1 font-mono text-[14px] font-semibold text-[var(--ink)] tabular-nums truncate">
                   {mem.rerank.latencyMs != null ? `${mem.rerank.latencyMs}ms` : '-'}
                 </dd>
               </div>

@@ -397,7 +397,7 @@ function FlowCanvasInner({
     if (structuralChange) {
       setRfNodes(computedFlowNodes);
       window.requestAnimationFrame(() => {
-        void fitView({ padding: 0.1, duration: 320 });
+        void fitView({ padding: 0.08, duration: 240 });
       });
     } else {
       // Preserve user-dragged node positions while updating highlight/telemetry data
@@ -445,7 +445,7 @@ function FlowCanvasInner({
 
   const zoomPct = Math.round(zoom * 100);
   const canvasHeightClass =
-    mode === 'full' ? 'h-[500px]' : mode === 'agents' ? 'h-[400px]' : 'h-[340px]';
+    mode === 'full' ? 'h-[560px]' : mode === 'agents' ? 'h-[400px]' : 'h-[340px]';
 
   return (
     <div className="space-y-3">
@@ -476,23 +476,23 @@ function FlowCanvasInner({
               data-testid="graph-auto-layout"
               onClick={handleAutoLayoutClick}
               title="按当前力导向策略重新计算无重叠布局"
-              className="h-8 px-3 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[12.5px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] hover:border-[var(--ink-subtle)] transition-colors duration-150 ease-out inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/50"
+              className="h-8 px-3 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-[12.5px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] hover:border-[var(--border-strong)] active:scale-[0.97] transition-[color,background-color,border-color,transform] duration-150 ease-out inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/45"
             >
-              <Orbit className="w-4 h-4 text-[var(--accent)]" strokeWidth={1.75} />
+              <Orbit className="size-4 text-[var(--accent)]" strokeWidth={1.75} />
               <span>自动布局</span>
             </button>
           )}
 
-          <div className="inline-flex items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] divide-x divide-[var(--border-subtle)] overflow-hidden">
+          <div className="inline-flex items-center rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] divide-x divide-[var(--border-subtle)] overflow-hidden">
             <button
               type="button"
               data-testid="graph-zoom-out"
               onClick={() => void zoomOut({ duration: 180 })}
               aria-label="缩小图谱"
               title="缩小图谱"
-              className="h-8 w-8 inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/50"
+              className="h-8 w-8 inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] active:scale-[0.95] transition-[color,background-color,transform] duration-150 ease-out cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/45"
             >
-              <Minus className="w-3.5 h-3.5" strokeWidth={1.75} />
+              <Minus className="size-4" strokeWidth={1.75} />
             </button>
             <span
               data-testid="graph-zoom-level"
@@ -506,19 +506,19 @@ function FlowCanvasInner({
               onClick={() => void zoomIn({ duration: 180 })}
               aria-label="放大图谱"
               title="放大图谱"
-              className="h-8 w-8 inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/50"
+              className="h-8 w-8 inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] active:scale-[0.95] transition-[color,background-color,transform] duration-150 ease-out cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/45"
             >
-              <Plus className="w-3.5 h-3.5" strokeWidth={1.75} />
+              <Plus className="size-4" strokeWidth={1.75} />
             </button>
             <button
               type="button"
               data-testid="graph-zoom-reset"
-              onClick={() => void fitView({ padding: 0.1, duration: 240 })}
+              onClick={() => void fitView({ padding: 0.1, duration: 220 })}
               aria-label="适配画布"
               title="适配全图"
-              className="h-8 px-2.5 inline-flex items-center gap-1 text-[12px] font-medium text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/50"
+              className="h-8 px-2.5 inline-flex items-center gap-1 text-[12px] font-medium text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] active:scale-[0.97] transition-[color,background-color,transform] duration-150 ease-out cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/45"
             >
-              <RotateCcw className="w-3.5 h-3.5" strokeWidth={1.75} />
+              <RotateCcw className="size-3.5" strokeWidth={1.75} />
               <span className="hidden sm:inline">适配</span>
             </button>
           </div>
@@ -545,7 +545,7 @@ function FlowCanvasInner({
             if (selectedId) setSelectedId('');
           }}
           fitView
-          fitViewOptions={{ padding: 0.1 }}
+          fitViewOptions={{ padding: 0.08 }}
           minZoom={0.35}
           maxZoom={2.4}
           nodesConnectable={false}
@@ -554,21 +554,21 @@ function FlowCanvasInner({
         >
           <Background variant={BackgroundVariant.Dots} gap={20} size={1.2} color="var(--flow-dot)" />
           {mode === 'full' && (
-            <div className="pointer-events-none absolute bottom-3 left-3 z-10 hidden sm:flex items-center gap-3.5 px-3 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface)]/90 backdrop-blur-sm text-[11.5px] text-[var(--ink-muted)]">
+            <div className="pointer-events-none absolute bottom-3 left-3 z-10 hidden sm:flex items-center gap-3.5 px-3 py-1.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)]/92 backdrop-blur-sm text-[11.5px] text-[var(--ink-muted)] select-none">
               <span className="inline-flex items-center gap-1.5">
-                <i className="h-1.5 w-1.5 rounded-full bg-[var(--ok-dot)]" />
+                <i className="h-1.5 w-1.5 rounded-full bg-[var(--ok-dot)]" aria-hidden="true" />
                 健康
               </span>
               <span className="inline-flex items-center gap-1.5">
-                <i className="h-1.5 w-1.5 rounded-full bg-[var(--warn-dot)]" />
+                <i className="h-1.5 w-1.5 rounded-full bg-[var(--warn-dot)]" aria-hidden="true" />
                 降级
               </span>
               <span className="inline-flex items-center gap-1.5">
-                <i className="h-1.5 w-1.5 rounded-full bg-[var(--err-dot)]" />
+                <i className="h-1.5 w-1.5 rounded-full bg-[var(--err-dot)]" aria-hidden="true" />
                 故障
               </span>
               <span className="inline-flex items-center gap-1.5">
-                <i className="h-1.5 w-1.5 rounded-full bg-[var(--muted-dot)]" />
+                <i className="h-1.5 w-1.5 rounded-full bg-[var(--muted-dot)]" aria-hidden="true" />
                 待机
               </span>
             </div>
@@ -593,15 +593,17 @@ function FlowCanvasInner({
       {/* Inline Node Inspector */}
       {selectedNode && (
         <div
-          className="rounded-[8px] border border-[var(--border)] bg-[var(--bg)] px-4 py-3.5"
+          className="rounded-xl border border-[var(--border)] bg-[var(--bg)] px-4 py-3.5"
           data-testid="graph-inspector"
         >
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="flex flex-wrap items-center gap-3 min-w-0">
-              <span className="text-[14px] font-semibold text-[var(--ink)]">{selectedNode.label}</span>
+              <span className="text-[14px] font-semibold text-[var(--ink)] truncate max-w-[260px]">
+                {selectedNode.label}
+              </span>
               <StatusIndicator status={selectedNode.status} />
               {selectedNode.meta && (
-                <span className="font-mono text-[12.5px] text-[var(--ink-muted)]">
+                <span className="font-mono text-[12.5px] text-[var(--ink-muted)] tabular-nums truncate max-w-[240px]">
                   {selectedNode.meta}
                 </span>
               )}
@@ -611,9 +613,9 @@ function FlowCanvasInner({
                 <button
                   type="button"
                   onClick={() => onOpenLogs(selectedNode.unit!)}
-                  className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-[6px] border border-[var(--border)] bg-[var(--surface)] text-[12.5px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-[12.5px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] hover:border-[var(--border-strong)] active:scale-[0.97] transition-[color,background-color,border-color,transform] duration-150 ease-out cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/45"
                 >
-                  <FileText className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
+                  <FileText className="size-4 text-[var(--ink-muted)]" strokeWidth={1.75} />
                   查看日志
                 </button>
               )}
@@ -621,9 +623,9 @@ function FlowCanvasInner({
                 <button
                   type="button"
                   onClick={() => onSelectAgentCategory(selectedNode.agentCategory!)}
-                  className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-[6px] border border-[var(--border)] bg-[var(--surface)] text-[12.5px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer"
+                  className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-[12.5px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] hover:border-[var(--border-strong)] active:scale-[0.97] transition-[color,background-color,border-color,transform] duration-150 ease-out cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/45"
                 >
-                  <Filter className="h-3.5 w-3.5 text-[var(--ink-muted)]" />
+                  <Filter className="size-4 text-[var(--ink-muted)]" strokeWidth={1.75} />
                   筛选进程
                 </button>
               )}
@@ -631,15 +633,15 @@ function FlowCanvasInner({
                 type="button"
                 onClick={() => setSelectedId('')}
                 aria-label="收起节点详情"
-                className="inline-flex items-center justify-center h-8 w-8 rounded-[6px] border border-[var(--border)] bg-[var(--surface)] text-[var(--ink-muted)] hover:text-[var(--ink)] transition-colors cursor-pointer"
+                className="inline-flex items-center justify-center h-8 w-8 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] active:scale-[0.95] transition-[color,background-color,transform] duration-150 ease-out cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/45"
               >
-                <X className="h-3.5 w-3.5" />
+                <X className="size-4" strokeWidth={1.75} />
               </button>
             </div>
           </div>
 
           {selectedNode.detail && (
-            <p className="mt-1.5 text-[13px] text-[var(--ink-muted)]">{selectedNode.detail}</p>
+            <p className="mt-1.5 text-[13px] text-[var(--ink-muted)] text-pretty">{selectedNode.detail}</p>
           )}
 
           <div className="mt-3 pt-3 border-t border-[var(--border-subtle)] grid grid-cols-1 md:grid-cols-2 gap-3 text-[12.5px]">
@@ -653,7 +655,7 @@ function FlowCanvasInner({
                     key={`${edge.id}-in`}
                     type="button"
                     onClick={() => setSelectedId(peer.id)}
-                    className="inline-flex items-center gap-1 font-medium text-[var(--accent)] hover:underline cursor-pointer"
+                    className="inline-flex items-center gap-1 rounded-md px-1 font-medium text-[var(--accent)] hover:underline cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/45"
                   >
                     <span>{peer.label}</span>
                     {edge.label && (
@@ -675,9 +677,9 @@ function FlowCanvasInner({
                     key={`${edge.id}-out`}
                     type="button"
                     onClick={() => setSelectedId(peer.id)}
-                    className="inline-flex items-center gap-1 font-medium text-[var(--accent)] hover:underline cursor-pointer"
+                    className="inline-flex items-center gap-1 rounded-md px-1 font-medium text-[var(--accent)] hover:underline cursor-pointer select-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/45"
                   >
-                    <ArrowRight className="h-3 w-3 text-[var(--ink-subtle)]" />
+                    <ArrowRight className="size-3.5 text-[var(--ink-subtle)]" strokeWidth={1.75} />
                     <span>{peer.label}</span>
                     {edge.label && (
                       <span className="font-mono text-[11.5px] text-[var(--ink-subtle)]">

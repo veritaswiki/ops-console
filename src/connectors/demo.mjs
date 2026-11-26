@@ -49,7 +49,7 @@ export function createDemoProvider() {
         pendingReviews: false,
         stats: { memories: 2480, activeMemories: 2480, archivedMemories: 410, storedMemories: 2890, threads: 3620, entities: 14820, labels: 4950, communities: 68 },
         spaces: [
-          { id: 'default', name: 'Default', kind: 'personal', memories: 1940, archived: 310, threads: 2890, sources: 1024, crystals: 29, hasWorkingMemory: true },
+          { id: 'default', name: 'Default', kind: 'workspace', memories: 1940, archived: 310, threads: 2890, sources: 1024, crystals: 29, hasWorkingMemory: true },
           { id: 'infra', name: 'Infrastructure', kind: 'project', memories: 540, archived: 100, threads: 730, sources: 215, crystals: 11, hasWorkingMemory: true },
         ],
         feed: [
@@ -606,7 +606,153 @@ export function createDemoProvider() {
     return { ok: true, unit: t.unit, message: `Demo timer ${action} succeeded for ${t.unit}` };
   }
 
-  return { getSnapshot, getMemory, getRemotes, getFirewall, getIncidents, queryLogs, startDemoLogStream, searchMemory, controlService, controlTimer };
+  const demoIncidents = [
+    { id: 3, ts: new Date(Date.now() - 420_000).toISOString(), entityKey: 'service:mihomo', node: 'Mihomo Proxy', kind: 'service', fromState: 'degraded', toState: 'healthy', detail: 'Upstream latency normalized (42ms)', note: '已切换至东京低延迟中继节点，持续观察中。', resolvedAt: new Date(Date.now() - 360_000).toISOString() },
+    { id: 2, ts: new Date(Date.now() - 1_800_000).toISOString(), entityKey: 'node:workstation-mac', node: 'Workstation Laptop', kind: 'node', fromState: 'offline', toState: 'healthy', detail: 'DERP sin probe resumed', note: '', resolvedAt: new Date(Date.now() - 1_500_000).toISOString() },
+    { id: 1, ts: new Date(Date.now() - 14_400_000).toISOString(), entityKey: 'service:rerank', node: 'Rerank Gateway', kind: 'service', fromState: 'healthy', toState: 'degraded', detail: 'ONNX batch queue spiked to 18 during bulk indexing', note: '已限制批处理并发至 batch=24，后续建议接入自动自愈预案。', resolvedAt: new Date(Date.now() - 14_100_000).toISOString() },
+  ];
+
+  function getIncidents() {
+    return demoIncidents.map((item) => ({ ...item }));
+  }
+
+  function updateIncidentNote(id, note) {
+    const found = demoIncidents.find((i) => Number(i.id) === Number(id));
+    if (!found) return null;
+    found.note = String(note || '').trim().slice(0, 600);
+    return { id: found.id, note: found.note };
+  }
+
+  function getHistoricalSeries(series = 'fleet', range = '24h') {
+    const specByRange = {
+      '1h': { points: 24, stepMs: 150_000, source: 'raw' },
+      '6h': { points: 36, stepMs: 600_000, source: 'raw' },
+      '24h': { points: 48, stepMs: 1_800_000, source: 'rollup_60s' },
+      '7d': { points: 56, stepMs: 3 * 3_600_000, source: 'rollup_300s' },
+      '30d': { points: 60, stepMs: 12 * 3_600_000, source: 'rollup_300s' },
+      '90d': { points: 60, stepMs: 36 * 3_600_000, source: 'rollup_300s' },
+    };
+    const spec = specByRange[range] || specByRange['24h'];
+    const now = Date.now();
+    const seed = [...String(series)].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+    const points = [];
+    for (let i = spec.points - 1; i >= 0; i -= 1) {
+      const ts = now - i * spec.stepMs;
+      const phase = (i + seed) * 0.42;
+      const cpuPct = Number((18 + Math.sin(phase) * 9 + Math.cos(phase * 0.45) * 6 + (i % 7 === 0 ? 5.2 : 0)).toFixed(1));
+      const memPct = Number((37.5 + Math.sin(phase * 0.3) * 4.8 + (spec.points - i) * 0.05).toFixed(1));
+      const rttMs = Math.max(4, Math.round(14 + Math.abs(Math.sin(phase * 0.7)) * 18 + (i === 6 ? 12 : 0)));
+      const load1 = Number((0.45 + Math.abs(Math.sin(phase * 0.5)) * 0.55).toFixed(2));
+      points.push({
+        ts,
+        cpuPct: Math.max(3, Math.min(96, cpuPct)),
+        memPct: Math.max(15, Math.min(92, memPct)),
+        diskPct: 37,
+        rttMs,
+        load1,
+        servicesOkPct: i === 6 ? 83 : 92,
+      });
+    }
+    return { series, range, source: spec.source, points };
+  }
+
+  function getGatewayTelemetry() {
+    const now = Date.now();
+    const hourly = [];
+    for (let i = 23; i >= 0; i -= 1) {
+      const ts = now - i * 3_600_000;
+      const hr = new Date(ts).getHours();
+      const diurnal = hr >= 9 && hr <= 23 ? 1.35 : 0.55;
+      const rpm = Math.round((14 + Math.sin(i * 0.6) * 5 + (i % 4)) * diurnal);
+      const promptK = Number(((24 + Math.cos(i * 0.5) * 8) * diurnal).toFixed(1));
+      const completionK = Number(((7.2 + Math.sin(i * 0.4) * 2.5) * diurnal).toFixed(1));
+      const cacheHitPct = Math.round(52 + Math.sin(i * 0.35) * 14);
+      const ttftMs = Math.round(185 + Math.abs(Math.sin(i * 0.8)) * 95);
+      const p95Ms = Math.round(ttftMs * 2.4 + 140);
+      const costUsd = Number(((promptK * 0.0012 + completionK * 0.0048) * (1 - cacheHitPct / 200)).toFixed(3));
+      hourly.push({ ts, rpm, promptK, completionK, cacheHitPct, ttftMs, p95Ms, costUsd, errors429: i === 4 ? 2 : 0, errors5xx: 0 });
+    }
+    return {
+      ok: true,
+      window: '24h',
+      summary: {
+        totalRequests: hourly.reduce((a, b) => a + b.rpm * 18, 0),
+        totalTokens: Math.round(hourly.reduce((a, b) => a + (b.promptK + b.completionK) * 1000, 0)),
+        avgTtftMs: Math.round(hourly.reduce((a, b) => a + b.ttftMs, 0) / hourly.length),
+        p95LatencyMs: Math.max(...hourly.map((h) => h.p95Ms)),
+        cacheHitPct: Math.round(hourly.reduce((a, b) => a + b.cacheHitPct, 0) / hourly.length),
+        estimatedCostUsd24h: Number(hourly.reduce((a, b) => a + b.costUsd, 0).toFixed(2)),
+        dailyBudgetUsd: 10.0,
+        errorRatePct: 0.14,
+      },
+      providers: [
+        { name: 'routing-group', requests: 2840, tokensK: 412, avgTtftMs: 192, errorRatePct: 0.08, costUsd: 1.42, circuitState: 'closed' },
+        { name: 'anthropic', requests: 1620, tokensK: 286, avgTtftMs: 248, errorRatePct: 0.12, costUsd: 2.18, circuitState: 'closed' },
+        { name: 'google', requests: 1940, tokensK: 348, avgTtftMs: 168, errorRatePct: 0.05, costUsd: 0.84, circuitState: 'closed' },
+        { name: 'local-mlx', requests: 1180, tokensK: 164, avgTtftMs: 64, errorRatePct: 0.0, costUsd: 0.0, circuitState: 'closed' },
+      ],
+      sessions: [
+        { id: 'sess-codex-09', agent: 'Codex Orchestrator', model: 'auto/deepseek-v4.1-flash', state: 'running', contextPct: 44, toolCalls: 28, failedTools: 0, uptimeSec: 1840, memoryMb: 312 },
+        { id: 'sess-claude-04', agent: 'Claude Architecture', model: 'claude-sonnet-5-5', state: 'running', contextPct: 68, toolCalls: 41, failedTools: 1, uptimeSec: 3920, memoryMb: 268 },
+        { id: 'sess-pi-11', agent: 'Pi Memory Curator', model: 'gemini-4-neon', state: 'idle', contextPct: 21, toolCalls: 12, failedTools: 0, uptimeSec: 740, memoryMb: 142 },
+      ],
+      accelerators: [
+        { id: 'mlx-0', name: 'Apple M4 Max Unified GPU (workstation-mac)', backend: 'MLX', vramUsedGb: 18.4, vramTotalGb: 64.0, utilizationPct: 42, tempC: 58, activeModels: ['qwen3-32b-4bit', 'bge-reranker-v2-m3'] },
+      ],
+      hourly,
+    };
+  }
+
+  function compareMemory(query = '') {
+    const q = String(query || '').trim() || 'tailnet';
+    const qLower = q.toLowerCase();
+    const corpus = [
+      { id: 'cmp-1', title: 'Zero-trust Tailnet Multi-Host Binding Policy', snippet: 'Bind loopback 127.0.0.1 and Tailnet interface explicitly rather than 0.0.0.0 to isolate control plane ports.', nmemScore: 0.91, ovScore: 0.87, rerankScore: 0.97, source: 'nmem + openviking' },
+      { id: 'cmp-2', title: 'viking://user/default/memories/ops_console.md', snippet: 'Ops Console exposes official REST & CLI connectors for Nowledge Mem, OpenViking, Magpie, and Tailscale.', nmemScore: 0.74, ovScore: 0.93, rerankScore: 0.94, source: 'openviking' },
+      { id: 'cmp-3', title: 'Structured Logging & Rotation Baseline', snippet: 'JSONL app logs with 5 MiB x 5 rotation and journalctl --output=json streaming with bounded SSE caps.', nmemScore: 0.82, ovScore: 0.71, rerankScore: 0.86, source: 'nmem' },
+      { id: 'cmp-4', title: 'Probe Token Heredoc Stdin Delivery Spec', snippet: 'Deliver one-time ops_prb_* tokens via --token-file - heredoc stdin so secrets never leak to ps or argv.', nmemScore: 0.78, ovScore: 0.79, rerankScore: 0.89, source: 'nmem + openviking' },
+    ];
+    const items = corpus
+      .map((item) => {
+        const hitBoost = `${item.title} ${item.snippet}`.toLowerCase().includes(qLower) ? 0.03 : -0.08;
+        const nmem = Number(Math.max(0.12, Math.min(0.99, item.nmemScore + hitBoost)).toFixed(2));
+        const ov = Number(Math.max(0.12, Math.min(0.99, item.ovScore + hitBoost)).toFixed(2));
+        const rerank = Number(Math.max(0.15, Math.min(0.99, item.rerankScore + hitBoost)).toFixed(2));
+        const baseAvg = Number(((nmem + ov) / 2).toFixed(2));
+        return {
+          ...item,
+          nmemScore: nmem,
+          ovScore: ov,
+          rerankScore: rerank,
+          delta: Number((rerank - baseAvg).toFixed(2)),
+        };
+      })
+      .sort((a, b) => b.rerankScore - a.rerankScore);
+
+    return {
+      ok: true,
+      query: q,
+      timingsMs: { nmem: 11, openviking: 16, rerank: 9, total: 25 },
+      items,
+    };
+  }
+
+  return {
+    getSnapshot,
+    getMemory,
+    getRemotes,
+    getFirewall,
+    getIncidents,
+    updateIncidentNote,
+    getHistoricalSeries,
+    getGatewayTelemetry,
+    compareMemory,
+    queryLogs,
+    startDemoLogStream,
+    searchMemory,
+    controlService,
+    controlTimer,
+  };
 }
   function getFirewall() {
     return {
@@ -646,10 +792,4 @@ export function createDemoProvider() {
     };
   }
 
-  function getIncidents() {
-    return [
-      { id: 2, ts: new Date(Date.now() - 420_000).toISOString(), entityKey: 'service:mihomo', node: 'Mihomo Proxy', kind: 'service', fromState: 'degraded', toState: 'healthy', detail: 'Upstream latency normalized (42ms)', resolvedAt: new Date(Date.now() - 420_000).toISOString() },
-      { id: 1, ts: new Date(Date.now() - 1_800_000).toISOString(), entityKey: 'node:workstation-mac', node: 'Workstation Laptop', kind: 'node', fromState: 'offline', toState: 'healthy', detail: 'DERP sin probe resumed', resolvedAt: new Date(Date.now() - 1_800_000).toISOString() },
-    ];
-  }
 

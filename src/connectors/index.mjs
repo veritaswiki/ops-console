@@ -61,35 +61,46 @@ async function collectOpsStateFiles(config) {
 }
 
 export class ConnectorHub {
-  constructor({ config, cache, demoProvider = null, probeRegistry = null, store = null }) {
+  constructor({ config, cache, demoProvider = null, probeRegistry = null, store = null, pluginManager = null }) {
     this.config = config;
     this.cache = cache;
     this.demoProvider = demoProvider;
     this.probeRegistry = probeRegistry;
     this.store = store;
+    this.pluginManager = pluginManager;
+  }
+
+  _isLegacyEnabled(pluginId, fallbackBool) {
+    if (!this.pluginManager) return fallbackBool;
+    const cfg = this.pluginManager.getEffectiveConfig(pluginId);
+    return cfg ? Boolean(cfg.enabled) : fallbackBool;
   }
 
   warmUp() {
     if (this.config.demo) return;
-    if (this.config.connectors.magpie?.enabled) {
+    if (this._isLegacyEnabled('gateway-magpie', Boolean(this.config.connectors.magpie?.enabled))) {
       this.collectMagpieGateway(false).catch(() => {});
     }
     if (this.config.remotes?.length > 0) {
       collectRemoteNodes(this.config, this.cache, false).catch(() => {});
     }
-    if (this.config.connectors.firewall?.enabled !== false) {
+    if (this._isLegacyEnabled('security-firewall', this.config.connectors.firewall?.enabled !== false)) {
       this.collectFirewall(false).catch(() => {});
     }
   }
 
   async collectFirewall(force = false) {
     if (this.config.demo && this.demoProvider) {
+      const enabled = this._isLegacyEnabled('security-firewall', true);
+      if (!enabled) return { enabled: false, listening: [], rules: [], summary: { listening: 0, exposed: 0 } };
       return this.demoProvider.getFirewall();
     }
     return this.cache.getOrLoad(
       'firewall',
       15_000,
-      () => collectFirewall(this.config.connectors.firewall),
+      () => (this.pluginManager
+        ? this.pluginManager.collectPlugin('security-firewall')
+        : collectFirewall(this.config.connectors.firewall)),
       { force, staleOnError: true },
     );
   }
@@ -130,12 +141,27 @@ export class ConnectorHub {
 
   async collectMemory(force = false) {
     if (this.config.demo && this.demoProvider) {
-      return this.demoProvider.getMemory();
+      const demoMem = this.demoProvider.getMemory();
+      return {
+        nmem: this._isLegacyEnabled('memory-nmem', true) ? demoMem.nmem : { ...demoMem.nmem, enabled: false, reachable: false, status: 'disabled' },
+        openviking: this._isLegacyEnabled('memory-openviking', true) ? demoMem.openviking : { ...demoMem.openviking, enabled: false, reachable: false, status: 'disabled' },
+        symbiote: this._isLegacyEnabled('memory-symbiote', true) ? demoMem.symbiote : { ...demoMem.symbiote, enabled: false, reachable: false, status: 'disabled' },
+        rerank: this._isLegacyEnabled('memory-rerank', true) ? demoMem.rerank : { ...demoMem.rerank, enabled: false, reachable: false, status: 'disabled' },
+      };
     }
     return this.cache.getOrLoad(
       'memory',
       15_000,
       async () => {
+        if (this.pluginManager) {
+          const [nmem, openviking, symbiote, rerank] = await Promise.all([
+            this.pluginManager.collectPlugin('memory-nmem'),
+            this.pluginManager.collectPlugin('memory-openviking'),
+            this.pluginManager.collectPlugin('memory-symbiote'),
+            this.pluginManager.collectPlugin('memory-rerank'),
+          ]);
+          return { nmem, openviking, symbiote, rerank };
+        }
         const [nmem, openviking, symbiote, rerank] = await Promise.all([
           collectNmem(this.config.connectors.nmem),
           collectOpenViking(this.config.connectors.openviking),
@@ -152,7 +178,9 @@ export class ConnectorHub {
     return this.cache.getOrLoad(
       'magpie',
       20_000,
-      () => collectMagpie(this.config.connectors.magpie),
+      () => (this.pluginManager
+        ? this.pluginManager.collectPlugin('gateway-magpie')
+        : collectMagpie(this.config.connectors.magpie)),
       { force, staleOnError: true },
     );
   }
@@ -162,6 +190,15 @@ export class ConnectorHub {
       'network',
       12_000,
       async () => {
+        if (this.pluginManager) {
+          const [tailscale, mihomo, syncthing, firewall] = await Promise.all([
+            this.pluginManager.collectPlugin('network-tailscale'),
+            this.pluginManager.collectPlugin('network-mihomo'),
+            this.pluginManager.collectPlugin('service-syncthing'),
+            this.collectFirewall(force),
+          ]);
+          return { tailscale, mihomo, syncthing, firewall };
+        }
         const [tailscale, mihomo, syncthing, firewall] = await Promise.all([
           collectTailscale(this.config.connectors.tailscale),
           collectMihomo(this.config.connectors.mihomo),
@@ -174,15 +211,44 @@ export class ConnectorHub {
     );
   }
 
+  async collectExtraPlugins(force = false) {
+    if (!this.pluginManager) return [];
+    return this.cache.getOrLoad(
+      'extra-plugins',
+      10_000,
+      () => this.pluginManager.collectExtraEnabledPlugins(),
+      { force, staleOnError: true },
+    );
+  }
+
   async collectSnapshot(force = false) {
+    const extraPlugins = await this.collectExtraPlugins(force);
+
     if (this.config.demo && this.demoProvider) {
       const baseDemo = this.demoProvider.getSnapshot(this.config);
+      const filteredMemory = await this.collectMemory(force);
+      const magpieEnabled = this._isLegacyEnabled('gateway-magpie', true);
+      const tailscaleEnabled = this._isLegacyEnabled('network-tailscale', true);
+      const mihomoEnabled = this._isLegacyEnabled('network-mihomo', true);
+      const syncthingEnabled = this._isLegacyEnabled('service-syncthing', true);
+      const patchedDemo = {
+        ...baseDemo,
+        memory: filteredMemory,
+        magpie: magpieEnabled ? baseDemo.magpie : { ...baseDemo.magpie, enabled: false, reachable: false, status: 'disabled' },
+        network: {
+          ...baseDemo.network,
+          tailscale: tailscaleEnabled ? baseDemo.network.tailscale : { ...baseDemo.network.tailscale, enabled: false, reachable: false, status: 'disabled' },
+          mihomo: mihomoEnabled ? baseDemo.network.mihomo : { ...baseDemo.network.mihomo, enabled: false, reachable: false, status: 'disabled' },
+          syncthing: syncthingEnabled ? baseDemo.network.syncthing : { ...baseDemo.network.syncthing, enabled: false, reachable: false, status: 'disabled' },
+        },
+        plugins: extraPlugins,
+      };
       if (this.probeRegistry && this.probeRegistry.telemetry.size > 0) {
         const mergedFleet = this.probeRegistry.buildFleetView({
-          snapshot: baseDemo,
+          snapshot: patchedDemo,
           remotes: this.demoProvider.getRemotes(),
         });
-        const demoById = new Map((baseDemo.fleet?.nodes || []).map((node) => [node.id, node]));
+        const demoById = new Map((patchedDemo.fleet?.nodes || []).map((node) => [node.id, node]));
         for (const liveNode of mergedFleet.nodes) {
           if (liveNode.probeLive || !demoById.has(liveNode.id)) {
             demoById.set(liveNode.id, liveNode);
@@ -190,9 +256,9 @@ export class ConnectorHub {
         }
         const nodes = [...demoById.values()];
         return {
-          ...baseDemo,
+          ...patchedDemo,
           fleet: {
-            ...baseDemo.fleet,
+            ...patchedDemo.fleet,
             nodes,
             summary: {
               total: nodes.length,
@@ -208,8 +274,8 @@ export class ConnectorHub {
         };
       }
       return {
-        ...baseDemo,
-        incidents: this.store ? this.store.listIncidents({ limit: 15 }) : (baseDemo.incidents || []),
+        ...patchedDemo,
+        incidents: this.store ? this.store.listIncidents({ limit: 15 }) : (patchedDemo.incidents || []),
       };
     }
 
@@ -217,10 +283,19 @@ export class ConnectorHub {
       'snapshot',
       5_000,
       async () => {
+        const effectiveConfig = this.pluginManager
+          ? {
+              ...this.config,
+              agentMatchers: [
+                ...(this.config.agentMatchers || []),
+                ...this.pluginManager.getContributedAgentMatchers(),
+              ],
+            }
+          : this.config;
         const [host, services, agents, magpie, memory, network, opsState, timers] = await Promise.all([
           collectHostMetrics(this.config),
           collectSystemdServices(this.config),
-          collectAgentProcesses(this.config),
+          collectAgentProcesses(effectiveConfig),
           this.collectMagpieGateway(force),
           this.collectMemory(force),
           this.collectNetwork(force),
@@ -244,12 +319,13 @@ export class ConnectorHub {
           alerts: opsState.alerts,
           activeOpsJobs: opsState.activeOpsJobs,
           timers,
+          plugins: extraPlugins,
         };
       },
       { force, staleOnError: true },
     );
 
-    let finalSnapshot = baseSnapshot;
+    let finalSnapshot = { ...baseSnapshot, plugins: extraPlugins };
     if (this.probeRegistry) {
       if (this.config.remotes?.length > 0 && !this.cache.entries?.has('remotes')) {
         collectRemoteNodes(this.config, this.cache, false).catch(() => {});
@@ -257,10 +333,10 @@ export class ConnectorHub {
       const cachedRemotesEntry = this.cache.entries?.get('remotes');
       const cachedRemotes = Array.isArray(cachedRemotesEntry?.value) ? cachedRemotesEntry.value : [];
       const fleet = this.probeRegistry.buildFleetView({
-        snapshot: baseSnapshot,
+        snapshot: finalSnapshot,
         remotes: cachedRemotes,
       });
-      finalSnapshot = { ...baseSnapshot, fleet };
+      finalSnapshot = { ...finalSnapshot, fleet };
     }
     this._trackTransitions(finalSnapshot);
     return {
@@ -282,11 +358,13 @@ export class ConnectorHub {
     }
     const p = String(provider || 'all').toLowerCase();
     const tasks = [];
-    if ((p === 'all' || p === 'nmem') && this.config.connectors.nmem.enabled) {
-      tasks.push(searchNmem(this.config.connectors.nmem, query, limit));
+    const nmemCfg = this.pluginManager ? this.pluginManager.getEffectiveConfig('memory-nmem', { resolveSecrets: true }) : this.config.connectors.nmem;
+    const ovCfg = this.pluginManager ? this.pluginManager.getEffectiveConfig('memory-openviking', { resolveSecrets: true }) : this.config.connectors.openviking;
+    if ((p === 'all' || p === 'nmem') && nmemCfg?.enabled) {
+      tasks.push(searchNmem(nmemCfg, query, limit));
     }
-    if ((p === 'all' || p === 'openviking') && this.config.connectors.openviking.enabled) {
-      tasks.push(searchOpenViking(this.config.connectors.openviking, query, limit));
+    if ((p === 'all' || p === 'openviking') && ovCfg?.enabled) {
+      tasks.push(searchOpenViking(ovCfg, query, limit));
     }
     const results = await Promise.all(tasks);
     const items = [];
@@ -311,11 +389,13 @@ export class ConnectorHub {
     }
     const p = String(provider || 'all').toLowerCase();
     const tasks = [];
-    if ((p === 'all' || p === 'nmem') && this.config.connectors.nmem.enabled) {
-      tasks.push(doctorNmem(this.config.connectors.nmem));
+    const nmemCfg = this.pluginManager ? this.pluginManager.getEffectiveConfig('memory-nmem', { resolveSecrets: true }) : this.config.connectors.nmem;
+    const ovCfg = this.pluginManager ? this.pluginManager.getEffectiveConfig('memory-openviking', { resolveSecrets: true }) : this.config.connectors.openviking;
+    if ((p === 'all' || p === 'nmem') && nmemCfg?.enabled) {
+      tasks.push(doctorNmem(nmemCfg));
     }
-    if ((p === 'all' || p === 'openviking') && this.config.connectors.openviking.enabled) {
-      tasks.push(doctorOpenViking(this.config.connectors.openviking));
+    if ((p === 'all' || p === 'openviking') && ovCfg?.enabled) {
+      tasks.push(doctorOpenViking(ovCfg));
     }
     const results = await Promise.all(tasks);
     return { ok: results.every((r) => r.ok), results };

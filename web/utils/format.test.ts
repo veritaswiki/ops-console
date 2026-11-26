@@ -7,6 +7,8 @@ import {
   filterFleetNodes,
   filterServices,
   formatBytes,
+  formatCompactNumber,
+  formatInteger,
   formatUptime,
   statusLabel,
   statusTone,
@@ -42,10 +44,16 @@ test('statusTone and statusLabel classify all operational states cleanly', () =>
   assert.equal(statusLabel('standby'), '待机');
 });
 
-test('formatBytes, formatUptime, and clampPercent handle boundary values', () => {
+test('formatBytes, formatInteger, formatCompactNumber, formatUptime, and clampPercent handle boundary values', () => {
   assert.equal(formatBytes(512), '512 B');
   assert.equal(formatBytes(1024 * 1024 * 12.5), '12.5 MB');
   assert.equal(formatBytes(null), '-');
+  assert.equal(formatInteger(9999999), '9,999,999');
+  assert.equal(formatInteger(null), '-');
+  assert.equal(formatCompactNumber(4200), '4,200');
+  assert.equal(formatCompactNumber(18500), '18.5K');
+  assert.equal(formatCompactNumber(9999999), '10.00M');
+  assert.equal(formatCompactNumber(null), '-');
   assert.equal(formatUptime(90061), '1d 1h');
   assert.equal(formatUptime(3660), '1h 1m');
   assert.equal(clampPercent(128), 100);

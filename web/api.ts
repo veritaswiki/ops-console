@@ -1,11 +1,25 @@
 import type {
+  AlertEvent,
+  AlertRule,
+  AlertsStateResponse,
   AuditEntry,
+  ConfigStudioResponse,
+  GatewayTelemetryResponse,
   IncidentItem,
   LogsResponse,
+  MemoryCompareResponse,
   MemorySearchResultItem,
   MetaResponse,
+  MetricsRange,
+  MetricsSeriesResponse,
+  PluginCatalogItem,
+  PluginsResponse,
+  PluginTestResult,
+  ProbeCommandItem,
   ProbesResponse,
   RemoteHostStatus,
+  RunbookExecution,
+  RunbooksResponse,
   SnapshotResponse,
 } from './types';
 
@@ -46,7 +60,7 @@ export async function apiRequest<T = unknown>(
 export const fetchMeta = () => apiRequest<MetaResponse>('/api/meta');
 
 export const fetchSnapshot = (force = false) =>
-  apiRequest<SnapshotResponse>(force ? '/api/snapshot?force=1' : '/api/snapshot');
+  apiRequest<SnapshotResponse>(force ? '/api/snapshot?refresh=1' : '/api/snapshot');
 
 export const fetchProbes = () => apiRequest<ProbesResponse>('/api/probes');
 
@@ -54,6 +68,115 @@ export const fetchIncidents = (limit = 30) =>
   apiRequest<{ items?: IncidentItem[]; incidents?: IncidentItem[]; stats?: { count?: number; retentionDays?: number } }>(
     `/api/incidents?limit=${limit}`,
   );
+
+export const saveIncidentNote = (incidentId: string | number, note: string) =>
+  apiRequest<{ ok?: boolean; id?: number; note?: string }>(
+    `/api/incidents/${encodeURIComponent(String(incidentId))}/note`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ note }),
+    },
+  );
+
+export const fetchMetricsSeries = (series = 'fleet', range: MetricsRange = '24h') => {
+  const qs = new URLSearchParams({ series, range });
+  return apiRequest<MetricsSeriesResponse>(`/api/metrics/series?${qs.toString()}`);
+};
+
+export const fetchPrometheusMetrics = async (): Promise<string> => {
+  const res = await fetch('/api/metrics', { credentials: 'same-origin' });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.text();
+};
+
+export const fetchAlerts = () => apiRequest<AlertsStateResponse>('/api/alerts');
+
+export const createAlertRule = (payload: {
+  name: string;
+  metric: string;
+  operator: string;
+  threshold: number;
+  severity: string;
+  channel: string;
+  channelTarget?: string;
+  forMinutes?: number;
+  cooldownMinutes?: number;
+}) =>
+  apiRequest<{ ok?: boolean; rule: AlertRule }>('/api/alerts/rules', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const toggleAlertRule = (ruleId: string, enabled: boolean) =>
+  apiRequest<{ ok?: boolean; rule: AlertRule }>(
+    `/api/alerts/rules/${encodeURIComponent(ruleId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ enabled }),
+    },
+  );
+
+export const deleteAlertRule = (ruleId: string) =>
+  apiRequest<{ ok?: boolean }>(`/api/alerts/rules/${encodeURIComponent(ruleId)}`, {
+    method: 'DELETE',
+  });
+
+export const ackAlert = (alertId: string) =>
+  apiRequest<{ ok?: boolean; alert: AlertEvent }>(
+    `/api/alerts/${encodeURIComponent(alertId)}/ack`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+  );
+
+export const setAlertSilence = (minutes: number) =>
+  apiRequest<{ ok?: boolean; silenced: boolean; silenceUntil: string | null }>('/api/alerts/silence', {
+    method: 'POST',
+    body: JSON.stringify({ minutes }),
+  });
+
+export const fetchGatewayTelemetry = () =>
+  apiRequest<GatewayTelemetryResponse>('/api/gateway/telemetry');
+
+export const compareMemoryRetrieval = (q: string) => {
+  const qs = new URLSearchParams({ q });
+  return apiRequest<MemoryCompareResponse>(`/api/memory/compare?${qs.toString()}`);
+};
+
+export const fetchRunbooks = () => apiRequest<RunbooksResponse>('/api/runbooks');
+
+export const runRunbook = (runbookId: string) =>
+  apiRequest<{ ok?: boolean; run: RunbookExecution }>(
+    `/api/runbooks/${encodeURIComponent(runbookId)}/run`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+  );
+
+export const fetchProbeCommands = (nodeId: string) =>
+  apiRequest<{ ok?: boolean; nodeId: string; items: ProbeCommandItem[] }>(
+    `/api/probes/${encodeURIComponent(nodeId)}/commands`,
+  );
+
+export const enqueueProbeCommand = (nodeId: string, command: string) =>
+  apiRequest<{ ok?: boolean; command: ProbeCommandItem }>(
+    `/api/probes/${encodeURIComponent(nodeId)}/commands`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ command }),
+    },
+  );
+
+export const fetchConfigStudio = () =>
+  apiRequest<ConfigStudioResponse>('/api/config/studio');
+
+export const validateConfigStudio = (rawJson: string) =>
+  apiRequest<{ ok?: boolean; valid: boolean; errors: string[] }>('/api/config/validate', {
+    method: 'POST',
+    body: JSON.stringify({ rawJson }),
+  });
 
 export const fetchAudit = (limit = 40) =>
   apiRequest<{ items?: AuditEntry[]; entries?: AuditEntry[] }>(`/api/audit?limit=${limit}`);
@@ -109,25 +232,38 @@ export const runMemoryDoctor = () =>
     body: JSON.stringify({}),
   });
 
+export const issueConfirmToken = (unit: string, action: string) =>
+  apiRequest<{ ok?: boolean; confirmToken: string; unit: string; action: string; expiresInSec: number }>(
+    '/api/actions/confirm-token',
+    {
+      method: 'POST',
+      body: JSON.stringify({ unit, action }),
+    },
+  );
+
 export const executeServiceAction = (
   serviceId: string,
   action: string,
   confirmToken?: string,
 ) =>
-  apiRequest<{ ok?: boolean; message?: string; output?: string }>(
-    `/api/services/${encodeURIComponent(serviceId)}/action`,
+  apiRequest<{ ok?: boolean; message?: string; output?: string; error?: string }>(
+    '/api/services/control',
     {
       method: 'POST',
-      body: JSON.stringify(confirmToken ? { action, confirmToken } : { action }),
+      body: JSON.stringify(
+        confirmToken
+          ? { id: serviceId, unit: serviceId, action, confirmToken }
+          : { id: serviceId, unit: serviceId, action },
+      ),
     },
   );
 
 export const executeTimerAction = (unit: string, action: string) =>
-  apiRequest<{ ok?: boolean; message?: string; output?: string }>(
-    `/api/timers/${encodeURIComponent(unit)}/action`,
+  apiRequest<{ ok?: boolean; message?: string; output?: string; error?: string }>(
+    '/api/timers/control',
     {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ unit, action }),
     },
   );
 
@@ -138,10 +274,9 @@ export const runOpsAction = (action: 'health-check' | 'backup') =>
   });
 
 export const probeRemotes = () =>
-  apiRequest<{ items?: RemoteHostStatus[]; remotes?: RemoteHostStatus[] }>('/api/remotes/probe', {
-    method: 'POST',
-    body: JSON.stringify({}),
-  });
+  apiRequest<{ nodes?: RemoteHostStatus[]; items?: RemoteHostStatus[]; remotes?: RemoteHostStatus[] }>(
+    '/api/remotes?refresh=1',
+  );
 
 export const submitMobileCheckin = (payload: {
   id: string;
@@ -152,9 +287,20 @@ export const submitMobileCheckin = (payload: {
   batteryPct?: number | null;
   note?: string;
 }) =>
-  apiRequest<{ ok?: boolean; node?: unknown }>('/api/nodes/checkin', {
+  apiRequest<{ ok?: boolean; node?: unknown }>('/api/probes/checkin', {
     method: 'POST',
-    body: JSON.stringify(payload),
+    body: JSON.stringify({
+      nodeId: payload.id,
+      name: payload.name,
+      region: payload.region,
+      lat: payload.lat,
+      lon: payload.lon,
+      battery:
+        payload.batteryPct != null && Number.isFinite(payload.batteryPct)
+          ? { percent: payload.batteryPct }
+          : null,
+      note: payload.note,
+    }),
   });
 
 export const enrollProbe = (payload: {
@@ -181,6 +327,58 @@ export const revokeProbe = (probeId: string) =>
   apiRequest<{ ok?: boolean }>(`/api/probes/${encodeURIComponent(probeId)}`, {
     method: 'DELETE',
   });
+
+export const fetchPlugins = (refresh = false) =>
+  apiRequest<PluginsResponse>(refresh ? '/api/plugins?refresh=1' : '/api/plugins');
+
+export const togglePlugin = (pluginId: string, enabled: boolean) =>
+  apiRequest<{ ok?: boolean; id: string; enabled: boolean }>(
+    `/api/plugins/${encodeURIComponent(pluginId)}/toggle`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    },
+  );
+
+export const updatePluginConfig = (pluginId: string, config: Record<string, unknown>) =>
+  apiRequest<{ ok?: boolean; id: string; config: Record<string, unknown> }>(
+    `/api/plugins/${encodeURIComponent(pluginId)}/config`,
+    {
+      method: 'POST',
+      body: JSON.stringify(config),
+    },
+  );
+
+export const testPlugin = (pluginId: string, config?: Record<string, unknown>) =>
+  apiRequest<PluginTestResult>(
+    `/api/plugins/${encodeURIComponent(pluginId)}/test`,
+    {
+      method: 'POST',
+      body: JSON.stringify(config ? { config } : {}),
+    },
+  );
+
+export const addCustomPlugin = (payload: {
+  name: string;
+  id?: string;
+  kind: 'mcp' | 'agent' | 'gateway' | 'custom';
+  apiUrl: string;
+  healthPath?: string;
+  authToken?: string;
+  description?: string;
+}) =>
+  apiRequest<{ ok?: boolean; id: string; plugin: PluginCatalogItem }>('/api/plugins/custom', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const removeCustomPlugin = (pluginId: string) =>
+  apiRequest<{ ok?: boolean; id: string }>(
+    `/api/plugins/custom/${encodeURIComponent(pluginId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
 
 export const logoutSession = () =>
   apiRequest('/api/auth/logout', { method: 'POST', body: JSON.stringify({}) });

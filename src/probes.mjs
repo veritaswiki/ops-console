@@ -10,7 +10,6 @@ const VALID_DEVICE_TYPES = new Set(['hub', 'server', 'edge', 'laptop', 'mobile']
 const VALID_PROBE_MODES = new Set(['local', 'push', 'checkin', 'tailscale-only', 'ssh', 'external']);
 
 export const DERP_COORDS = {
-  volcbj: { region: 'Beijing Relay', lat: 39.9, lon: 116.4 },
   pek: { region: 'Beijing', lat: 39.9, lon: 116.4 },
   sha: { region: 'Shanghai', lat: 31.23, lon: 121.47 },
   hkg: { region: 'Hong Kong', lat: 22.32, lon: 114.17 },
@@ -801,6 +800,69 @@ export class ProbeRegistry {
       links,
       fleetHistory: this.timeseries?.get('fleet', 30) || [],
     };
+  }
+
+  enqueueCommand(nodeId, command, actor = 'web') {
+    const cleanId = cleanStr(nodeId, 48).toLowerCase();
+    if (!validateNodeId(cleanId)) {
+      const err = new Error(`Invalid probe nodeId: ${nodeId}`);
+      err.statusCode = 400;
+      throw err;
+    }
+    const ALLOWED_PROBE_COMMANDS = new Set(['health-check', 'collect-diag', 'rotate-heartbeat']);
+    const cleanCmd = String(command || '').trim().toLowerCase();
+    if (!ALLOWED_PROBE_COMMANDS.has(cleanCmd)) {
+      const err = new Error(`Command not in probe allowlist: ${command}`);
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!this.commandQueues) this.commandQueues = new Map();
+    const now = Date.now();
+    const list = (this.commandQueues.get(cleanId) || []).filter((c) => c.expiresAtMs > now);
+    const entry = {
+      id: `cmd-${crypto.randomBytes(4).toString('hex')}`,
+      nodeId: cleanId,
+      command: cleanCmd,
+      status: 'queued',
+      actor: cleanStr(actor, 48) || 'web',
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 300_000).toISOString(),
+      expiresAtMs: now + 300_000,
+      nonce: crypto.randomBytes(8).toString('hex'),
+    };
+    list.unshift(entry);
+    this.commandQueues.set(cleanId, list.slice(0, 10));
+    return entry;
+  }
+
+  listCommands(nodeId) {
+    const cleanId = cleanStr(nodeId, 48).toLowerCase();
+    if (!this.commandQueues) return [];
+    const now = Date.now();
+    return (this.commandQueues.get(cleanId) || [])
+      .filter((c) => c.expiresAtMs > now || c.status === 'delivered')
+      .map(({ expiresAtMs: _ignore, ...rest }) => rest);
+  }
+
+  drainPendingCommands(nodeId) {
+    const cleanId = cleanStr(nodeId, 48).toLowerCase();
+    if (!this.commandQueues) return [];
+    const now = Date.now();
+    const list = this.commandQueues.get(cleanId) || [];
+    const pending = [];
+    for (const item of list) {
+      if (item.status === 'queued' && item.expiresAtMs > now) {
+        item.status = 'delivered';
+        item.deliveredAt = new Date(now).toISOString();
+        pending.push({
+          id: item.id,
+          command: item.command,
+          nonce: item.nonce,
+          expiresAt: item.expiresAt,
+        });
+      }
+    }
+    return pending;
   }
 }
 

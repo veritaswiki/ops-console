@@ -1,5 +1,10 @@
 import React from 'react';
+import { MotionConfig } from 'motion/react';
+import { Toaster, toast } from 'sonner';
+import { Drawer } from 'vaul';
 import {
+  Bell,
+  Blocks,
   Bot,
   Database,
   Globe,
@@ -32,30 +37,33 @@ import {
   fetchSnapshot,
   logoutSession,
 } from './api';
+import { cn, FOCUS_RING } from './lib/cn';
 import { formatClock, statusLabel } from './utils/format';
 import {
+  Button,
   CommandPalette,
   ConfirmAlertDialog,
-  ToastStack,
   type CommandEntry,
   type ConfirmModalState,
-  type ToastMessage,
 } from './components/ui';
 import { OverviewView } from './views/OverviewView';
+import { AlertsView } from './views/AlertsView';
 import { FleetView } from './views/FleetView';
 import { ServicesView } from './views/ServicesView';
+import { PluginsView } from './views/PluginsView';
 import { MemoryView } from './views/MemoryView';
 import { AgentsView } from './views/AgentsView';
 import { NetworkView } from './views/NetworkView';
 import { LogsView } from './views/LogsView';
 import { OpsView } from './views/OpsView';
+import { OfflineIndicator, PWAInstallButton } from './hooks/usePWA';
 
 interface NavItemConfig {
   key: ViewId;
   label: string;
   section: string;
   keywords: string[];
-  icon: React.ComponentType<{ className?: string }>;
+  icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
 }
 
 const NAV_ITEMS: NavItemConfig[] = [
@@ -65,6 +73,13 @@ const NAV_ITEMS: NavItemConfig[] = [
     section: '观测',
     keywords: ['overview', 'dashboard', '总览', '架构', '拓扑', '主界面'],
     icon: LayoutGrid,
+  },
+  {
+    key: 'alerts',
+    label: '告警与事件',
+    section: '观测',
+    keywords: ['alerts', 'sla', 'incident', 'postmortem', '告警', '事件', '复盘', '规则'],
+    icon: Bell,
   },
   {
     key: 'fleet',
@@ -79,6 +94,13 @@ const NAV_ITEMS: NavItemConfig[] = [
     section: '基础设施',
     keywords: ['services', 'systemd', 'service', '服务', '重启', '进程'],
     icon: Layers,
+  },
+  {
+    key: 'plugins',
+    label: '插件与接入',
+    section: '基础设施',
+    keywords: ['plugins', 'mcp', 'a2a', 'agent', 'openai', 'ollama', 'connector', '插件', '接入', '协议'],
+    icon: Blocks,
   },
   {
     key: 'memory',
@@ -170,18 +192,15 @@ export function App() {
   const [agentCategory, setAgentCategory] = React.useState<string>('');
   const [agentPid, setAgentPid] = React.useState<number | null>(null);
   const [confirmState, setConfirmState] = React.useState<ConfirmModalState | null>(null);
-  const [toasts, setToasts] = React.useState<ToastMessage[]>([]);
 
   const pushToast = React.useCallback((text: string, tone: 'info' | 'ok' | 'err' = 'info') => {
-    const id = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-    setToasts((prev) => [...prev.slice(-3), { id, text, tone }]);
-    window.setTimeout(() => {
-      setToasts((prev) => prev.filter((item) => item.id !== id));
-    }, 3600);
-  }, []);
-
-  const dismissToast = React.useCallback((id: string) => {
-    setToasts((prev) => prev.filter((item) => item.id !== id));
+    if (tone === 'ok') {
+      toast.success(text);
+    } else if (tone === 'err') {
+      toast.error(text);
+    } else {
+      toast(text);
+    }
   }, []);
 
   React.useEffect(() => {
@@ -256,10 +275,37 @@ export function App() {
   React.useEffect(() => {
     if (view === 'fleet') {
       loadProbes();
-    } else if (view === 'ops') {
+    } else if (view === 'ops' || view === 'alerts') {
       loadOpsData();
     }
   }, [view, loadProbes, loadOpsData]);
+
+  // Real-time SSE delta event bus subscription
+  React.useEffect(() => {
+    if (typeof EventSource === 'undefined') return;
+    let timer: number | null = null;
+    const scheduleDeltaSync = () => {
+      if (timer != null) return;
+      timer = window.setTimeout(() => {
+        timer = null;
+        if (document.visibilityState === 'visible') {
+          void loadSnapshot(false);
+          void loadOpsData();
+        }
+      }, 600);
+    };
+
+    const es = new EventSource('/api/events/stream');
+    const eventTypes = ['audit', 'alert', 'probe', 'runbook', 'service', 'incident', 'plugins_updated'];
+    for (const type of eventTypes) {
+      es.addEventListener(type, scheduleDeltaSync);
+    }
+
+    return () => {
+      if (timer != null) window.clearTimeout(timer);
+      es.close();
+    };
+  }, [loadSnapshot, loadOpsData]);
 
   // Polling interval
   React.useEffect(() => {
@@ -272,19 +318,17 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [pollMs, loadSnapshot]);
 
-  // Global Cmd+K / Ctrl+K shortcut
+  // Global Cmd+K / Ctrl+K shortcut — instant response (frequency-gated)
   React.useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
         setCommandOpen((prev) => !prev);
-      } else if (e.key === 'Escape' && mobileNavOpen) {
-        setMobileNavOpen(false);
       }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [mobileNavOpen]);
+  }, []);
 
   const handleOpenLogs = React.useCallback(
     (unit: string, level: 'all' | 'error' | 'warn' = 'all') => {
@@ -363,7 +407,7 @@ export function App() {
         {
           id: `log-err:${svc.id}`,
           label: `${name} · Error 日志`,
-          group: '日志级别快筛 (Error / Warn)',
+          group: '日志级别快筛',
           keywords: ['error', 'err', '错误', '故障', '异常', 'log', 'logs', '日志', svc.id, unit, name],
           meta: unit,
           shortcut: 'ERROR',
@@ -372,7 +416,7 @@ export function App() {
         {
           id: `log-warn:${svc.id}`,
           label: `${name} · Warn 日志`,
-          group: '日志级别快筛 (Error / Warn)',
+          group: '日志级别快筛',
           keywords: ['warn', 'warning', '警告', '告警', '降级', 'log', 'logs', '日志', svc.id, unit, name],
           meta: unit,
           shortcut: 'WARN',
@@ -388,7 +432,7 @@ export function App() {
       list.push({
         id: `agent-pid:${proc.pid}`,
         label: `PID ${proc.pid} · ${cat}`,
-        group: 'Agent 运行时进程 (PID)',
+        group: 'Agent 运行时进程',
         keywords: [
           String(proc.pid),
           `pid ${proc.pid}`,
@@ -485,86 +529,114 @@ export function App() {
     ).length;
   }, [snapshot]);
 
-  const sidebarContent = (
+  const activeAlertsCount = snapshot?.activeAlertsCount ?? 0;
+
+  const renderSidebarContent = (isMobile = false) => (
     <div className="flex h-full flex-col">
       <div className="flex h-14 items-center justify-between px-4 border-b border-[var(--border-subtle)] shrink-0">
         <button
           type="button"
           onClick={() => handleSelectView('overview')}
-          className="flex items-center gap-2.5 min-w-0 text-left cursor-pointer focus:outline-none"
+          className={cn(
+            'flex items-center gap-2.5 min-w-0 text-left cursor-pointer rounded-lg py-1 pr-1 select-none',
+            FOCUS_RING,
+          )}
         >
-          <img
-            src="/favicon.svg"
-            width={24}
-            height={24}
-            alt=""
-            className="h-6 w-6 rounded-[6px] shrink-0"
-          />
-          <span className="text-[15px] font-semibold tracking-[-0.02em] text-[var(--ink)] truncate">
+          <span className="h-6 w-6 rounded-md overflow-hidden shrink-0 ring-1 ring-inset ring-black/10 dark:ring-white/10 bg-[var(--surface-subtle)]">
+            <img
+              src="/favicon.svg"
+              width={24}
+              height={24}
+              alt=""
+              className="h-6 w-6 block"
+            />
+          </span>
+          <span className="text-[15px] font-semibold tracking-tight text-[var(--ink)] truncate">
             {brandTitle}
           </span>
         </button>
-        <button
-          type="button"
-          onClick={() => setMobileNavOpen(false)}
-          aria-label="关闭导航菜单"
-          className="lg:hidden p-1.5 rounded-[6px] text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] cursor-pointer"
-        >
-          <X className="h-4 w-4" />
-        </button>
+        {isMobile && (
+          <button
+            type="button"
+            onClick={() => setMobileNavOpen(false)}
+            aria-label="关闭导航菜单"
+            className={cn(
+              'h-8 w-8 inline-flex items-center justify-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] transition-colors duration-150 ease-out cursor-pointer',
+              FOCUS_RING,
+            )}
+          >
+            <X className="size-4" strokeWidth={1.75} />
+          </button>
+        )}
       </div>
 
-      <nav className="flex-1 overflow-y-auto px-3 py-5 space-y-6" aria-label="主导航">
+      {/* Zero click dead zones: continuous hit area via internal py-2.5 padding */}
+      <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-5" aria-label="主导航">
         {navSections.map((sec) => (
-          <div key={sec.title} className="space-y-1">
-            <div className="px-2.5 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-[var(--ink-subtle)]">
+          <div key={sec.title}>
+            <div className="px-2.5 pb-1.5 text-[11.5px] font-medium text-[var(--ink-subtle)] select-none">
               {sec.title}
             </div>
-            {sec.items.map((item) => {
-              const Icon = item.icon;
-              const isActive = view === item.key;
-              return (
-                <button
-                  key={item.key}
-                  type="button"
-                  data-view={item.key}
-                  aria-current={isActive ? 'page' : undefined}
-                  onClick={() => handleSelectView(item.key)}
-                  className={`w-full flex items-center justify-between gap-2.5 px-2.5 py-2 rounded-lg text-[13.5px] transition-colors duration-150 ease-out cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/50 ${
-                    isActive
-                      ? 'bg-[var(--surface-active)] text-[var(--ink)] font-medium'
-                      : 'text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] font-normal'
-                  }`}
-                >
-                  <span className="flex items-center gap-2.5 min-w-0">
-                    <Icon
-                      className={`w-4 h-4 shrink-0 ${
-                        isActive ? 'text-[var(--ink)]' : 'text-[var(--ink-subtle)]'
-                      }`}
-                    />
-                    <span className="truncate">{item.label}</span>
-                  </span>
-                  {item.key === 'services' && failedSvcCount > 0 && (
-                    <span className="font-mono text-[11.5px] font-semibold text-[var(--err)] tabular-nums">
-                      {failedSvcCount}
+            <div className="flex flex-col">
+              {sec.items.map((item) => {
+                const Icon = item.icon;
+                const isActive = view === item.key;
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    data-view={item.key}
+                    aria-current={isActive ? 'page' : undefined}
+                    onClick={() => handleSelectView(item.key)}
+                    className={cn(
+                      'w-full flex items-center justify-between gap-2.5 px-2.5 py-2.5 rounded-lg text-[13.5px] font-medium select-none cursor-pointer whitespace-nowrap',
+                      'transition-colors duration-150 ease-out',
+                      FOCUS_RING,
+                      isActive
+                        ? 'bg-[var(--surface-active)] text-[var(--ink)]'
+                        : 'text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
+                    )}
+                  >
+                    <span className="flex items-center gap-2.5 min-w-0">
+                      <Icon
+                        className={cn(
+                          'size-4 shrink-0',
+                          isActive ? 'text-[var(--accent)]' : 'text-[var(--ink-subtle)]',
+                        )}
+                        strokeWidth={1.75}
+                      />
+                      <span className="truncate">{item.label}</span>
                     </span>
-                  )}
-                </button>
-              );
-            })}
+                    {item.key === 'services' && failedSvcCount > 0 && (
+                      <span className="font-mono text-[11.5px] font-semibold text-[var(--err)] tabular-nums shrink-0">
+                        {failedSvcCount}
+                      </span>
+                    )}
+                    {item.key === 'alerts' && activeAlertsCount > 0 && (
+                      <span className="font-mono text-[11.5px] font-semibold text-[var(--warn)] tabular-nums shrink-0">
+                        {activeAlertsCount}
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           </div>
         ))}
       </nav>
 
       <div className="px-4 py-3.5 border-t border-[var(--border-subtle)] text-[12px] text-[var(--ink-subtle)] shrink-0 space-y-1">
         <div className="flex items-center justify-between gap-2">
-          <span className="truncate font-mono text-[var(--ink-muted)]">
+          <span
+            className="truncate font-mono text-[var(--ink-muted)]"
+            title={snapshot?.host?.hostname || 'control-plane'}
+          >
             {snapshot?.host?.hostname || 'control-plane'}
           </span>
           <span className="font-mono tabular-nums shrink-0">v{meta?.version || '0.3.0'}</span>
         </div>
         {(demoMode || readOnly) && (
-          <div className="text-[11.5px] text-[var(--ink-subtle)]">
+          <div className="text-[11.5px] text-[var(--ink-subtle)] truncate">
             {demoMode && readOnly
               ? '演示模式 · 只读保护'
               : demoMode
@@ -572,253 +644,303 @@ export function App() {
                 : '只读观测模式'}
           </div>
         )}
+        <PWAInstallButton />
       </div>
     </div>
   );
 
   return (
-    <div className="min-h-screen bg-[var(--bg)] text-[var(--ink)] flex">
-      {/* Desktop Sidebar */}
-      <aside className="hidden lg:flex lg:w-[236px] lg:shrink-0 lg:flex-col lg:fixed lg:inset-y-0 lg:left-0 bg-[var(--surface)] border-r border-[var(--border)] z-30">
-        {sidebarContent}
-      </aside>
+    <MotionConfig reducedMotion="user">
+      <div className="min-h-dvh bg-[var(--bg)] text-[var(--ink)] flex">
+        {/* Desktop Sidebar */}
+        <aside className="hidden lg:flex lg:w-[240px] lg:shrink-0 lg:flex-col lg:fixed lg:inset-y-0 lg:left-0 bg-[var(--surface-elevated)] border-r border-[var(--border)] z-30">
+          {renderSidebarContent(false)}
+        </aside>
 
-      {/* Mobile Drawer */}
-      {mobileNavOpen && (
-        <div className="fixed inset-0 z-50 lg:hidden flex">
-          <div
-            className="fixed inset-0 bg-slate-950/50 backdrop-blur-[2px]"
-            onClick={() => setMobileNavOpen(false)}
-            aria-hidden="true"
-          />
-          <aside className="relative w-[264px] max-w-[82vw] bg-[var(--surface)] border-r border-[var(--border)] shadow-xl z-10 flex flex-col">
-            {sidebarContent}
-          </aside>
-        </div>
-      )}
+        {/* Native Gesture Mobile Drawer via Vaul */}
+        <Drawer.Root
+          open={mobileNavOpen}
+          onOpenChange={setMobileNavOpen}
+          direction="left"
+        >
+          <Drawer.Portal>
+            <Drawer.Overlay className="fixed inset-0 z-50 bg-zinc-950/60 backdrop-blur-[2px] lg:hidden" />
+            <Drawer.Content
+              aria-label="移动端主导航抽屉"
+              className="fixed inset-y-0 left-0 z-50 w-[272px] max-w-[84vw] bg-[var(--surface-elevated)] border-r border-[var(--border)] shadow-2xl flex flex-col lg:hidden focus:outline-none"
+            >
+              <Drawer.Title className="sr-only">{brandTitle} 导航菜单</Drawer.Title>
+              <Drawer.Description className="sr-only">
+                在系统总览、全球节点、受管服务、记忆引擎、网关、网络、日志与运维视图间切换
+              </Drawer.Description>
+              {renderSidebarContent(true)}
+            </Drawer.Content>
+          </Drawer.Portal>
+        </Drawer.Root>
 
-      {/* Main Content Column */}
-      <div className="flex-1 min-w-0 lg:pl-[236px] flex flex-col min-h-screen">
-        {/* Sticky Single-Row Topbar — Restrained Geist Hierarchy */}
-        <header className="sticky top-0 z-20 h-14 bg-[var(--bg)]/85 backdrop-blur-md border-b border-[var(--border-subtle)] shrink-0">
-          <div className="h-full max-w-[1200px] mx-auto px-5 sm:px-8 flex items-center justify-between gap-4">
-            <div className="flex items-center gap-2.5 min-w-0">
-              <button
-                type="button"
-                onClick={() => setMobileNavOpen(true)}
-                aria-label="打开导航菜单"
-                className="lg:hidden h-8 w-8 inline-flex items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/50"
-              >
-                <Menu className="w-4 h-4" strokeWidth={1.75} />
-              </button>
-              <div className="flex items-center gap-2 min-w-0 text-[13px]">
-                <span className="hidden sm:inline text-[var(--ink-subtle)] whitespace-nowrap">
-                  {activeNav.section}
-                </span>
-                <span className="hidden sm:inline text-[var(--ink-subtle)]/50">/</span>
-                <span className="font-medium text-[var(--ink)] truncate whitespace-nowrap">
-                  {activeNav.label}
-                </span>
+        {/* Main Content Column */}
+        <div className="flex-1 min-w-0 lg:pl-[240px] flex flex-col min-h-dvh">
+          {/* Sticky Single-Row Topbar */}
+          <header className="sticky top-0 z-20 h-14 bg-[var(--bg)]/85 backdrop-blur-md border-b border-[var(--border-subtle)] shrink-0">
+            <div className="h-full max-w-[1200px] mx-auto px-4 sm:px-8 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Button
+                  variant="secondary"
+                  size="icon"
+                  onClick={() => setMobileNavOpen(true)}
+                  aria-label="打开导航菜单"
+                  className="lg:hidden"
+                >
+                  <Menu className="size-4" strokeWidth={1.75} />
+                </Button>
+                <div className="flex items-center gap-2 min-w-0 text-[13px] select-none">
+                  <span className="hidden sm:inline text-[var(--ink-subtle)] whitespace-nowrap">
+                    {activeNav.section}
+                  </span>
+                  <span className="hidden sm:inline text-[var(--ink-subtle)]/50" aria-hidden="true">/</span>
+                  <span className="font-medium text-[var(--ink)] truncate whitespace-nowrap">
+                    {activeNav.label}
+                  </span>
+                </div>
               </div>
-            </div>
 
-            <div className="flex items-center gap-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => setCommandOpen(true)}
-                aria-label="打开命令面板"
-                data-testid="command-trigger"
-                className="h-8 px-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[12.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:border-[var(--ink-subtle)] transition-colors duration-150 ease-out inline-flex items-center gap-2 cursor-pointer whitespace-nowrap focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/50"
-              >
-                <Search className="w-3.5 h-3.5 text-[var(--ink-subtle)]" strokeWidth={1.75} />
-                <span className="hidden md:inline">搜索或跳转</span>
-                <kbd className="hidden sm:inline-block font-mono text-[11px] text-[var(--ink-subtle)] px-1 rounded bg-[var(--surface-subtle)] border border-[var(--border-subtle)]">
-                  ⌘K
-                </kbd>
-              </button>
-
-              <span
-                className={`hidden xl:inline-block font-mono text-[11.5px] tabular-nums whitespace-nowrap px-1.5 ${
-                  syncError ? 'text-[var(--err)]' : 'text-[var(--ink-subtle)]'
-                }`}
-                title={syncError || lastSyncedAt}
-              >
-                {syncError
-                  ? '同步异常'
-                  : lastSyncedAt
-                    ? formatClock(lastSyncedAt)
-                    : '同步中...'}
-              </span>
-
-              <select
-                aria-label="自动刷新周期"
-                value={String(pollMs)}
-                onChange={(e) => setPollMs(Number(e.target.value))}
-                className="ui-select hidden sm:block h-8 pl-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] text-[12px] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:border-[var(--ink-subtle)] transition-colors duration-150 ease-out focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/50 cursor-pointer"
-              >
-                <option value="0">手动</option>
-                <option value="10000">10s</option>
-                <option value="30000">30s</option>
-              </select>
-
-              <button
-                type="button"
-                onClick={toggleTheme}
-                aria-label={theme === 'dark' ? '切换为浅色模式' : '切换为深色模式'}
-                title={theme === 'dark' ? '切换为浅色模式' : '切换为深色模式'}
-                data-testid="theme-toggle"
-                className="h-8 w-8 inline-flex items-center justify-center rounded-lg text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out cursor-pointer shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/50"
-              >
-                {theme === 'dark' ? (
-                  <Sun className="w-4 h-4" strokeWidth={1.75} />
-                ) : (
-                  <Moon className="w-4 h-4" strokeWidth={1.75} />
-                )}
-              </button>
-
-              <button
-                type="button"
-                disabled={refreshing}
-                aria-label="手动刷新数据"
-                title="立即同步遥测快照"
-                onClick={() => {
-                  loadSnapshot(true);
-                  if (view === 'fleet') loadProbes();
-                  if (view === 'ops') loadOpsData();
-                }}
-                className="h-8 px-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface)] hover:bg-[var(--surface-hover)] hover:border-[var(--ink-subtle)] text-[12.5px] font-medium text-[var(--ink)] transition-colors duration-150 ease-out inline-flex items-center gap-1.5 cursor-pointer disabled:opacity-50 whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/50"
-              >
-                <RefreshCw
-                  className={`w-3.5 h-3.5 text-[var(--ink-muted)] ${refreshing ? 'animate-spin' : ''}`}
-                  strokeWidth={1.75}
-                />
-                <span className="hidden sm:inline">刷新</span>
-              </button>
-
-              {meta?.authEnabled && (
+              <div className="flex items-center gap-2 shrink-0">
                 <button
                   type="button"
-                  onClick={handleLogout}
-                  aria-label="退出登录"
-                  title="退出登录"
-                  className="h-8 px-2.5 rounded-lg text-[12.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]/50"
+                  onClick={() => setCommandOpen(true)}
+                  aria-label="打开命令面板"
+                  data-testid="command-trigger"
+                  className={cn(
+                    'h-8 px-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-[12.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:border-[var(--border-strong)] transition-[color,border-color,transform] duration-150 ease-out active:scale-[0.97] inline-flex items-center gap-2 cursor-pointer whitespace-nowrap select-none',
+                    FOCUS_RING,
+                  )}
                 >
-                  <LogOut className="w-4 h-4" strokeWidth={1.75} />
-                  <span className="hidden md:inline">退出</span>
+                  <Search className="size-4 text-[var(--ink-subtle)]" strokeWidth={1.75} />
+                  <span className="hidden md:inline">搜索或跳转</span>
+                  <kbd className="hidden sm:inline-block font-mono text-[11px] text-[var(--ink-subtle)] px-1.5 py-0.5 rounded-md bg-[var(--surface-subtle)] border border-[var(--border-subtle)] leading-none">
+                    ⌘K
+                  </kbd>
                 </button>
-              )}
-            </div>
-          </div>
-        </header>
 
-        {/* Inline Error Notice only when sync actually fails */}
-        {syncError && (
-          <div className="border-b border-[var(--err)]/20 bg-[var(--err)]/5">
-            <div className="max-w-[1200px] mx-auto px-5 sm:px-8 py-2 flex items-center justify-between gap-2 text-[12.5px] text-[var(--err)]">
-              <span>快照同步异常：{syncError}</span>
-            </div>
-          </div>
-        )}
+                <span
+                  className={cn(
+                    'hidden xl:inline-block font-mono text-[11.5px] tabular-nums whitespace-nowrap px-1.5 select-none',
+                    syncError ? 'text-[var(--err)]' : 'text-[var(--ink-subtle)]',
+                  )}
+                  title={syncError || lastSyncedAt}
+                >
+                  {syncError
+                    ? '同步异常'
+                    : lastSyncedAt
+                      ? formatClock(lastSyncedAt)
+                      : '同步中...'}
+                </span>
 
-        {/* Active View Shell */}
-        <main className="flex-1 w-full max-w-[1200px] mx-auto px-5 sm:px-8 py-7 sm:py-9">
-          {loading && !snapshot ? (
-            <div className="space-y-8">
-              <div className="space-y-2">
-                <div className="h-7 w-40 rounded-lg bg-[var(--surface-subtle)] animate-pulse" />
-                <div className="h-4 w-72 rounded-md bg-[var(--surface-subtle)] animate-pulse" />
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-                {[0, 1, 2, 3].map((k) => (
-                  <div
-                    key={k}
-                    className="h-28 rounded-xl border border-[var(--border)] bg-[var(--surface)] animate-pulse"
-                  />
-                ))}
-              </div>
-              <div className="h-[360px] rounded-[10px] border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
-            </div>
-          ) : (
-            <>
-              {view === 'overview' && (
-                <OverviewView
-                  snapshot={snapshot}
-                  incidents={incidents}
-                  onOpenLogs={handleOpenLogs}
-                  onSelectAgentCategory={handleSelectAgentCategory}
-                />
-              )}
-              {view === 'fleet' && (
-                <FleetView
-                  snapshot={snapshot}
-                  probes={probes}
-                  readOnly={readOnly}
-                  onRefresh={() => loadSnapshot(true)}
-                  onRefreshProbes={loadProbes}
-                  onToast={pushToast}
-                  onConfirm={setConfirmState}
-                />
-              )}
-              {view === 'services' && (
-                <ServicesView
-                  snapshot={snapshot}
-                  readOnly={readOnly}
-                  onRefresh={() => loadSnapshot(true)}
-                  onOpenLogs={handleOpenLogs}
-                  onToast={pushToast}
-                  onConfirm={setConfirmState}
-                />
-              )}
-              {view === 'memory' && (
-                <MemoryView snapshot={snapshot} readOnly={readOnly} onToast={pushToast} />
-              )}
-              {view === 'agents' && (
-                <AgentsView
-                  snapshot={snapshot}
-                  selectedCategory={agentCategory}
-                  selectedPid={agentPid}
-                  onSelectCategory={(cat) => {
-                    setAgentPid(null);
-                    setAgentCategory(cat);
+                <select
+                  aria-label="自动刷新周期"
+                  value={String(pollMs)}
+                  onChange={(e) => setPollMs(Number(e.target.value))}
+                  className={cn(
+                    'ui-select hidden sm:block h-8 pl-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-[12px] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:border-[var(--border-strong)] transition-colors duration-150 ease-out cursor-pointer',
+                    FOCUS_RING,
+                  )}
+                >
+                  <option value="0">手动</option>
+                  <option value="10000">10s</option>
+                  <option value="30000">30s</option>
+                </select>
+
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={toggleTheme}
+                  aria-label={theme === 'dark' ? '切换为浅色模式' : '切换为深色模式'}
+                  title={theme === 'dark' ? '切换为浅色模式' : '切换为深色模式'}
+                  data-testid="theme-toggle"
+                >
+                  {theme === 'dark' ? (
+                    <Sun className="size-4" strokeWidth={1.75} />
+                  ) : (
+                    <Moon className="size-4" strokeWidth={1.75} />
+                  )}
+                </Button>
+
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={refreshing}
+                  aria-label="手动刷新数据"
+                  title="立即同步遥测快照"
+                  onClick={() => {
+                    loadSnapshot(true);
+                    if (view === 'fleet') loadProbes();
+                    if (view === 'ops') loadOpsData();
                   }}
-                  onSelectPid={setAgentPid}
-                />
-              )}
-              {view === 'network' && (
-                <NetworkView snapshot={snapshot} meta={meta} onToast={pushToast} />
-              )}
-              {view === 'logs' && (
-                <LogsView
-                  snapshot={snapshot}
-                  meta={meta}
-                  initialUnit={logsInitialUnit}
-                  initialLevel={logsInitialLevel}
-                  requestNonce={logsRequestNonce}
-                  onToast={pushToast}
-                />
-              )}
-              {view === 'ops' && (
-                <OpsView
-                  snapshot={snapshot}
-                  incidents={incidents}
-                  audit={audit}
-                  readOnly={readOnly}
-                  onRefresh={() => loadSnapshot(true)}
-                  onRefreshOps={loadOpsData}
-                  onToast={pushToast}
-                  onConfirm={setConfirmState}
-                />
-              )}
-            </>
-          )}
-        </main>
-      </div>
+                >
+                  <RefreshCw
+                    className={cn('size-4 text-[var(--ink-muted)]', refreshing && 'animate-spin')}
+                    strokeWidth={1.75}
+                  />
+                  <span className="hidden sm:inline">刷新</span>
+                </Button>
 
-      {/* Headless @ui-sdk/react Command Palette & Confirm AlertDialog */}
-      <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} entries={commandEntries} />
-      <ConfirmAlertDialog state={confirmState} onClose={() => setConfirmState(null)} />
-      <ToastStack toasts={toasts} onDismiss={dismissToast} />
-    </div>
+                {meta?.authEnabled && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleLogout}
+                    aria-label="退出登录"
+                    title="退出登录"
+                  >
+                    <LogOut className="size-4" strokeWidth={1.75} />
+                    <span className="hidden md:inline">退出</span>
+                  </Button>
+                )}
+              </div>
+            </div>
+          </header>
+
+          {/* Inline Error Notice only when sync actually fails */}
+          {syncError && (
+            <div className="border-b border-[var(--err)]/20 bg-[var(--err)]/5">
+              <div className="max-w-[1200px] mx-auto px-4 sm:px-8 py-2 flex items-center justify-between gap-2 text-[12.5px] text-[var(--err)]">
+                <span className="truncate">快照同步异常：{syncError}</span>
+              </div>
+            </div>
+          )}
+
+          {/* Active View Shell */}
+          <main className="flex-1 w-full max-w-[1200px] mx-auto px-4 sm:px-8 py-6 sm:py-9">
+            {loading && !snapshot ? (
+              <div className="space-y-8" aria-busy="true" aria-label="正在加载遥测视图">
+                <div className="flex items-end justify-between gap-4">
+                  <div className="space-y-2">
+                    <div className="h-7 w-36 rounded-lg bg-[var(--surface-subtle)] animate-pulse" />
+                    <div className="h-4 w-72 max-w-[75vw] rounded-md bg-[var(--surface-subtle)] animate-pulse" />
+                  </div>
+                  <div className="hidden sm:block h-4 w-44 rounded-md bg-[var(--surface-subtle)] animate-pulse" />
+                </div>
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                  <div className="lg:col-span-5 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
+                  <div className="lg:col-span-7 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
+                </div>
+                <div className="h-[540px] rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
+              </div>
+            ) : (
+              <>
+                {view === 'overview' && (
+                  <OverviewView
+                    snapshot={snapshot}
+                    incidents={incidents}
+                    onOpenLogs={handleOpenLogs}
+                    onSelectAgentCategory={handleSelectAgentCategory}
+                    onOpenPlugins={() => handleSelectView('plugins')}
+                  />
+                )}
+                {view === 'alerts' && (
+                  <AlertsView
+                    incidents={incidents}
+                    readOnly={readOnly}
+                    onRefreshIncidents={loadOpsData}
+                    onToast={pushToast}
+                    onConfirm={setConfirmState}
+                  />
+                )}
+                {view === 'fleet' && (
+                  <FleetView
+                    snapshot={snapshot}
+                    probes={probes}
+                    readOnly={readOnly}
+                    onRefresh={() => loadSnapshot(true)}
+                    onRefreshProbes={loadProbes}
+                    onToast={pushToast}
+                    onConfirm={setConfirmState}
+                  />
+                )}
+                {view === 'services' && (
+                  <ServicesView
+                    snapshot={snapshot}
+                    readOnly={readOnly}
+                    onRefresh={() => loadSnapshot(true)}
+                    onOpenLogs={handleOpenLogs}
+                    onToast={pushToast}
+                    onConfirm={setConfirmState}
+                  />
+                )}
+                {view === 'plugins' && (
+                  <PluginsView
+                    readOnly={readOnly}
+                    onSnapshotChanged={() => void loadSnapshot(true)}
+                    onToast={pushToast}
+                    onConfirm={setConfirmState}
+                  />
+                )}
+                {view === 'memory' && (
+                  <MemoryView snapshot={snapshot} readOnly={readOnly} onToast={pushToast} />
+                )}
+                {view === 'agents' && (
+                  <AgentsView
+                    snapshot={snapshot}
+                    selectedCategory={agentCategory}
+                    selectedPid={agentPid}
+                    onSelectCategory={(cat) => {
+                      setAgentPid(null);
+                      setAgentCategory(cat);
+                    }}
+                    onSelectPid={setAgentPid}
+                  />
+                )}
+                {view === 'network' && (
+                  <NetworkView snapshot={snapshot} meta={meta} onToast={pushToast} />
+                )}
+                {view === 'logs' && (
+                  <LogsView
+                    snapshot={snapshot}
+                    meta={meta}
+                    initialUnit={logsInitialUnit}
+                    initialLevel={logsInitialLevel}
+                    requestNonce={logsRequestNonce}
+                    onToast={pushToast}
+                  />
+                )}
+                {view === 'ops' && (
+                  <OpsView
+                    snapshot={snapshot}
+                    incidents={incidents}
+                    audit={audit}
+                    readOnly={readOnly}
+                    onRefresh={() => loadSnapshot(true)}
+                    onRefreshOps={loadOpsData}
+                    onToast={pushToast}
+                    onConfirm={setConfirmState}
+                  />
+                )}
+              </>
+            )}
+          </main>
+        </div>
+
+        {/* cmdk Command Palette, Confirm AlertDialog & PWA Offline Indicator */}
+        <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} entries={commandEntries} />
+        <ConfirmAlertDialog state={confirmState} onClose={() => setConfirmState(null)} />
+        <OfflineIndicator />
+        <Toaster
+          theme={theme}
+          position="bottom-right"
+          closeButton
+          toastOptions={{
+            style: {
+              background: 'var(--surface-elevated)',
+              border: '1px solid var(--border)',
+              color: 'var(--ink)',
+              borderRadius: '12px',
+              boxShadow: 'var(--shadow-card)',
+              fontSize: '13px',
+            },
+          }}
+        />
+      </div>
+    </MotionConfig>
   );
 }
 export default App;

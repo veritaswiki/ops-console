@@ -40,6 +40,21 @@ export function formatBytes(bytes?: number | null): string {
   return `${val >= 100 ? val.toFixed(0) : val.toFixed(1)} ${units[idx]}`;
 }
 
+export function formatInteger(value?: number | null): string {
+  if (value == null || !Number.isFinite(Number(value))) return '-';
+  return Math.round(Number(value)).toLocaleString('en-US');
+}
+
+export function formatCompactNumber(value?: number | null): string {
+  if (value == null || !Number.isFinite(Number(value))) return '-';
+  const num = Number(value);
+  const abs = Math.abs(num);
+  if (abs < 10_000) return Math.round(num).toLocaleString('en-US');
+  if (abs < 1_000_000) return `${(num / 1_000).toFixed(abs >= 100_000 ? 0 : 1)}K`;
+  if (abs < 1_000_000_000) return `${(num / 1_000_000).toFixed(abs >= 100_000_000 ? 0 : 2)}M`;
+  return `${(num / 1_000_000_000).toFixed(2)}B`;
+}
+
 export function formatUptime(sec?: number | null): string {
   if (sec == null || !Number.isFinite(Number(sec))) return '-';
   const total = Math.max(0, Math.floor(Number(sec)));

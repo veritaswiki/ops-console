@@ -1,7 +1,9 @@
 export type ViewId =
   | 'overview'
+  | 'alerts'
   | 'fleet'
   | 'services'
+  | 'plugins'
   | 'memory'
   | 'agents'
   | 'network'
@@ -17,6 +19,7 @@ export interface MetaResponse {
   readOnly?: boolean;
   authenticated?: boolean;
   authEnabled?: boolean;
+  pluginsCount?: number;
   features?: {
     actions?: boolean;
     remoteSsh?: boolean;
@@ -465,6 +468,8 @@ export interface IncidentItem {
   detail?: string;
   message?: string;
   summary?: string;
+  note?: string;
+  resolvedAt?: string | null;
 }
 
 export interface AlertItem {
@@ -495,6 +500,7 @@ export interface SnapshotResponse {
   };
   timers?: TimerItem[];
   connectors?: ConnectorSummary[];
+  plugins?: SnapshotPluginItem[];
   memory?: MemorySnapshot;
   magpie?: MagpieSnapshot;
   agents?: {
@@ -507,6 +513,8 @@ export interface SnapshotResponse {
   incidents?: IncidentItem[];
   alerts?: AlertItem[];
   jobs?: Array<{ id?: string; name?: string; status?: string; startedAt?: string; summary?: string }>;
+  activeAlertsCount?: number;
+  sseConnectedClients?: number;
 }
 
 export interface ProbesResponse {
@@ -592,3 +600,331 @@ export interface MemorySearchResultItem {
   content?: string;
   updatedAt?: string;
 }
+
+export type MetricsRange = '1h' | '6h' | '24h' | '7d' | '30d';
+
+export interface MetricsSeriesPoint {
+  ts: number;
+  cpuPct?: number | null;
+  memPct?: number | null;
+  diskPct?: number | null;
+  load1?: number | null;
+  rttMs?: number | null;
+  servicesOkPct?: number | null;
+}
+
+export interface MetricsSeriesResponse {
+  ok?: boolean;
+  series: string;
+  range: MetricsRange | string;
+  source: string;
+  points: MetricsSeriesPoint[];
+}
+
+export interface AlertRule {
+  id: string;
+  name: string;
+  metric: string;
+  operator: 'gt' | 'gte' | 'lt' | 'eq' | string;
+  threshold: number;
+  forMinutes: number;
+  cooldownMinutes: number;
+  severity: 'critical' | 'warning' | 'info' | string;
+  channel: string;
+  channelTarget?: string;
+  enabled: boolean;
+  builtin?: boolean;
+}
+
+export interface AlertEvent {
+  id: string;
+  ruleId: string;
+  ruleName: string;
+  severity: 'critical' | 'warning' | 'info' | string;
+  metric: string;
+  value: number;
+  threshold: number;
+  channel: string;
+  status: 'active' | 'acked' | 'resolved' | string;
+  firedAt: string;
+  ackedAt?: string | null;
+  ackedBy?: string | null;
+  summary: string;
+}
+
+export interface SlaServiceEntry {
+  id: string;
+  name: string;
+  layer: string;
+  uptimePct: number;
+  incidents: number;
+  downtimeMin: number;
+  status: string;
+}
+
+export interface SlaSummary {
+  windowDays: number;
+  overallUptimePct: number;
+  mttrMinutes: number;
+  totalIncidents: number;
+  openIncidents: number;
+  totalDowntimeMin: number;
+  services: SlaServiceEntry[];
+}
+
+export interface AlertsStateResponse {
+  ok?: boolean;
+  silenced: boolean;
+  silenceUntil: string | null;
+  rules: AlertRule[];
+  alerts: AlertEvent[];
+  activeCount: number;
+  sla: SlaSummary;
+  supportedMetrics: string[];
+  supportedChannels: string[];
+}
+
+export interface GatewayTelemetryResponse {
+  ok?: boolean;
+  window: string;
+  summary: {
+    totalRequests: number;
+    totalTokens: number;
+    avgTtftMs: number;
+    p95LatencyMs: number;
+    cacheHitPct: number;
+    estimatedCostUsd24h: number;
+    dailyBudgetUsd: number;
+    errorRatePct: number;
+  };
+  providers: Array<{
+    name: string;
+    requests: number;
+    tokensK: number;
+    avgTtftMs: number;
+    errorRatePct: number;
+    costUsd: number;
+    circuitState: string;
+  }>;
+  sessions: Array<{
+    id: string;
+    agent: string;
+    model: string;
+    state: string;
+    contextPct: number;
+    toolCalls: number;
+    failedTools: number;
+    uptimeSec: number;
+    memoryMb: number;
+  }>;
+  accelerators: Array<{
+    id: string;
+    name: string;
+    backend: string;
+    vramUsedGb: number;
+    vramTotalGb: number;
+    utilizationPct: number;
+    tempC: number;
+    activeModels: string[];
+  }>;
+  hourly: Array<{
+    ts: number;
+    rpm: number;
+    promptK: number;
+    completionK: number;
+    cacheHitPct: number;
+    ttftMs: number;
+    p95Ms: number;
+    costUsd: number;
+    errors429: number;
+    errors5xx: number;
+  }>;
+}
+
+export interface MemoryCompareResponse {
+  ok?: boolean;
+  query: string;
+  timingsMs: {
+    nmem: number;
+    openviking: number;
+    rerank: number;
+    total: number;
+  };
+  items: Array<{
+    id: string;
+    title: string;
+    snippet: string;
+    nmemScore: number;
+    ovScore: number;
+    rerankScore: number;
+    delta: number;
+    source: string;
+  }>;
+}
+
+export interface RunbookStepDef {
+  id: string;
+  label: string;
+  action: string;
+  target: string;
+}
+
+export interface RunbookDefinition {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  approvalMode: 'manual' | 'auto-guarded' | string;
+  maxAutoRunsPerHour: number;
+  recentRunsLastHour?: number;
+  risk: string;
+  steps: RunbookStepDef[];
+}
+
+export interface RunbookExecution {
+  id: string;
+  runbookId: string;
+  runbookName: string;
+  ok: boolean;
+  startedAt: string;
+  durationMs: number;
+  actor: string;
+  steps: Array<{
+    id: string;
+    label: string;
+    ok: boolean;
+    durationMs: number;
+    detail: string;
+  }>;
+}
+
+export interface RunbooksResponse {
+  ok?: boolean;
+  runbooks: RunbookDefinition[];
+  runs: RunbookExecution[];
+}
+
+export interface ProbeCommandItem {
+  id: string;
+  nodeId: string;
+  command: string;
+  status: 'queued' | 'delivered' | string;
+  actor: string;
+  createdAt: string;
+  expiresAt: string;
+  deliveredAt?: string;
+}
+
+export interface ConfigStudioResponse {
+  ok?: boolean;
+  config: Record<string, unknown> & {
+    rbacPosture?: {
+      currentActor: string;
+      roles: Array<{ role: string; permissions: string[]; active: boolean }>;
+      ssoAdapters: string[];
+    };
+  };
+  sudoersPreview: string;
+  prometheusEndpoint: string;
+}
+
+export interface PluginCategoryMeta {
+  id: string;
+  label: string;
+}
+
+export interface PluginConfigField {
+  key: string;
+  label: string;
+  type: 'string' | 'url' | 'secret' | 'number' | 'boolean' | 'cli' | string;
+  default?: unknown;
+  placeholder?: string;
+  description?: string;
+  required?: boolean;
+}
+
+export interface PluginOfficialSpec {
+  protocol: string;
+  docsUrl?: string;
+  endpoints?: string[];
+  auth?: string;
+}
+
+export interface PluginHandshakeStep {
+  step: string;
+  ok: boolean;
+  status?: number;
+  latencyMs?: number | null;
+  detail?: string;
+}
+
+export interface PluginCatalogItem {
+  id: string;
+  name: string;
+  version: string;
+  category: string;
+  slot?: string;
+  source: 'builtin' | 'user-custom' | 'external' | string;
+  legacyKey?: string | null;
+  description: string;
+  officialSpec: PluginOfficialSpec;
+  capabilities: string[];
+  configSchema: PluginConfigField[];
+  config: Record<string, unknown>;
+  enabled: boolean;
+  status: string;
+  reachable: boolean;
+  latencyMs: number | null;
+  summary: string;
+  details?: {
+    protocolVersion?: string | null;
+    toolsCount?: number | null;
+    resourcesCount?: number | null;
+    skillsCount?: number | null;
+    totalModels?: number | null;
+    tools?: Array<{ name?: string; description?: string } | string>;
+    skills?: Array<{ name?: string; description?: string } | string>;
+  } | null;
+  error?: string | null;
+}
+
+export interface PluginsResponse {
+  ok?: boolean;
+  categories: PluginCategoryMeta[];
+  pluginsDir?: string;
+  externalLoadErrors?: Array<{ id: string; error: string }>;
+  summary: {
+    total: number;
+    enabled: number;
+    healthy: number;
+    custom: number;
+  };
+  items: PluginCatalogItem[];
+}
+
+export interface PluginTestResult {
+  ok: boolean;
+  id: string;
+  reachable: boolean;
+  status: string;
+  latencyMs: number | null;
+  protocol: string;
+  summary: string;
+  steps: PluginHandshakeStep[];
+  error?: string | null;
+  testedAt: string;
+}
+
+export interface SnapshotPluginItem {
+  id: string;
+  name: string;
+  category: string;
+  source: string;
+  protocol: string;
+  status: string;
+  reachable: boolean;
+  latencyMs: number | null;
+  summary: string;
+  details?: Record<string, unknown>;
+}
+

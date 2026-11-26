@@ -1,6 +1,10 @@
 #!/usr/bin/env node
+import fsp from 'node:fs/promises';
+import path from 'node:path';
 import { APP_VERSION, loadConfig, parseCliArgs } from '../src/config.mjs';
 import { StructuredLogger } from '../src/logger.mjs';
+import { buildScaffoldPluginSource, PluginManager } from '../src/plugins/manager.mjs';
+import { validatePluginId } from '../src/plugins/sdk.mjs';
 import { ProbeRegistry } from '../src/probes.mjs';
 import { createOpsConsole } from '../src/server.mjs';
 
@@ -10,6 +14,7 @@ Self-hostable, zero-dependency operational control plane for services, AI memory
 
 Usage:
   ops-console [options]
+  ops-console plugin <list|enable|disable|scaffold> [options]
   ops-console probe <enroll|list|revoke> [options]
 
 Options:
@@ -20,9 +25,16 @@ Options:
       --web-key <secret>  Require web key auth (cookie / ?k= / Bearer, min 16 chars)
       --read-only         Disable all mutating service, timer, and ops actions
       --demo              Run in full sandbox mode with synthetic telemetry and SSE logs
+      --allow-iframe      Allow embedding the UI in an iframe (preview / portal mode)
       --check-config      Validate resolved configuration and exit
   -v, --version           Show version number
   -h, --help              Show this help message
+
+Plugin subcommands:
+  ops-console plugin list [--json]
+  ops-console plugin enable <plugin-id>
+  ops-console plugin disable <plugin-id>
+  ops-console plugin scaffold <plugin-id> [--category mcp|agent|gateway|memory|network|infra|custom] [--name <label>]
 
 Probe subcommands:
   ops-console probe enroll --id <id> [--name <name>] [--type server|laptop|mobile]
@@ -38,6 +50,7 @@ Environment variables:
   OPS_CONSOLE_WEB_KEY_FILE Path to 0600 file containing web key (preferred over argv/env)
   OPS_CONSOLE_READ_ONLY   1 / true to enable read-only mode
   OPS_CONSOLE_DEMO        1 / true to enable demo sandbox mode
+  OPS_CONSOLE_ALLOW_IFRAME 1 / true to allow embedding in an iframe
   OPS_CONSOLE_DATA_DIR    Directory for rotating logs, audit, probes, and telemetry store
   OPS_CONSOLE_LOG_LEVEL   debug | info | warn | error
   OPS_CONSOLE_STORAGE_DRIVER auto | sqlite | jsonl | memory
@@ -142,7 +155,76 @@ async function handleProbeSubcommand(args) {
   process.exit(1);
 }
 
+async function handlePluginSubcommand(args) {
+  const action = args[0] || '';
+  const rest = args.slice(1);
+  let targetId = '';
+  let configPath = '';
+  let category = 'custom';
+  let name = '';
+  let json = false;
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i];
+    if (arg === '--json') json = true;
+    else if ((arg === '-c' || arg === '--config') && rest[i + 1]) configPath = rest[++i];
+    else if (arg === '--category' && rest[i + 1]) category = rest[++i];
+    else if (arg === '--name' && rest[i + 1]) name = rest[++i];
+    else if (!arg.startsWith('-') && !targetId) targetId = arg;
+  }
+
+  const config = loadConfig({ cli: { configPath } });
+  const logger = new StructuredLogger({ dataDir: config.console.dataDir, silentStdout: true });
+  const pm = new PluginManager({ config, logger });
+  await pm.loadExternalPlugins();
+
+  if (action === 'list') {
+    const catalog = pm.listPlugins();
+    if (json) {
+      process.stdout.write(`${JSON.stringify(catalog, null, 2)}\n`);
+    } else {
+      for (const item of catalog.items) {
+        process.stdout.write(`${item.id}\t${item.category}\t${item.enabled ? 'enabled' : 'disabled'}\t${item.source}\t${item.officialSpec.protocol}\n`);
+      }
+    }
+    process.exit(0);
+  }
+
+  if (action === 'enable' || action === 'disable') {
+    if (!targetId) {
+      process.stderr.write(`Missing plugin ID: ops-console plugin ${action} <plugin-id>\n`);
+      process.exit(1);
+    }
+    const res = await pm.togglePlugin(targetId, action === 'enable');
+    if (!res.ok) {
+      process.stderr.write(`${res.error}\n`);
+      process.exit(1);
+    }
+    process.stdout.write(`Plugin ${res.id} ${res.enabled ? 'enabled' : 'disabled'}.\n`);
+    process.exit(0);
+  }
+
+  if (action === 'scaffold') {
+    if (!targetId || !validatePluginId(targetId)) {
+      process.stderr.write('Invalid plugin ID. Use lowercase letters, digits, and hyphens (e.g. my-mcp-server).\n');
+      process.exit(1);
+    }
+    const dir = path.join(pm.pluginsDir, targetId);
+    const entryFile = path.join(dir, 'index.mjs');
+    await fsp.mkdir(dir, { recursive: true });
+    await fsp.writeFile(entryFile, buildScaffoldPluginSource({ id: targetId, name: name || targetId, category }), 'utf8');
+    process.stdout.write(`Scaffolded plugin at ${entryFile}\n`);
+    process.exit(0);
+  }
+
+  process.stderr.write(`Unknown plugin subcommand: ${action || '(empty)'}. Use list, enable, disable, or scaffold.\n`);
+  process.exit(1);
+}
+
 async function main() {
+  if (process.argv[2] === 'plugin') {
+    await handlePluginSubcommand(process.argv.slice(3));
+    return;
+  }
   if (process.argv[2] === 'probe') {
     await handleProbeSubcommand(process.argv.slice(3));
     return;
