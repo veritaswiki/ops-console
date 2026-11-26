@@ -1,16 +1,75 @@
 import React from 'react';
-import { BookmarkPlus, Download, Play, Radio, Search, Square, Trash2 } from 'lucide-react';
+import { BookmarkPlus, Check, Copy, Download, Play, Radio, Search, Square, Trash2 } from 'lucide-react';
 import type { LogEntry, MetaResponse, SnapshotResponse } from '../types';
-import { buildLogStreamUrl, fetchLogs } from '../api';
+import { buildLogStreamUrl, copyToClipboard, fetchLogs } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { computeVisibleRange } from '../lib/virtual-list';
 import { countLogLevels, formatClock } from '../utils/format';
 import {
   Button,
+  ErrorState,
   inputBaseClass,
   Panel,
   SegmentedFilter,
   ToggleSwitch,
 } from '../components/ui';
+import { ModuleFrame } from '../modules/ModuleFrame';
+
+const VIRTUAL_THRESHOLD = 50;
+const LOG_ROW_HEIGHT = 26;
+const LOG_VIEWPORT_HEIGHT = 460;
+
+interface HistogramBucket {
+  label: string;
+  total: number;
+  error: number;
+  warn: number;
+  info: number;
+}
+
+function buildLogHistogram(entries: LogEntry[], bucketCount = 16): HistogramBucket[] {
+  if (entries.length === 0) return [];
+  const parsed = entries.map((e, idx) => {
+    const raw = e.ts || e.timestamp;
+    const ms = raw ? Date.parse(raw) : Number.NaN;
+    const lv = String(e.level || e.severity || 'info').toLowerCase();
+    const kind = lv.includes('err') || lv.includes('crit') || lv.includes('fatal')
+      ? 'error'
+      : lv.includes('warn')
+        ? 'warn'
+        : 'info';
+    return { ms, idx, kind };
+  });
+  const validMs = parsed.filter((p) => Number.isFinite(p.ms)).map((p) => p.ms);
+  const useTime = validMs.length >= 2 && Math.max(...validMs) > Math.min(...validMs);
+  const minVal = useTime ? Math.min(...validMs) : 0;
+  const maxVal = useTime ? Math.max(...validMs) : Math.max(1, entries.length - 1);
+  const span = Math.max(1, maxVal - minVal);
+
+  const buckets: HistogramBucket[] = Array.from({ length: bucketCount }, (_, i) => {
+    const startMs = useTime ? minVal + (span * i) / bucketCount : 0;
+    return {
+      label: useTime ? formatClock(new Date(startMs).toISOString()) : `#${i + 1}`,
+      total: 0,
+      error: 0,
+      warn: 0,
+      info: 0,
+    };
+  });
+
+  for (const item of parsed) {
+    const pos = useTime && Number.isFinite(item.ms)
+      ? (item.ms - minVal) / span
+      : item.idx / Math.max(1, entries.length - 1);
+    const bi = Math.min(bucketCount - 1, Math.max(0, Math.floor(pos * bucketCount)));
+    const b = buckets[bi];
+    b.total += 1;
+    if (item.kind === 'error') b.error += 1;
+    else if (item.kind === 'warn') b.warn += 1;
+    else b.info += 1;
+  }
+  return buckets;
+}
 
 const LOG_SOURCES = [
   { value: 'service', label: '服务日志 (journald)' },
@@ -77,12 +136,17 @@ export function LogsView({
   const [correlationMode, setCorrelationMode] = React.useState(false);
   const [entries, setEntries] = React.useState<LogEntry[]>([]);
   const [loading, setLoading] = React.useState(false);
+  const [queryError, setQueryError] = React.useState('');
   const [streaming, setStreaming] = React.useState(false);
+  const [scrollTop, setScrollTop] = React.useState(0);
 
   const [presets, setPresets] = React.useState<SavedLogPreset[]>(() => loadSavedPresets());
   const [presetName, setPresetName] = React.useState('');
+  const [copiedRowKey, setCopiedRowKey] = React.useState('');
 
   const esRef = React.useRef<EventSource | null>(null);
+  const queryAbortRef = React.useRef<AbortController | null>(null);
+  const scrollRafRef = React.useRef<number | null>(null);
   const viewportRef = React.useRef<HTMLDivElement>(null);
 
   const targetOptions = React.useMemo(() => {
@@ -98,10 +162,13 @@ export function LogsView({
       return mems.map((m) => ({ value: m.id, label: m.name || m.id }));
     }
     const svcs = meta?.logSources?.services || snapshot?.services?.items || [];
-    return svcs.map((s) => ({
-      value: s.unit || s.id,
-      label: s.name ? `${s.name} (${s.unit || s.id})` : s.unit || s.id,
-    }));
+    return [
+      { value: 'all', label: '全部受管服务 (all)' },
+      ...svcs.map((s) => ({
+        value: s.unit || s.id,
+        label: s.name ? `${s.name} (${s.unit || s.id})` : s.unit || s.id,
+      })),
+    ];
   }, [source, meta, snapshot]);
 
   React.useEffect(() => {
@@ -129,19 +196,39 @@ export function LogsView({
     setStreaming(false);
   }, []);
 
-  React.useEffect(() => () => stopStream(), [stopStream]);
+  React.useEffect(() => {
+    return () => {
+      stopStream();
+      queryAbortRef.current?.abort();
+      if (scrollRafRef.current != null) window.cancelAnimationFrame(scrollRafRef.current);
+    };
+  }, [stopStream]);
 
   const runQuery = React.useCallback(async () => {
     if (!target) return;
     stopStream();
+    queryAbortRef.current?.abort();
+    const controller = new AbortController();
+    queryAbortRef.current = controller;
     setLoading(true);
+    setQueryError('');
     try {
-      const res = await fetchLogs({ source, target, since, level, q: query, regex, lines: 200 });
-      setEntries(res.entries || res.items || res.lines || []);
+      const res = await fetchLogs(
+        { source, target, since, level, q: query, regex, lines: 200 },
+        controller.signal,
+      );
+      if (!controller.signal.aborted) {
+        setEntries(res.entries || res.items || res.lines || []);
+      }
     } catch (err) {
-      onToast(`日志查询失败：${(err as Error).message}`, 'err');
+      if (controller.signal.aborted || (err as Error)?.name === 'AbortError') return;
+      const msg = (err as Error).message || '日志接口异常';
+      setQueryError(msg);
+      onToast(`日志查询失败：${msg}`, 'err');
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
   }, [source, target, since, level, query, regex, stopStream, onToast]);
 
@@ -151,9 +238,19 @@ export function LogsView({
     }
   }, [source, target, since, level]);
 
+  const handleViewportScroll = React.useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const nextTop = e.currentTarget.scrollTop;
+    if (scrollRafRef.current != null) return;
+    scrollRafRef.current = window.requestAnimationFrame(() => {
+      scrollRafRef.current = null;
+      setScrollTop(nextTop);
+    });
+  }, []);
+
   React.useEffect(() => {
     if (autoScroll && viewportRef.current) {
       viewportRef.current.scrollTop = viewportRef.current.scrollHeight;
+      setScrollTop(viewportRef.current.scrollTop);
     }
   }, [entries, autoScroll]);
 
@@ -233,22 +330,47 @@ export function LogsView({
   };
 
   const counts = React.useMemo(() => countLogLevels(entries), [entries]);
+  const histogram = React.useMemo(() => buildLogHistogram(entries, 16), [entries]);
+  const maxBucketTotal = React.useMemo(
+    () => Math.max(1, ...histogram.map((b) => b.total)),
+    [histogram],
+  );
+
+  const handleCopyLogRow = async (rowKey: string, entry: LogEntry) => {
+    const line = `${entry.ts || entry.timestamp || ''} [${String(entry.level || 'info').toUpperCase()}] ${entry.unit ? `${entry.unit}: ` : ''}${entry.message || entry.raw || ''}`.trim();
+    const ok = await copyToClipboard(line);
+    if (ok) {
+      setCopiedRowKey(rowKey);
+      onToast('已复制该条结构化日志', 'ok');
+      window.setTimeout(() => setCopiedRowKey((cur) => (cur === rowKey ? '' : cur)), 1400);
+    }
+  };
+
+  const handleToggleLevelFacet = (clickedLevel: string) => {
+    const normalized = clickedLevel.toLowerCase();
+    const mapped = normalized.includes('err') || normalized.includes('crit') || normalized.includes('fatal')
+      ? 'error'
+      : normalized.includes('warn')
+        ? 'warn'
+        : 'info';
+    setLevel((prev) => (prev === mapped ? 'all' : mapped));
+  };
+
+  const handleFilterUnitFacet = (unit?: string) => {
+    if (!unit || source !== 'service') return;
+    if (targetOptions.some((o) => o.value === unit)) {
+      setTarget(unit);
+    } else {
+      setQuery(unit);
+    }
+  };
 
   return (
-    <div className="space-y-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">
-            结构化日志中心
-          </h1>
-          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed text-pretty">
-            支持 journald、白名单文件与记忆引擎日志查询、正则过滤、常用视图保存、异常高亮时间线及 SSE 实时追踪。
-          </p>
-        </div>
-        <div className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap">
-          总计 {counts.total} · 错误 {counts.error} · 警告 {counts.warn} · 信息 {counts.info}
-        </div>
-      </div>
+    <ModuleFrame
+      title="结构化日志中心"
+      description="支持 journald、白名单文件与记忆引擎日志查询、频次直方图、点击单元快筛、常用视图保存及 SSE 实时追踪。"
+      meta={`总计 ${counts.total} · 错误 ${counts.error} · 警告 ${counts.warn} · 信息 ${counts.info}`}
+    >
 
       <Panel bodyClassName="p-0">
         <div className="px-5 sm:px-6 py-4 border-b border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3">
@@ -401,7 +523,7 @@ export function LogsView({
                 placeholder="视图名称（可选）"
                 aria-label="保存筛选视图名称"
                 data-testid="log-preset-name"
-                className={cn('h-8 w-36 px-2.5 text-[12px]', inputBaseClass)}
+                className={cn('h-8 w-36 px-2.5 sm:text-[12px]', inputBaseClass)}
               />
               <Button
                 variant="secondary"
@@ -415,59 +537,242 @@ export function LogsView({
             </div>
           </div>
 
+          {/* Datadog / Loki style Log Volume Histogram */}
+          {histogram.length > 0 && (
+            <div
+              className="rounded-lg bg-[var(--surface-subtle)]/70 px-3.5 py-2.5 space-y-1.5"
+              aria-label="日志时段频次直方图"
+              data-testid="log-volume-histogram"
+            >
+              <div className="flex items-center justify-between gap-2 text-[11px] font-mono text-[var(--ink-subtle)] tabular-nums select-none">
+                <span>时段日志分布（点击下方日志级别或服务单元可快速过滤）</span>
+                <span>
+                  {histogram[0]?.label} — {histogram[histogram.length - 1]?.label}
+                </span>
+              </div>
+              <div className="grid grid-cols-16 items-end gap-1 h-8">
+                {histogram.map((b, i) => {
+                  const totalH = b.total > 0 ? Math.max(12, Math.round((b.total / maxBucketTotal) * 100)) : 0;
+                  const errPct = b.total > 0 ? Math.round((b.error / b.total) * 100) : 0;
+                  const warnPct = b.total > 0 ? Math.round((b.warn / b.total) * 100) : 0;
+                  const infoPct = Math.max(0, 100 - errPct - warnPct);
+                  return (
+                    <div
+                      key={`${b.label}-${i}`}
+                      className="h-full flex items-end"
+                      title={`${b.label} · 共 ${b.total} 条（错误 ${b.error} / 警告 ${b.warn} / 信息 ${b.info}）`}
+                    >
+                      {b.total > 0 ? (
+                        <div
+                          className="w-full rounded-[2px] overflow-hidden flex flex-col justify-end transition-opacity hover:opacity-85"
+                          style={{ height: `${totalH}%` }}
+                        >
+                          {errPct > 0 && <span className="w-full bg-rose-500/85" style={{ height: `${errPct}%` }} />}
+                          {warnPct > 0 && <span className="w-full bg-amber-400/80" style={{ height: `${warnPct}%` }} />}
+                          {infoPct > 0 && <span className="w-full bg-sky-400/55" style={{ height: `${infoPct}%` }} />}
+                        </div>
+                      ) : (
+                        <div className="w-full h-[2px] rounded-full bg-[var(--border-subtle)]/70" />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           <div
             ref={viewportRef}
+            onScroll={handleViewportScroll}
             className="rounded-xl bg-[var(--terminal-bg)] text-[var(--terminal-ink)] border border-[var(--border)] h-[460px] overflow-auto p-4 font-mono text-[12.5px] leading-[1.6]"
             role="log"
             aria-label="日志输出终端"
           >
-            {entries.length === 0 ? (
+            {queryError ? (
+              <div className="h-full flex items-center justify-center">
+                <ErrorState
+                  title="日志查询失败"
+                  message={queryError}
+                  onRetry={() => void runQuery()}
+                  retrying={loading}
+                />
+              </div>
+            ) : entries.length === 0 ? (
               <div className="h-full flex items-center justify-center text-zinc-400">
                 {loading ? '正在采集日志...' : '当前筛选条件下暂无日志输出。'}
               </div>
-            ) : (
-              entries.map((entry, idx) => {
-                const lv = String(entry.level || entry.severity || 'INFO').toUpperCase();
-                const isErr = lv.includes('ERR') || lv.includes('CRIT') || lv.includes('FATAL');
-                const isWarn = lv.includes('WARN');
-                const lvClass = isErr
-                  ? 'text-rose-400'
-                  : isWarn
-                    ? 'text-amber-300'
-                    : lv.includes('DEBUG')
-                      ? 'text-zinc-400'
-                      : 'text-sky-400';
-                const rowHighlight = correlationMode
-                  ? isErr
-                    ? 'bg-rose-500/12 border-l-2 border-l-rose-400 pl-2'
-                    : isWarn
-                      ? 'bg-amber-500/10 border-l-2 border-l-amber-300 pl-2'
-                      : 'opacity-65'
-                  : '';
+            ) : entries.length > VIRTUAL_THRESHOLD ? (
+              (() => {
+                const { startIndex, endIndex, offsetTop, totalHeight } = computeVisibleRange({
+                  scrollTop,
+                  viewportHeight: LOG_VIEWPORT_HEIGHT,
+                  itemCount: entries.length,
+                  itemHeight: LOG_ROW_HEIGHT,
+                  overscan: 12,
+                });
+                const slice = entries.slice(startIndex, endIndex);
+                const showUnitCol = source === 'service' && target === 'all';
                 return (
-                  <div
-                    key={`${entry.ts || entry.timestamp || idx}-${idx}`}
-                    className={cn(
-                      'grid grid-cols-[72px_54px_1fr] gap-2.5 py-0.5 border-b border-white/[0.04] last:border-0',
-                      rowHighlight,
-                    )}
-                  >
-                    <span className="text-zinc-500 select-none tabular-nums">
-                      {formatClock(entry.ts || entry.timestamp)}
-                    </span>
-                    <span className={cn('font-semibold select-none', lvClass)}>
-                      {lv.slice(0, 5)}
-                    </span>
-                    <span className="whitespace-pre-wrap break-all text-zinc-200">
-                      {entry.message || entry.raw || ''}
-                    </span>
+                  <div style={{ height: `${totalHeight}px`, position: 'relative' }}>
+                    <div
+                      style={{
+                        transform: `translate3d(0, ${offsetTop}px, 0)`,
+                        willChange: 'transform',
+                      }}
+                    >
+                      {slice.map((entry, offset) => {
+                        const idx = startIndex + offset;
+                        const rowKey = `${entry.ts || entry.timestamp || idx}-${idx}`;
+                        const lv = String(entry.level || entry.severity || 'INFO').toUpperCase();
+                        const isErr = lv.includes('ERR') || lv.includes('CRIT') || lv.includes('FATAL');
+                        const isWarn = lv.includes('WARN');
+                        const lvClass = isErr
+                          ? 'text-rose-400'
+                          : isWarn
+                            ? 'text-amber-300'
+                            : lv.includes('DEBUG')
+                              ? 'text-zinc-400'
+                              : 'text-sky-400';
+                        const rowHighlight = correlationMode
+                          ? isErr
+                            ? 'bg-rose-500/[0.12] rounded-sm px-1.5 -mx-1.5'
+                            : isWarn
+                              ? 'bg-amber-500/[0.10] rounded-sm px-1.5 -mx-1.5'
+                              : 'opacity-55'
+                          : '';
+                        const msg = entry.message || entry.raw || '';
+                        return (
+                          <div
+                            key={rowKey}
+                            style={{ height: `${LOG_ROW_HEIGHT}px` }}
+                            className={cn(
+                              'group grid items-center gap-2.5 border-b border-white/[0.04]',
+                              showUnitCol
+                                ? 'grid-cols-[68px_48px_132px_1fr_24px]'
+                                : 'grid-cols-[68px_48px_1fr_24px]',
+                              rowHighlight,
+                            )}
+                          >
+                            <span className="text-zinc-500 select-none tabular-nums">
+                              {formatClock(entry.ts || entry.timestamp)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleToggleLevelFacet(lv)}
+                              title="点击按此级别快筛"
+                              className={cn('text-left font-semibold select-none hover:underline cursor-pointer', lvClass)}
+                            >
+                              {lv.slice(0, 5)}
+                            </button>
+                            {showUnitCol && (
+                              <button
+                                type="button"
+                                onClick={() => handleFilterUnitFacet(entry.unit)}
+                                title={`点击仅看 ${entry.unit || '该服务'} 日志`}
+                                className="text-left text-zinc-400 hover:text-zinc-100 truncate cursor-pointer"
+                              >
+                                {entry.unit || '-'}
+                              </button>
+                            )}
+                            <span className="truncate text-zinc-200" title={msg}>
+                              {msg}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => void handleCopyLogRow(rowKey, entry)}
+                              aria-label="复制该行日志"
+                              className="opacity-0 group-hover:opacity-100 focus:opacity-100 inline-flex items-center justify-center text-zinc-400 hover:text-zinc-100 transition-opacity cursor-pointer"
+                            >
+                              {copiedRowKey === rowKey ? (
+                                <Check className="size-3.5 text-emerald-400" strokeWidth={2} />
+                              ) : (
+                                <Copy className="size-3.5" strokeWidth={1.75} />
+                              )}
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
                 );
-              })
+              })()
+            ) : (
+              (() => {
+                const showUnitCol = source === 'service' && target === 'all';
+                return entries.map((entry, idx) => {
+                  const rowKey = `${entry.ts || entry.timestamp || idx}-${idx}`;
+                  const lv = String(entry.level || entry.severity || 'INFO').toUpperCase();
+                  const isErr = lv.includes('ERR') || lv.includes('CRIT') || lv.includes('FATAL');
+                  const isWarn = lv.includes('WARN');
+                  const lvClass = isErr
+                    ? 'text-rose-400'
+                    : isWarn
+                      ? 'text-amber-300'
+                      : lv.includes('DEBUG')
+                        ? 'text-zinc-400'
+                        : 'text-sky-400';
+                  const rowHighlight = correlationMode
+                    ? isErr
+                      ? 'bg-rose-500/[0.12] rounded-sm px-1.5 -mx-1.5'
+                      : isWarn
+                        ? 'bg-amber-500/[0.10] rounded-sm px-1.5 -mx-1.5'
+                        : 'opacity-55'
+                    : '';
+                  return (
+                    <div
+                      key={rowKey}
+                      className={cn(
+                        'group grid items-start gap-2.5 py-0.5 border-b border-white/[0.04] last:border-0',
+                        showUnitCol
+                          ? 'grid-cols-[68px_48px_132px_1fr_24px]'
+                          : 'grid-cols-[68px_48px_1fr_24px]',
+                        rowHighlight,
+                      )}
+                    >
+                      <span className="text-zinc-500 select-none tabular-nums">
+                        {formatClock(entry.ts || entry.timestamp)}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => handleToggleLevelFacet(lv)}
+                        title="点击按此级别快筛"
+                        className={cn('text-left font-semibold select-none hover:underline cursor-pointer', lvClass)}
+                      >
+                        {lv.slice(0, 5)}
+                      </button>
+                      {showUnitCol && (
+                        <button
+                          type="button"
+                          onClick={() => handleFilterUnitFacet(entry.unit)}
+                          title={`点击仅看 ${entry.unit || '该服务'} 日志`}
+                          className="text-left text-zinc-400 hover:text-zinc-100 truncate cursor-pointer"
+                        >
+                          {entry.unit || '-'}
+                        </button>
+                      )}
+                      <span className="whitespace-pre-wrap break-all text-zinc-200">
+                        {entry.message || entry.raw || ''}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => void handleCopyLogRow(rowKey, entry)}
+                        aria-label="复制该行日志"
+                        className="opacity-0 group-hover:opacity-100 focus:opacity-100 inline-flex items-center justify-center text-zinc-400 hover:text-zinc-100 transition-opacity cursor-pointer mt-0.5"
+                      >
+                        {copiedRowKey === rowKey ? (
+                          <Check className="size-3.5 text-emerald-400" strokeWidth={2} />
+                        ) : (
+                          <Copy className="size-3.5" strokeWidth={1.75} />
+                        )}
+                      </button>
+                    </div>
+                  );
+                });
+              })()
             )}
           </div>
         </div>
       </Panel>
-    </div>
+    </ModuleFrame>
   );
 }

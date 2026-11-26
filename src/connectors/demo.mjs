@@ -22,10 +22,12 @@ export function createDemoProvider() {
   };
 
   const demoLogs = [
+    { ts: new Date(Date.now() - 220_000).toISOString(), unit: 'orchestrator.service', priority: 6, level: 'info', pid: '1421', message: 'Agent session pool initialized: 4 workers ready, MCP bridge connected' },
     { ts: new Date(Date.now() - 180_000).toISOString(), unit: 'magpie.service', priority: 6, level: 'info', pid: '1580', message: 'Model catalog refreshed: 48 models across 6 providers (latency 24ms)' },
     { ts: new Date(Date.now() - 140_000).toISOString(), unit: 'openviking.service', priority: 6, level: 'info', pid: '2104', message: 'SessionCommit queue drained: 1,284 processed, 0 errors' },
     { ts: new Date(Date.now() - 105_000).toISOString(), unit: 'nmem.service', priority: 6, level: 'info', pid: '1922', message: 'Graph checkpoint verified healthy (14,820 entities, 68 communities)' },
     { ts: new Date(Date.now() - 75_000).toISOString(), unit: 'mihomo.service', priority: 4, level: 'warn', pid: '1120', message: 'Upstream proxy probe latency elevated (310ms), keeping MAIN-FAILOVER active' },
+    { ts: new Date(Date.now() - 62_000).toISOString(), unit: 'orchestrator.service', priority: 3, level: 'error', pid: '1421', message: 'Upstream tool call timed out after 8000ms (provider=openai-compat); retried via fallback' },
     { ts: new Date(Date.now() - 45_000).toISOString(), unit: 'symbiote.service', priority: 6, level: 'info', pid: '2219', message: 'Mirror sync verified: 34 vault files consistent with schema v11' },
     { ts: new Date(Date.now() - 18_000).toISOString(), unit: 'ops-console.service', priority: 6, level: 'info', pid: String(process.pid), message: 'Snapshot collector finished in 62ms (11/12 active, 0 failed)' },
   ];

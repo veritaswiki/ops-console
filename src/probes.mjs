@@ -403,6 +403,7 @@ export class ProbeRegistry {
       || '127.0.0.1';
     const hubUrl = `http://${hubHost}:${this.config.console.port}`;
 
+    const installHints = buildInstallHints({ hubUrl, nodeId: record.id, token, deviceType: record.deviceType, region: record.region });
     return {
       node: {
         id: record.id,
@@ -416,7 +417,12 @@ export class ProbeRegistry {
       },
       token,
       hubUrl,
-      installHints: buildInstallHints({ hubUrl, nodeId: record.id, token, deviceType: record.deviceType, region: record.region }),
+      installHints,
+      snippets: {
+        linux: installHints.linuxSystemd,
+        macos: installHints.macosLaunchAgent,
+        curl: installHints.mobileCheckinCurl,
+      },
     };
   }
 
@@ -484,23 +490,49 @@ export class ProbeRegistry {
       : tsDevices.filter((d) => !d.isSelf);
     const matchedPeerIps = new Set();
 
+    // O(M) pre-indexing replaces O(N*M) linear scan inside candidate loop
+    const peerByIp = new Map();
+    const peerByName = new Map();
+    const peerByDnsPrefix = new Map();
+    const peerEntries = [];
+    for (const peer of tsPeers) {
+      const peerIp = normalizeIp(peer.ip);
+      const peerName = String(peer.name || '').toLowerCase();
+      const peerDns = String(peer.dnsName || '').toLowerCase();
+      const dotIdx = peerDns.indexOf('.');
+      const dnsPrefix = dotIdx > 0 ? peerDns.slice(0, dotIdx) : peerDns;
+      if (peerIp && !peerByIp.has(peerIp)) peerByIp.set(peerIp, peer);
+      if (peerName && !peerByName.has(peerName)) peerByName.set(peerName, peer);
+      if (dnsPrefix && !peerByDnsPrefix.has(dnsPrefix)) peerByDnsPrefix.set(dnsPrefix, peer);
+      peerEntries.push({ peer, peerIp, peerName });
+    }
+
+    const markMatched = (peer) => {
+      const ip = normalizeIp(peer.ip);
+      if (ip) matchedPeerIps.add(ip);
+      return peer;
+    };
+
     const findMatchingPeer = (tailscaleIp, id, name) => {
       const targetIp = normalizeIp(tailscaleIp);
-      for (const peer of tsPeers) {
-        const peerIp = normalizeIp(peer.ip);
-        const peerName = String(peer.name || '').toLowerCase();
-        const peerDns = String(peer.dnsName || '').toLowerCase();
-        if (targetIp && peerIp === targetIp) {
-          matchedPeerIps.add(peerIp);
-          return peer;
-        }
-        if (id && (peerName === id.toLowerCase() || peerDns.startsWith(`${id.toLowerCase()}.`))) {
-          if (peerIp) matchedPeerIps.add(peerIp);
-          return peer;
-        }
-        if (name && peerName && peerName.includes(String(name).toLowerCase())) {
-          if (peerIp) matchedPeerIps.add(peerIp);
-          return peer;
+      if (targetIp) {
+        const hit = peerByIp.get(targetIp);
+        if (hit) return markMatched(hit);
+      }
+      if (id) {
+        const idLower = id.toLowerCase();
+        const hit = peerByName.get(idLower) || peerByDnsPrefix.get(idLower);
+        if (hit) return markMatched(hit);
+      }
+      if (name) {
+        const nameLower = String(name).toLowerCase();
+        const exact = peerByName.get(nameLower);
+        if (exact) return markMatched(exact);
+        for (const entry of peerEntries) {
+          if (entry.peerName && entry.peerName.includes(nameLower)) {
+            if (entry.peerIp) matchedPeerIps.add(entry.peerIp);
+            return entry.peer;
+          }
         }
       }
       return null;
@@ -767,19 +799,41 @@ export class ProbeRegistry {
       });
     }
 
-    const onlineNodes = nodes.filter((node) => node.status === 'healthy' || node.status === 'degraded').length;
-    const meshOnlyNodes = nodes.filter((node) => node.status === 'standby' && (node.transport === 'direct' || node.transport === 'relay')).length;
-    const reachableNodes = onlineNodes + meshOnlyNodes;
-    const probedNodes = nodes.filter((node) => node.probeMode === 'local' || node.probeLive).length;
+    let onlineNodes = 0;
+    let meshOnlyNodes = 0;
+    let probedNodes = 0;
+    let servers = 0;
+    let laptops = 0;
+    let mobiles = 0;
+    let cpuSum = 0;
+    let cpuCount = 0;
+    let memSum = 0;
+    let memCount = 0;
 
-    const avgCpuSamples = nodes.map((node) => node.cpu?.usagePct).filter((val) => typeof val === 'number');
-    const avgMemSamples = nodes.map((node) => node.memory?.usedPct).filter((val) => typeof val === 'number');
+    for (const node of nodes) {
+      if (node.status === 'healthy' || node.status === 'degraded') onlineNodes += 1;
+      else if (node.status === 'standby' && (node.transport === 'direct' || node.transport === 'relay')) meshOnlyNodes += 1;
+      if (node.probeMode === 'local' || node.probeLive) probedNodes += 1;
+      if (node.deviceType === 'hub' || node.deviceType === 'server' || node.deviceType === 'edge') servers += 1;
+      else if (node.deviceType === 'laptop') laptops += 1;
+      else if (node.deviceType === 'mobile') mobiles += 1;
+      if (typeof node.cpu?.usagePct === 'number') {
+        cpuSum += node.cpu.usagePct;
+        cpuCount += 1;
+      }
+      if (typeof node.memory?.usedPct === 'number') {
+        memSum += node.memory.usedPct;
+        memCount += 1;
+      }
+    }
+    const reachableNodes = onlineNodes + meshOnlyNodes;
+
     this.timeseries?.record('fleet', {
       ts: nowMs,
       onlineNodes,
       totalNodes: nodes.length,
-      avgCpuPct: avgCpuSamples.length ? Math.round((avgCpuSamples.reduce((acc, val) => acc + val, 0) / avgCpuSamples.length) * 10) / 10 : null,
-      avgMemPct: avgMemSamples.length ? Math.round((avgMemSamples.reduce((acc, val) => acc + val, 0) / avgMemSamples.length) * 10) / 10 : null,
+      avgCpuPct: cpuCount ? Math.round((cpuSum / cpuCount) * 10) / 10 : null,
+      avgMemPct: memCount ? Math.round((memSum / memCount) * 10) / 10 : null,
       servicesOkPct: svcList.length ? Math.round((svcHealthy / svcList.length) * 100) : 100,
     });
 
@@ -792,9 +846,9 @@ export class ProbeRegistry {
         reachable: reachableNodes,
         meshOnly: meshOnlyNodes,
         probed: probedNodes,
-        servers: nodes.filter((node) => node.deviceType === 'hub' || node.deviceType === 'server' || node.deviceType === 'edge').length,
-        laptops: nodes.filter((node) => node.deviceType === 'laptop').length,
-        mobiles: nodes.filter((node) => node.deviceType === 'mobile').length,
+        servers,
+        laptops,
+        mobiles,
       },
       nodes,
       links,

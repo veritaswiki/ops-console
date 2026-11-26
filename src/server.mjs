@@ -50,6 +50,9 @@ const MAX_PROBE_BODY_BYTES = 32 * 1024;
 const COMPRESS_MIN_BYTES = 1024;
 const COMPRESSIBLE_MIME = /^(?:text\/|application\/(?:json|javascript)|image\/svg\+xml)/i;
 
+const MAX_STATIC_CACHE_ENTRIES = 64;
+const HASHED_ASSET_RE = /\/assets\/.+-[A-Za-z0-9_-]{6,}\.(?:js|css|woff2|svg|png)$/i;
+
 function chooseEncoding(req) {
   const ae = String(req?.headers?.['accept-encoding'] || '').toLowerCase();
   if (!ae) return '';
@@ -58,16 +61,22 @@ function chooseEncoding(req) {
   return '';
 }
 
-function compressBuffer(buf, encoding) {
-  if (encoding === 'br') {
-    return zlib.brotliCompressSync(buf, {
-      params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 },
-    });
-  }
-  if (encoding === 'gzip') {
-    return zlib.gzipSync(buf, { level: 6 });
-  }
-  return buf;
+function compressBufferAsync(buf, encoding) {
+  return new Promise((resolve, reject) => {
+    if (encoding === 'br') {
+      zlib.brotliCompress(
+        buf,
+        { params: { [zlib.constants.BROTLI_PARAM_QUALITY]: 4 } },
+        (err, out) => (err ? reject(err) : resolve(out)),
+      );
+      return;
+    }
+    if (encoding === 'gzip') {
+      zlib.gzip(buf, { level: 6 }, (err, out) => (err ? reject(err) : resolve(out)));
+      return;
+    }
+    resolve(buf);
+  });
 }
 
 function extractClientIp(req, trustProxy = false) {
@@ -89,27 +98,36 @@ function isHttpsRequest(req, trustProxy = false) {
 function sendJsonWithHeaders(res, statusCode, payload, extraHeaders = {}, req = null, securityHeaders = {}) {
   const rawBuf = Buffer.from(JSON.stringify(payload), 'utf8');
   const encoding = rawBuf.length >= COMPRESS_MIN_BYTES ? chooseEncoding(req) : '';
-  let outBuf = rawBuf;
   const headers = {
     'Content-Type': 'application/json; charset=utf-8',
     'Cache-Control': 'no-store',
     ...securityHeaders,
     ...extraHeaders,
   };
-  if (encoding) {
-    outBuf = compressBuffer(rawBuf, encoding);
-    headers['Content-Encoding'] = encoding;
-    headers.Vary = headers.Vary ? `${headers.Vary}, Accept-Encoding` : 'Accept-Encoding';
+
+  const writeResponse = (outBuf, appliedEncoding) => {
+    if (res.headersSent || res.writableEnded || res.destroyed) return;
+    if (appliedEncoding) {
+      headers['Content-Encoding'] = appliedEncoding;
+      headers.Vary = headers.Vary ? `${headers.Vary}, Accept-Encoding` : 'Accept-Encoding';
+    }
+    headers['Content-Length'] = outBuf.length;
+    res.writeHead(statusCode, headers);
+    if (req?.method === 'HEAD') {
+      res.end();
+    } else {
+      res.end(outBuf);
+    }
+  };
+
+  if (!encoding) {
+    writeResponse(rawBuf, '');
+    return;
   }
-  headers['Content-Length'] = outBuf.length;
-  res.writeHead(statusCode, {
-    ...headers,
-  });
-  if (req?.method === 'HEAD') {
-    res.end();
-  } else {
-    res.end(outBuf);
-  }
+
+  compressBufferAsync(rawBuf, encoding)
+    .then((compressed) => writeResponse(compressed, encoding))
+    .catch(() => writeResponse(rawBuf, ''));
 }
 
 function sendHtmlWithHeaders(res, statusCode, html, extraHeaders = {}, securityHeaders = {}) {
@@ -162,9 +180,11 @@ async function readBody(req, maxBytes = MAX_BODY_BYTES) {
 }
 
 function normalizeLogQuery(searchParams) {
-  const source = searchParams.get('source') || 'journald';
-  const unit = searchParams.get('unit') || '';
-  const file = searchParams.get('file') || '';
+  const rawSource = searchParams.get('source') || 'journald';
+  const source = rawSource === 'service' ? 'journald' : rawSource;
+  const target = searchParams.get('target') || '';
+  const unit = searchParams.get('unit') || (source === 'journald' ? target : '');
+  const file = searchParams.get('file') || (source === 'file' ? target : '');
   const since = searchParams.get('since') || '1h';
   const level = searchParams.get('level') || searchParams.get('severity') || 'all';
   const lines = Number(searchParams.get('lines') || searchParams.get('limit') || 150);
@@ -241,6 +261,7 @@ export function createOpsConsole(options = {}) {
     maxRequests: 30,
   });
   const staticCache = new Map();
+  const staticInflight = new Map();
   const allowIframe = Boolean(config.security?.allowIframe);
   const secHeaders = (isHtml = false) => getSecurityHeaders({ isHtml, allowIframe });
   const sendJson = (res, statusCode, payload, extraHeaders = {}, req = null) =>
@@ -294,27 +315,56 @@ export function createOpsConsole(options = {}) {
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
     const isHtml = ext === '.html';
     let cached = staticCache.get(resolved);
-    if (!cached || cached.mtimeMs !== stat.mtimeMs || cached.size !== stat.size) {
-      const content = await fs.readFile(resolved);
-      const etag = `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
-      const compressible = COMPRESSIBLE_MIME.test(contentType) && content.length >= COMPRESS_MIN_BYTES;
-      cached = {
-        mtimeMs: stat.mtimeMs,
-        size: stat.size,
-        etag,
-        content,
-        gzip: compressible ? compressBuffer(content, 'gzip') : null,
-        br: compressible ? compressBuffer(content, 'br') : null,
-        contentType,
-        isHtml,
-      };
+    if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+      // Touch LRU position
+      staticCache.delete(resolved);
       staticCache.set(resolved, cached);
+    } else {
+      let loader = staticInflight.get(resolved);
+      if (!loader) {
+        loader = (async () => {
+          const content = await fs.readFile(resolved);
+          const etag = `W/"${stat.size.toString(16)}-${Math.floor(stat.mtimeMs).toString(16)}"`;
+          const compressible = COMPRESSIBLE_MIME.test(contentType) && content.length >= COMPRESS_MIN_BYTES;
+          const [gzip, br] = compressible
+            ? await Promise.all([compressBufferAsync(content, 'gzip'), compressBufferAsync(content, 'br')])
+            : [null, null];
+          const entry = {
+            mtimeMs: stat.mtimeMs,
+            size: stat.size,
+            etag,
+            content,
+            gzip,
+            br,
+            contentType,
+            isHtml,
+          };
+          if (staticCache.has(resolved)) {
+            staticCache.delete(resolved);
+          } else if (staticCache.size >= MAX_STATIC_CACHE_ENTRIES) {
+            const oldestKey = staticCache.keys().next().value;
+            if (oldestKey !== undefined) staticCache.delete(oldestKey);
+          }
+          staticCache.set(resolved, entry);
+          return entry;
+        })().finally(() => {
+          staticInflight.delete(resolved);
+        });
+        staticInflight.set(resolved, loader);
+      }
+      cached = await loader;
     }
 
     const isServiceWorker = path.basename(resolved) === 'sw.js';
+    const isHashedAsset = HASHED_ASSET_RE.test(decodedPath);
+    const cacheControl = isHtml || isServiceWorker
+      ? 'no-cache, no-store, must-revalidate'
+      : isHashedAsset
+        ? 'public, max-age=31536000, immutable'
+        : 'public, max-age=60';
     const headers = {
       'Content-Type': contentType,
-      'Cache-Control': isHtml || isServiceWorker ? 'no-cache, no-store, must-revalidate' : 'public, max-age=60',
+      'Cache-Control': cacheControl,
       ETag: cached.etag,
       Vary: 'Accept-Encoding',
       ...secHeaders(isHtml),
@@ -730,6 +780,10 @@ export function createOpsConsole(options = {}) {
       }
 
       if (method === 'POST' && pathname === '/api/probes/checkin') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Mobile check-in disabled in read-only mode' });
+          return;
+        }
         const { data } = await readBody(req, MAX_PROBE_BODY_BYTES);
         const targetId = String(data.nodeId || '').trim().toLowerCase();
         if (!validateNodeId(targetId)) {
@@ -1005,6 +1059,10 @@ export function createOpsConsole(options = {}) {
       }
 
       if (method === 'POST' && /^\/api\/runbooks\/[^/]+\/run$/.test(pathname)) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: '只读模式下已禁用 Runbook 执行' });
+          return;
+        }
         const runbookId = decodeURIComponent(pathname.split('/')[3] || '').trim();
         const result = await runbookEngine.execute(runbookId, {
           actor: 'web',
@@ -1220,16 +1278,23 @@ export function createOpsConsole(options = {}) {
           sendJson(res, 400, result);
           return;
         }
-        const exported = logs.formatExport(result, format);
+        const isText = format === 'text' || format === 'log';
         const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
         const targetLabel = sanitizeDownloadName(queryParams.unit || queryParams.file || queryParams.source);
         res.writeHead(200, {
-          'Content-Type': exported.contentType,
-          'Content-Disposition': `attachment; filename="ops-console-${targetLabel}-${stamp}.${exported.ext}"`,
+          'Content-Type': isText ? 'text/plain; charset=utf-8' : 'application/x-ndjson; charset=utf-8',
+          'Content-Disposition': `attachment; filename="ops-console-${targetLabel}-${stamp}.${isText ? 'log' : 'jsonl'}"`,
           'Cache-Control': 'no-store',
           ...secHeaders(false),
         });
-        res.end(exported.body);
+        const entries = result.entries || [];
+        const CHUNK_SIZE = 100;
+        for (let i = 0; i < entries.length; i += CHUNK_SIZE) {
+          const slice = entries.slice(i, i + CHUNK_SIZE);
+          const chunk = logs.formatExport({ entries: slice }, format).body;
+          if (chunk) res.write(chunk);
+        }
+        res.end();
         return;
       }
 

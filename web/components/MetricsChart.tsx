@@ -10,7 +10,7 @@ import {
 } from 'recharts';
 import { fetchMetricsSeries } from '../api';
 import type { MetricsRange, MetricsSeriesPoint } from '../types';
-import { EmptyState, Panel, SegmentedFilter } from './ui';
+import { EmptyState, ErrorState, Panel, SegmentedFilter } from './ui';
 
 const RANGE_OPTIONS = [
   { value: '1h', label: '1h' },
@@ -49,26 +49,31 @@ export function MetricsChart({
   const [points, setPoints] = React.useState<MetricsSeriesPoint[]>([]);
   const [sourceLabel, setSourceLabel] = React.useState('');
   const [loading, setLoading] = React.useState(true);
+  const [errorMsg, setErrorMsg] = React.useState('');
+  const [retryNonce, setRetryNonce] = React.useState(0);
 
   React.useEffect(() => {
-    let active = true;
+    const controller = new AbortController();
     setLoading(true);
-    fetchMetricsSeries(series, range)
+    setErrorMsg('');
+    fetchMetricsSeries(series, range, controller.signal)
       .then((res) => {
-        if (!active) return;
+        if (controller.signal.aborted) return;
         setPoints(res.points || []);
         setSourceLabel(res.source || 'raw');
       })
-      .catch(() => {
-        if (active) setPoints([]);
+      .catch((err) => {
+        if (controller.signal.aborted || (err as Error)?.name === 'AbortError') return;
+        setPoints([]);
+        setErrorMsg((err as Error)?.message || '时序指标加载失败');
       })
       .finally(() => {
-        if (active) setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       });
     return () => {
-      active = false;
+      controller.abort();
     };
-  }, [series, range]);
+  }, [series, range, retryNonce]);
 
   const chartData = React.useMemo(
     () =>
@@ -160,6 +165,13 @@ export function MetricsChart({
                 <div className="h-2.5 w-12 rounded bg-[var(--surface-subtle)]" />
               </div>
             </div>
+          ) : errorMsg ? (
+            <ErrorState
+              title="历史趋势加载失败"
+              message={errorMsg}
+              onRetry={() => setRetryNonce((n) => n + 1)}
+              retrying={loading}
+            />
           ) : chartData.length === 0 ? (
             <EmptyState
               title="暂无该时间窗历史采样"
@@ -167,7 +179,7 @@ export function MetricsChart({
             />
           ) : (
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData} margin={{ top: 8, right: 12, left: -12, bottom: 0 }}>
+              <AreaChart data={chartData} margin={{ top: 8, right: 24, left: -12, bottom: 0 }}>
                 <defs>
                   <linearGradient id="opsGradAccent" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="5%" stopColor="var(--accent)" stopOpacity={0.22} />

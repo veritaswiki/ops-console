@@ -169,6 +169,18 @@ export class TelemetryStore {
       selectRecentSeriesNames: this.db.prepare(`
         SELECT DISTINCT series FROM sample WHERE ts >= ?
       `),
+      selectHydrateWindowed: this.db.prepare(`
+        SELECT series, ts, cpu, mem, disk, load1, rtt, battery, online_nodes, total_nodes, services_ok_pct
+        FROM (
+          SELECT
+            series, ts, cpu, mem, disk, load1, rtt, battery, online_nodes, total_nodes, services_ok_pct,
+            ROW_NUMBER() OVER (PARTITION BY series ORDER BY ts DESC) AS rn
+          FROM sample
+          WHERE ts >= ?
+        )
+        WHERE rn <= ?
+        ORDER BY series ASC, ts ASC
+      `),
       insertIncident: this.db.prepare(`
         INSERT INTO incident (ts, entity_key, node, kind, from_state, to_state, detail, resolved_ts)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -268,7 +280,10 @@ export class TelemetryStore {
     const servicesOkPct = normalizeNumber(sample.servicesOkPct);
 
     if (this.driver === 'sqlite' && this.stmts) {
+      let inTx = false;
       try {
+        this.db.exec('BEGIN IMMEDIATE');
+        inTx = true;
         this.stmts.insertSample.run(
           cleanSeries,
           ts,
@@ -296,8 +311,16 @@ export class TelemetryStore {
             mem,
           );
         }
+        this.db.exec('COMMIT');
+        inTx = false;
       } catch {
-        // non-fatal telemetry drop
+        if (inTx) {
+          try {
+            this.db.exec('ROLLBACK');
+          } catch {
+            // ignore rollback error
+          }
+        }
       }
       this._maybePrune(ts);
       return;
@@ -332,26 +355,23 @@ export class TelemetryStore {
 
     if (this.driver === 'sqlite' && this.stmts) {
       try {
-        const seriesRows = this.stmts.selectRecentSeriesNames.all(sinceMs);
-        for (const row of seriesRows) {
-          const points = this.stmts.selectSamples.all(row.series, sinceMs, limitPerSeries).reverse();
-          for (const pt of points) {
-            timeseries.record(row.series, {
-              ts: pt.ts,
-              cpuPct: pt.cpu,
-              avgCpuPct: pt.cpu,
-              memPct: pt.mem,
-              avgMemPct: pt.mem,
-              diskPct: pt.disk,
-              load1: pt.load1,
-              rttMs: pt.rtt,
-              batteryPct: pt.battery,
-              onlineNodes: pt.online_nodes,
-              totalNodes: pt.total_nodes,
-              servicesOkPct: pt.services_ok_pct,
-            }, { persist: false });
-            loaded += 1;
-          }
+        const rows = this.stmts.selectHydrateWindowed.all(sinceMs, limitPerSeries);
+        for (const pt of rows) {
+          timeseries.record(pt.series, {
+            ts: pt.ts,
+            cpuPct: pt.cpu,
+            avgCpuPct: pt.cpu,
+            memPct: pt.mem,
+            avgMemPct: pt.mem,
+            diskPct: pt.disk,
+            load1: pt.load1,
+            rttMs: pt.rtt,
+            batteryPct: pt.battery,
+            onlineNodes: pt.online_nodes,
+            totalNodes: pt.total_nodes,
+            servicesOkPct: pt.services_ok_pct,
+          }, { persist: false });
+          loaded += 1;
         }
       } catch {
         // ignore hydration failure
@@ -516,6 +536,14 @@ export class TelemetryStore {
     const found = this.memoryIncidents.find((item) => Number(item.id) === numId);
     if (!found) return null;
     found.note = cleanNote;
+    if (this.driver === 'jsonl' && this.incidentsPath) {
+      const snapshotLines = this.memoryIncidents.map((item) => JSON.stringify(item)).join('\n');
+      this._enqueueJsonl(async () => {
+        const tmp = `${this.incidentsPath}.tmp.${process.pid}`;
+        await fs.writeFile(tmp, snapshotLines ? `${snapshotLines}\n` : '', { encoding: 'utf8', mode: 0o600 });
+        await fs.rename(tmp, this.incidentsPath);
+      });
+    }
     return { id: numId, note: cleanNote };
   }
 

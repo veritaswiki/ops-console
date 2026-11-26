@@ -604,11 +604,14 @@ export class PluginManager {
     return null;
   }
 
-  _serializePlugin(plugin, snapshot = null) {
+  _serializePlugin(plugin, snapshot = null, snapshotPluginMap = null) {
     const cfg = this.getEffectiveConfig(plugin.id) || {};
     const enabled = Boolean(cfg.enabled);
+    const extraDetails = snapshotPluginMap
+      ? snapshotPluginMap.get(plugin.id)?.details
+      : snapshot?.plugins?.find((p) => p.id === plugin.id)?.details;
     const live = this._extractLegacyTelemetry(plugin, snapshot)
-      || snapshot?.plugins?.find((p) => p.id === plugin.id)?.details
+      || extraDetails
       || this.lastTelemetry.get(plugin.id)
       || null;
 
@@ -653,7 +656,26 @@ export class PluginManager {
   }
 
   listPlugins(snapshot = null) {
-    const items = [...this.plugins.values()].map((p) => this._serializePlugin(p, snapshot));
+    let snapshotPluginMap = null;
+    if (Array.isArray(snapshot?.plugins) && snapshot.plugins.length > 0) {
+      snapshotPluginMap = new Map();
+      for (const p of snapshot.plugins) {
+        if (p?.id) snapshotPluginMap.set(p.id, p);
+      }
+    }
+    const items = [];
+    let enabled = 0;
+    let healthy = 0;
+    let custom = 0;
+    for (const p of this.plugins.values()) {
+      const item = this._serializePlugin(p, snapshot, snapshotPluginMap);
+      items.push(item);
+      if (item.enabled) {
+        enabled += 1;
+        if (item.status === 'healthy') healthy += 1;
+      }
+      if (item.source === 'user-custom' || item.source === 'external') custom += 1;
+    }
     return {
       ok: true,
       categories: PLUGIN_CATEGORIES,
@@ -661,9 +683,9 @@ export class PluginManager {
       externalLoadErrors: this.externalLoadErrors,
       summary: {
         total: items.length,
-        enabled: items.filter((i) => i.enabled).length,
-        healthy: items.filter((i) => i.enabled && i.status === 'healthy').length,
-        custom: items.filter((i) => i.source === 'user-custom' || i.source === 'external').length,
+        enabled,
+        healthy,
+        custom,
       },
       items,
     };

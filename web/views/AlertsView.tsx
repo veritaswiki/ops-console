@@ -1,10 +1,12 @@
 import React from 'react';
 import {
   BellOff,
+  CheckCheck,
   CheckCircle2,
   FilePenLine,
   Plus,
   RefreshCw,
+  Search,
   ShieldAlert,
   Trash2,
 } from 'lucide-react';
@@ -19,18 +21,41 @@ import {
   toggleAlertRule,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { formatRemainingSilence } from '../lib/module-helpers';
+import { ModuleFrame } from '../modules/ModuleFrame';
 import { formatDateTime, statusLabel } from '../utils/format';
 import {
   Button,
   EmptyState,
+  ErrorState,
   inputBaseClass,
   KpiStrip,
   Panel,
   ResourceMeter,
+  SegmentedFilter,
   StatusIndicator,
   ToggleSwitch,
   type ConfirmModalState,
 } from '../components/ui';
+
+const SILENCE_DURATIONS = [
+  { value: 15, label: '15 分钟' },
+  { value: 30, label: '30 分钟' },
+  { value: 120, label: '2 小时' },
+  { value: 480, label: '8 小时' },
+] as const;
+
+const ALERT_QUEUE_FILTERS = [
+  { value: 'all', label: '全部' },
+  { value: 'unacked', label: '未确认' },
+  { value: 'acked', label: '已确认' },
+] as const;
+
+const RULE_STATUS_FILTERS = [
+  { value: 'all', label: '全部规则' },
+  { value: 'enabled', label: '已启用' },
+  { value: 'paused', label: '已暂停' },
+] as const;
 
 const METRIC_LABELS: Record<string, string> = {
   'host.memory.usedPercent': '主机内存占用 (%)',
@@ -75,6 +100,7 @@ export function AlertsView({
 }) {
   const [state, setState] = React.useState<AlertsStateResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
+  const [loadError, setLoadError] = React.useState('');
   const [busyId, setBusyId] = React.useState<string | null>(null);
 
   // Rule creation form
@@ -97,37 +123,109 @@ export function AlertsView({
   const [noteDraft, setNoteDraft] = React.useState('');
   const [savingNote, setSavingNote] = React.useState(false);
 
+  // Wave 2: Silence window duration + live countdown + queue/rule filters
+  const [silenceMinutes, setSilenceMinutes] = React.useState<number>(30);
+  const [activeSilenceWindowMin, setActiveSilenceWindowMin] = React.useState<number>(30);
+  const [nowMs, setNowMs] = React.useState<number>(() => Date.now());
+  const [alertFilter, setAlertFilter] = React.useState<'all' | 'unacked' | 'acked'>('all');
+  const [ruleQuery, setRuleQuery] = React.useState('');
+  const [ruleStatusFilter, setRuleStatusFilter] = React.useState<'all' | 'enabled' | 'paused'>('all');
+
+  const abortRef = React.useRef<AbortController | null>(null);
+
   const loadAlerts = React.useCallback(async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
+    setLoadError('');
     try {
-      const data = await fetchAlerts();
-      setState(data);
+      const data = await fetchAlerts(controller.signal);
+      if (!controller.signal.aborted) {
+        setState(data);
+      }
     } catch (err) {
-      onToast(`加载告警中心失败：${(err as Error).message}`, 'err');
+      if (controller.signal.aborted || (err as Error)?.name === 'AbortError') return;
+      const msg = (err as Error).message || '告警中心请求失败';
+      setLoadError(msg);
+      onToast(`加载告警中心失败：${msg}`, 'err');
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
   }, [onToast]);
 
   React.useEffect(() => {
     void loadAlerts();
+    return () => {
+      abortRef.current?.abort();
+    };
   }, [loadAlerts]);
+
+  React.useEffect(() => {
+    if (!state?.silenced || !state.silenceUntil) return;
+    setNowMs(Date.now());
+    const id = window.setInterval(() => setNowMs(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, [state?.silenced, state?.silenceUntil]);
 
   const handleSilence = async (minutes: number) => {
     if (readOnly) {
       onToast('只读模式已禁用告警静默控制', 'err');
       return;
     }
+    const prevState = state;
+    const optimisticUntil = minutes > 0 ? new Date(Date.now() + minutes * 60_000).toISOString() : null;
+    if (minutes > 0) {
+      setActiveSilenceWindowMin(minutes);
+      setNowMs(Date.now());
+    }
+    if (state) {
+      setState({
+        ...state,
+        silenced: minutes > 0,
+        silenceUntil: optimisticUntil,
+      });
+    }
     setBusyId('silence');
     try {
       const res = await setAlertSilence(minutes);
+      setState((curr) =>
+        curr ? { ...curr, silenced: res.silenced, silenceUntil: res.silenceUntil } : curr,
+      );
       onToast(
         res.silenced ? `已开启全局告警静默 ${minutes} 分钟` : '已解除全局告警静默',
         'ok',
       );
-      await loadAlerts();
     } catch (err) {
+      if (prevState) setState(prevState);
       onToast(`操作失败：${(err as Error).message}`, 'err');
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const handleBulkAck = async () => {
+    if (readOnly || !state) {
+      if (readOnly) onToast('只读模式已禁用告警确认', 'err');
+      return;
+    }
+    const unacked = state.alerts.filter((al) => al.status !== 'acked');
+    if (unacked.length === 0) return;
+    const prevState = state;
+    setState({
+      ...state,
+      alerts: state.alerts.map((al) => ({ ...al, status: 'acked' as const })),
+      activeCount: 0,
+    });
+    setBusyId('bulk-ack');
+    try {
+      await Promise.all(unacked.map((al) => ackAlert(al.id)));
+      onToast(`已批量确认 ${unacked.length} 条告警`, 'ok');
+    } catch (err) {
+      setState(prevState);
+      onToast(`批量确认失败：${(err as Error).message}`, 'err');
     } finally {
       setBusyId(null);
     }
@@ -138,12 +236,20 @@ export function AlertsView({
       onToast('只读模式已禁用告警确认', 'err');
       return;
     }
+    const prevState = state;
+    if (state) {
+      const nextAlerts = state.alerts.map((al) =>
+        al.id === alertId ? { ...al, status: 'acked' as const } : al,
+      );
+      const nextActive = nextAlerts.filter((al) => al.status !== 'acked').length;
+      setState({ ...state, alerts: nextAlerts, activeCount: nextActive });
+    }
     setBusyId(alertId);
     try {
       await ackAlert(alertId);
       onToast('已确认该告警', 'ok');
-      await loadAlerts();
     } catch (err) {
+      if (prevState) setState(prevState);
       onToast(`确认失败：${(err as Error).message}`, 'err');
     } finally {
       setBusyId(null);
@@ -155,12 +261,19 @@ export function AlertsView({
       onToast('只读模式已禁用规则切换', 'err');
       return;
     }
+    const prevState = state;
+    if (state) {
+      setState({
+        ...state,
+        rules: state.rules.map((r) => (r.id === ruleId ? { ...r, enabled: nextEnabled } : r)),
+      });
+    }
     setBusyId(ruleId);
     try {
       await toggleAlertRule(ruleId, nextEnabled);
       onToast(nextEnabled ? '已启用告警规则' : '已暂停告警规则', 'ok');
-      await loadAlerts();
     } catch (err) {
+      if (prevState) setState(prevState);
       onToast(`更新失败：${(err as Error).message}`, 'err');
     } finally {
       setBusyId(null);
@@ -179,11 +292,18 @@ export function AlertsView({
       confirmLabel: '确认删除',
       danger: true,
       onConfirm: async () => {
+        const prevState = state;
+        if (state) {
+          setState({
+            ...state,
+            rules: state.rules.filter((r) => r.id !== ruleId),
+          });
+        }
         try {
           await deleteAlertRule(ruleId);
           onToast(`已删除规则「${name}」`, 'ok');
-          await loadAlerts();
         } catch (err) {
+          if (prevState) setState(prevState);
           onToast(`删除失败：${(err as Error).message}`, 'err');
         }
       },
@@ -262,17 +382,35 @@ export function AlertsView({
   const rules = state?.rules || [];
   const alerts = state?.alerts || [];
 
+  const filteredAlerts = React.useMemo(() => {
+    if (alertFilter === 'unacked') return alerts.filter((al) => al.status !== 'acked');
+    if (alertFilter === 'acked') return alerts.filter((al) => al.status === 'acked');
+    return alerts;
+  }, [alerts, alertFilter]);
+
+  const filteredRules = React.useMemo(() => {
+    const q = ruleQuery.trim().toLowerCase();
+    return rules.filter((r) => {
+      if (ruleStatusFilter === 'enabled' && !r.enabled) return false;
+      if (ruleStatusFilter === 'paused' && r.enabled) return false;
+      if (!q) return true;
+      const haystack = [r.name, r.metric, METRIC_LABELS[r.metric] || '', r.channel, r.severity]
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [rules, ruleQuery, ruleStatusFilter]);
+
+  const silenceCountdown = React.useMemo(
+    () => formatRemainingSilence(state?.silenceUntil, nowMs, activeSilenceWindowMin),
+    [state?.silenceUntil, nowMs, activeSilenceWindowMin],
+  );
+
   return (
-    <div className="space-y-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">
-            告警、事件与 SLA 可靠性
-          </h1>
-          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed text-pretty">
-            声明式指标阈值规则、SSRF 防护外发通知、维护静默窗口、30 天可用性与事件复盘记录。
-          </p>
-        </div>
+    <ModuleFrame
+      title="告警、事件与 SLA 可靠性"
+      description="声明式指标阈值规则、SSRF 防护外发通知、维护静默窗口、30 天可用性与事件复盘记录。"
+      actions={
         <div className="flex flex-wrap items-center gap-2">
           {state?.silenced ? (
             <Button
@@ -280,20 +418,41 @@ export function AlertsView({
               size="sm"
               disabled={busyId === 'silence' || readOnly}
               onClick={() => void handleSilence(0)}
+              data-testid="unsilence-alerts-btn"
             >
               <BellOff className="size-4 text-[var(--warn)]" strokeWidth={1.75} />
               解除静默
             </Button>
           ) : (
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={busyId === 'silence' || readOnly}
-              onClick={() => void handleSilence(30)}
-            >
-              <BellOff className="size-4 text-[var(--ink-muted)]" strokeWidth={1.75} />
-              静默 30 分钟
-            </Button>
+            <div className="inline-flex items-center gap-1.5">
+              <select
+                value={silenceMinutes}
+                onChange={(e) => setSilenceMinutes(Number(e.target.value))}
+                disabled={busyId === 'silence' || readOnly}
+                aria-label="选择维护静默时长"
+                data-testid="silence-duration-select"
+                className={cn(
+                  'ui-select h-8 pl-2.5 sm:text-[12.5px] font-mono tabular-nums cursor-pointer',
+                  inputBaseClass,
+                )}
+              >
+                {SILENCE_DURATIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={busyId === 'silence' || readOnly}
+                onClick={() => void handleSilence(silenceMinutes)}
+                data-testid="silence-alerts-btn"
+              >
+                <BellOff className="size-4 text-[var(--ink-muted)]" strokeWidth={1.75} />
+                开启静默
+              </Button>
+            </div>
           )}
           <Button
             variant="secondary"
@@ -315,53 +474,88 @@ export function AlertsView({
             新建规则
           </Button>
         </div>
-      </div>
+      }
+    >
+      {loadError && !state && (
+        <Panel>
+          <ErrorState
+            title="告警中心加载失败"
+            message={loadError}
+            onRetry={() => void loadAlerts()}
+            retrying={loading}
+          />
+        </Panel>
+      )}
 
       {state?.silenced && state.silenceUntil && (
-        <div className="rounded-xl border border-[var(--warn)]/30 bg-[var(--warn)]/5 px-4 py-3 flex flex-wrap items-center justify-between gap-2 text-[13px] text-[var(--warn)]">
-          <span className="font-medium">
-            全局维护静默生效中，将暂停外发告警直至 {formatDateTime(state.silenceUntil)}
-          </span>
-          <Button variant="ghost" size="sm" onClick={() => void handleSilence(0)} disabled={readOnly}>
-            立即恢复通知
-          </Button>
+        <div
+          data-testid="silence-active-banner"
+          className="rounded-xl bg-[var(--warn)]/[0.08] px-4 py-3 space-y-2 text-[13px] text-[var(--warn)]"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-medium">
+              全局维护静默生效中 · 剩余{' '}
+              <span className="font-mono tabular-nums font-semibold">
+                {silenceCountdown.label}
+              </span>{' '}
+              <span className="font-mono text-[12px] opacity-80 tabular-nums">
+                （直至 {formatDateTime(state.silenceUntil)}）
+              </span>
+            </span>
+            <Button variant="ghost" size="sm" onClick={() => void handleSilence(0)} disabled={readOnly}>
+              立即恢复通知
+            </Button>
+          </div>
+          <div className="h-[3px] w-full rounded-full bg-[var(--warn)]/15 overflow-hidden">
+            <div
+              className="h-full rounded-full bg-[var(--warn)] transition-[width] duration-500 ease-out"
+              style={{ width: `${silenceCountdown.progressPct}%` }}
+            />
+          </div>
         </div>
       )}
 
-      <KpiStrip
-        asymmetric
-        cells={[
-          {
-            label: '30 天全栈 SLA 可用性',
-            meta: sla ? `${sla.windowDays}d 滚动窗口` : undefined,
-            value: sla ? `${sla.overallUptimePct.toFixed(2)}%` : '-',
-            ratioPct: sla?.overallUptimePct ?? 99.9,
-            sub: sla
-              ? `MTTR ${sla.mttrMinutes}m · 累计故障时长 ${sla.totalDowntimeMin} 分钟`
-              : '正在计算可用性指标',
-            tone: sla && sla.overallUptimePct < 99.5 ? 'warn' : 'ok',
-          },
-          {
-            label: '活跃未确认告警',
-            value: String(activeCount),
-            numeric: { primary: activeCount },
-            sub: `${alerts.length} 条近期告警记录`,
-            tone: activeCount > 0 ? 'err' : 'ok',
-          },
-          {
-            label: '生效阈值规则',
-            value: `${rules.filter((r) => r.enabled).length}/${rules.length}`,
-            numeric: { primary: rules.filter((r) => r.enabled).length, denominator: rules.length },
-            sub: '每次快照自动评估',
-          },
-          {
-            label: '历史状态事件',
-            value: String(incidents.length),
-            numeric: { primary: incidents.length },
-            sub: `${incidents.filter((i) => Boolean(i.note)).length} 条已附加复盘备注`,
-          },
-        ]}
-      />
+      {loading && !state ? (
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4" aria-busy="true">
+          <div className="lg:col-span-5 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
+          <div className="lg:col-span-7 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
+        </div>
+      ) : (
+        <KpiStrip
+          asymmetric
+          cells={[
+            {
+              label: '30 天全栈 SLA 可用性',
+              meta: sla ? `${sla.windowDays}d 滚动窗口` : undefined,
+              value: sla ? `${sla.overallUptimePct.toFixed(2)}%` : '-',
+              ratioPct: sla?.overallUptimePct ?? 99.9,
+              sub: sla
+                ? `MTTR ${sla.mttrMinutes}m · 累计故障时长 ${sla.totalDowntimeMin} 分钟`
+                : '正在计算可用性指标',
+              tone: sla && sla.overallUptimePct < 99.5 ? 'warn' : 'ok',
+            },
+            {
+              label: '活跃未确认告警',
+              value: String(activeCount),
+              numeric: { primary: activeCount },
+              sub: `${alerts.length} 条近期告警记录`,
+              tone: activeCount > 0 ? 'err' : 'ok',
+            },
+            {
+              label: '生效阈值规则',
+              value: `${rules.filter((r) => r.enabled).length}/${rules.length}`,
+              numeric: { primary: rules.filter((r) => r.enabled).length, denominator: rules.length },
+              sub: '每次快照自动评估',
+            },
+            {
+              label: '历史状态事件',
+              value: String(incidents.length),
+              numeric: { primary: incidents.length },
+              sub: `${incidents.filter((i) => Boolean(i.note)).length} 条已附加复盘备注`,
+            },
+          ]}
+        />
+      )}
 
       {showCreate && (
         <Panel
@@ -497,16 +691,47 @@ export function AlertsView({
           className="lg:col-span-7"
           bodyClassName="p-0"
           title="活跃告警与处理队列"
-          description="实时汇总触发中的阈值告警，支持一键确认（Ack）以消音升级链路。"
+          description="实时汇总触发中的阈值告警，支持按确认状态筛选及批量 Ack 消音。"
+          actions={
+            <div className="flex flex-wrap items-center gap-2">
+              <SegmentedFilter
+                value={alertFilter}
+                onChange={setAlertFilter}
+                options={ALERT_QUEUE_FILTERS}
+                ariaLabel="按确认状态筛选告警"
+              />
+              {activeCount > 1 && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={busyId === 'bulk-ack' || readOnly}
+                  onClick={() => void handleBulkAck()}
+                  data-testid="bulk-ack-alerts-btn"
+                >
+                  <CheckCheck className="size-3.5 text-[var(--ok)]" strokeWidth={1.75} />
+                  {busyId === 'bulk-ack' ? '确认中...' : `全部确认 (${activeCount})`}
+                </Button>
+              )}
+            </div>
+          }
         >
-          {alerts.length === 0 ? (
+          {filteredAlerts.length === 0 ? (
             <EmptyState
-              title="当前无活跃告警"
-              message="所有启用中的阈值规则均处于健康水位。"
+              title={alerts.length === 0 ? '当前无活跃告警' : '当前筛选下无告警'}
+              message={
+                alerts.length === 0
+                  ? '所有启用中的阈值规则均处于健康水位。'
+                  : '切换状态筛选即可查看其他告警记录。'
+              }
+              action={
+                alertFilter !== 'all'
+                  ? { label: '显示全部告警', onClick: () => setAlertFilter('all') }
+                  : undefined
+              }
             />
           ) : (
             <ul className="divide-y divide-[var(--border-subtle)]">
-              {alerts.map((al) => {
+              {filteredAlerts.map((al) => {
                 const isAcked = al.status === 'acked';
                 return (
                   <li
@@ -582,11 +807,49 @@ export function AlertsView({
 
       <Panel
         title="声明式告警规则库"
-        description="按需启停内建与自定义阈值策略，所有配置实时应用于采集循环。"
+        description={`按需启停内建与自定义阈值策略，当前匹配 ${filteredRules.length}/${rules.length} 条规则。`}
         bodyClassName="p-0"
+        actions={
+          <div className="flex flex-wrap items-center gap-2 max-w-full">
+            <div className="relative w-full sm:w-52">
+              <Search
+                className="size-3.5 text-[var(--ink-subtle)] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                strokeWidth={1.75}
+              />
+              <input
+                type="search"
+                value={ruleQuery}
+                onChange={(e) => setRuleQuery(e.target.value)}
+                placeholder="搜索规则名称或指标..."
+                aria-label="搜索告警规则"
+                data-testid="alert-rules-search"
+                className={cn('w-full h-8 pl-8 pr-2.5 sm:text-[12.5px]', inputBaseClass)}
+              />
+            </div>
+            <SegmentedFilter
+              value={ruleStatusFilter}
+              onChange={setRuleStatusFilter}
+              options={RULE_STATUS_FILTERS}
+              ariaLabel="按启用状态筛选规则"
+            />
+          </div>
+        }
       >
-        {rules.length === 0 ? (
-          <EmptyState message="尚未定义任何告警规则。" />
+        {filteredRules.length === 0 ? (
+          <EmptyState
+            message={rules.length === 0 ? '尚未定义任何告警规则。' : '未找到匹配的告警规则。'}
+            action={
+              ruleQuery || ruleStatusFilter !== 'all'
+                ? {
+                    label: '重置筛选',
+                    onClick: () => {
+                      setRuleQuery('');
+                      setRuleStatusFilter('all');
+                    },
+                  }
+                : undefined
+            }
+          />
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
@@ -600,7 +863,7 @@ export function AlertsView({
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
-                {rules.map((rule) => (
+                {filteredRules.map((rule) => (
                   <tr
                     key={rule.id}
                     className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out"
@@ -690,8 +953,9 @@ export function AlertsView({
                         </p>
                       )}
                       {inc.note && !isEditing && (
-                        <p className="mt-1.5 text-[12.5px] text-[var(--ink)] bg-[var(--surface-subtle)] border border-[var(--border-subtle)] rounded-lg px-3 py-2 text-pretty">
-                          复盘备注：{inc.note}
+                        <p className="mt-1.5 text-[12.5px] text-[var(--ink)] bg-[var(--surface-subtle)]/75 rounded-lg px-3 py-2 text-pretty">
+                          <span className="text-[var(--ink-subtle)] mr-1.5">复盘备注</span>
+                          {inc.note}
                         </p>
                       )}
                     </div>
@@ -747,6 +1011,6 @@ export function AlertsView({
           </ul>
         )}
       </Panel>
-    </div>
+    </ModuleFrame>
   );
 }

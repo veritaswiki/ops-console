@@ -5,6 +5,7 @@ import {
   Activity,
   CheckCircle2,
   Copy,
+  Download,
   ExternalLink,
   Plus,
   RefreshCw,
@@ -30,16 +31,28 @@ import {
   updatePluginConfig,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { buildPluginsExportPayload } from '../lib/module-helpers';
+import { ModuleFrame } from '../modules/ModuleFrame';
 import {
   Button,
   type ConfirmModalState,
   EmptyState,
+  ErrorState,
   inputBaseClass,
   KpiStrip,
   Panel,
   SegmentedFilter,
   StatusIndicator,
 } from '../components/ui';
+
+const STATUS_FILTER_OPTIONS = [
+  { value: 'all', label: '全部状态' },
+  { value: 'enabled', label: '已启用' },
+  { value: 'disabled', label: '已停用' },
+  { value: 'unhealthy', label: '异常' },
+] as const;
+
+type PluginStatusFilter = (typeof STATUS_FILTER_OPTIONS)[number]['value'];
 
 const CATEGORY_OPTIONS = [
   { value: 'all', label: '全部' },
@@ -134,11 +147,14 @@ export function PluginsView({
   const [catalog, setCatalog] = React.useState<PluginsResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
+  const [loadError, setLoadError] = React.useState('');
   const [category, setCategory] = React.useState<CategoryFilter>('all');
+  const [statusFilter, setStatusFilter] = React.useState<PluginStatusFilter>('all');
   const [query, setQuery] = React.useState('');
 
   const [togglingId, setTogglingId] = React.useState<string | null>(null);
   const [testingId, setTestingId] = React.useState<string | null>(null);
+  const [batchProgress, setBatchProgress] = React.useState<{ done: number; total: number } | null>(null);
   const [testResults, setTestResults] = React.useState<Record<string, PluginTestResult>>({});
 
   // Config Drawer state
@@ -155,22 +171,37 @@ export function PluginsView({
   const [addToken, setAddToken] = React.useState('');
   const [addDesc, setAddDesc] = React.useState('');
   const [adding, setAdding] = React.useState(false);
+  const abortRef = React.useRef<AbortController | null>(null);
 
   const loadCatalog = React.useCallback(async (force = false) => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setRefreshing(true);
+    setLoadError('');
     try {
-      const data = await fetchPlugins(force);
-      setCatalog(data);
+      const data = await fetchPlugins(force, controller.signal);
+      if (!controller.signal.aborted) {
+        setCatalog(data);
+      }
     } catch (err) {
-      onToast(`加载插件目录失败：${(err as Error).message}`, 'err');
+      if (controller.signal.aborted || (err as Error)?.name === 'AbortError') return;
+      const msg = (err as Error).message || '插件目录加载失败';
+      setLoadError(msg);
+      onToast(`加载插件目录失败：${msg}`, 'err');
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, [onToast]);
 
   React.useEffect(() => {
     void loadCatalog(false);
+    return () => {
+      abortRef.current?.abort();
+    };
   }, [loadCatalog]);
 
   const items = catalog?.items || [];
@@ -180,6 +211,9 @@ export function PluginsView({
     const q = query.trim().toLowerCase();
     return items.filter((item) => {
       if (category !== 'all' && item.category !== category) return false;
+      if (statusFilter === 'enabled' && !item.enabled) return false;
+      if (statusFilter === 'disabled' && item.enabled) return false;
+      if (statusFilter === 'unhealthy' && (!item.enabled || item.reachable)) return false;
       if (!q) return true;
       const haystack = [
         item.id,
@@ -193,20 +227,44 @@ export function PluginsView({
         .toLowerCase();
       return haystack.includes(q);
     });
-  }, [items, category, query]);
+  }, [items, category, statusFilter, query]);
 
   const handleToggle = async (plugin: PluginCatalogItem, nextEnabled: boolean) => {
     if (readOnly) {
       onToast('只读模式下不可修改插件启停状态', 'err');
       return;
     }
+    const prevCatalog = catalog;
+    if (catalog) {
+      const nextItems = catalog.items.map((item) =>
+        item.id === plugin.id
+          ? {
+              ...item,
+              enabled: nextEnabled,
+              status: nextEnabled ? item.status || 'healthy' : 'disabled',
+            }
+          : item,
+      );
+      const nextEnabledCount = nextItems.filter((i) => i.enabled).length;
+      const nextHealthyCount = nextItems.filter((i) => i.enabled && i.reachable).length;
+      setCatalog({
+        ...catalog,
+        items: nextItems,
+        summary: {
+          ...catalog.summary,
+          enabled: nextEnabledCount,
+          healthy: nextHealthyCount,
+        },
+      });
+    }
     setTogglingId(plugin.id);
     try {
       await togglePlugin(plugin.id, nextEnabled);
       onToast(`${plugin.name} 已${nextEnabled ? '启用' : '停用'}`, 'ok');
-      await loadCatalog(true);
+      void loadCatalog(true);
       onSnapshotChanged();
     } catch (err) {
+      if (prevCatalog) setCatalog(prevCatalog);
       onToast(`操作失败：${(err as Error).message}`, 'err');
     } finally {
       setTogglingId(null);
@@ -228,6 +286,64 @@ export function PluginsView({
     } finally {
       setTestingId(null);
     }
+  };
+
+  const handleBatchHealthCheck = async () => {
+    const enabledPlugins = items.filter((i) => i.enabled);
+    if (enabledPlugins.length === 0) {
+      onToast('当前没有已启用的插件可供巡检', 'info');
+      return;
+    }
+    setBatchProgress({ done: 0, total: enabledPlugins.length });
+    let passed = 0;
+    try {
+      await Promise.all(
+        enabledPlugins.map(async (plugin) => {
+          try {
+            const res = await testPlugin(plugin.id);
+            if (res.ok) passed += 1;
+            setTestResults((prev) => ({ ...prev, [plugin.id]: res }));
+          } catch {
+            // Leave individual failure silent in batch summary
+          } finally {
+            setBatchProgress((curr) =>
+              curr ? { ...curr, done: Math.min(curr.total, curr.done + 1) } : null,
+            );
+          }
+        }),
+      );
+      onToast(
+        `批量协议巡检完成：${passed}/${enabledPlugins.length} 项握手通过`,
+        passed === enabledPlugins.length ? 'ok' : 'info',
+      );
+    } finally {
+      setBatchProgress(null);
+    }
+  };
+
+  const handleExportManifest = async () => {
+    const manifest = buildPluginsExportPayload(items);
+    const json = JSON.stringify(manifest, null, 2);
+    const copied = await copyToClipboard(json);
+    try {
+      const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ops-console-plugins-${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      // Clipboard fallback already executed
+    }
+    onToast(
+      copied
+        ? `已导出脱敏插件清单（${manifest.count} 项）并复制到剪贴板`
+        : `已导出脱敏插件清单 JSON（${manifest.count} 项）`,
+      'ok',
+    );
   };
 
   const openConfigDrawer = (plugin: PluginCatalogItem) => {
@@ -361,21 +477,35 @@ export function PluginsView({
   const distinctCategories = new Set(items.filter((i) => i.enabled).map((i) => i.category)).size;
 
   return (
-    <div className="space-y-8" data-testid="plugins-view">
-      {/* Header */}
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">
-            插件与协议接入
-          </h1>
-          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed text-pretty">
-            按官方协议规范模块化管理 MCP Server、A2A Agent、OpenAI 网关、记忆引擎与自托管服务，支持热启停与即时握手验证。
-          </p>
-        </div>
-        <div className="flex items-center gap-2 shrink-0">
+    <ModuleFrame
+      testId="plugins-view"
+      title="插件与协议接入"
+      description="按官方协议规范模块化管理 MCP Server、A2A Agent、OpenAI 网关、记忆引擎与自托管服务，支持热启停与即时握手验证。"
+      actions={
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
           <Button
             variant="secondary"
-            size="md"
+            size="sm"
+            disabled={batchProgress !== null || summary.enabled === 0}
+            onClick={() => void handleBatchHealthCheck()}
+            data-testid="plugins-batch-check-btn"
+          >
+            <Activity className={cn('size-4 text-[var(--accent)]', batchProgress && 'animate-pulse')} strokeWidth={1.75} />
+            {batchProgress ? `巡检中 ${batchProgress.done}/${batchProgress.total}` : '批量巡检'}
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={items.length === 0}
+            onClick={() => void handleExportManifest()}
+            data-testid="plugins-export-btn"
+          >
+            <Download className="size-4 text-[var(--ink-muted)]" strokeWidth={1.75} />
+            导出清单
+          </Button>
+          <Button
+            variant="secondary"
+            size="sm"
             disabled={refreshing}
             onClick={() => void loadCatalog(true)}
           >
@@ -384,7 +514,7 @@ export function PluginsView({
           </Button>
           <Button
             variant="primary"
-            size="md"
+            size="sm"
             disabled={readOnly}
             onClick={() => setAddOpen(true)}
             data-testid="add-custom-plugin-btn"
@@ -393,7 +523,8 @@ export function PluginsView({
             接入自定义服务
           </Button>
         </div>
-      </div>
+      }
+    >
 
       {/* Asymmetric KPI Strip */}
       {loading && !catalog ? (
@@ -438,15 +569,23 @@ export function PluginsView({
 
       {/* Filter & Search Bar */}
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="overflow-x-auto max-w-full">
+        <div className="flex flex-wrap items-center gap-2.5 max-w-full">
+          <div className="overflow-x-auto max-w-full">
+            <SegmentedFilter
+              value={category}
+              onChange={setCategory}
+              options={CATEGORY_OPTIONS}
+              ariaLabel="按协议分类筛选插件"
+            />
+          </div>
           <SegmentedFilter
-            value={category}
-            onChange={setCategory}
-            options={CATEGORY_OPTIONS}
-            ariaLabel="按协议分类筛选插件"
+            value={statusFilter}
+            onChange={setStatusFilter}
+            options={STATUS_FILTER_OPTIONS}
+            ariaLabel="按运行状态筛选插件"
           />
         </div>
-        <div className="relative w-full sm:w-[280px]">
+        <div className="relative w-full sm:w-[260px]">
           <Search
             className="size-4 text-[var(--ink-subtle)] absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
             strokeWidth={1.75}
@@ -487,15 +626,25 @@ export function PluginsView({
             />
           ))}
         </div>
+      ) : loadError && items.length === 0 ? (
+        <Panel>
+          <ErrorState
+            title="插件目录加载失败"
+            message={loadError}
+            onRetry={() => void loadCatalog(true)}
+            retrying={refreshing}
+          />
+        </Panel>
       ) : filteredItems.length === 0 ? (
         <Panel>
           <EmptyState
             title="未找到匹配的插件"
-            message="尝试切换协议分类，或点击右上角「接入自定义服务」添加自己的 MCP、Agent 或 HTTP 端点。"
+            message="尝试切换协议分类或运行状态，或点击右上角「接入自定义服务」添加自己的 MCP、Agent 或 HTTP 端点。"
             action={{
               label: '重置筛选',
               onClick: () => {
                 setCategory('all');
+                setStatusFilter('all');
                 setQuery('');
               },
             }}
@@ -558,8 +707,8 @@ export function PluginsView({
                     {plugin.description}
                   </p>
 
-                  {/* Live Metric Summary + Official Protocol Box */}
-                  <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-subtle)]/50 p-3.5 space-y-2">
+                  {/* Live Metric Summary + Official Protocol — clean hairline dividers, zero nested box */}
+                  <div className="pt-3.5 border-t border-[var(--border-subtle)] space-y-2">
                     <div className="flex items-baseline justify-between gap-3 text-[12.5px]">
                       <span className="text-[var(--ink-subtle)] shrink-0">实时状态</span>
                       <span
@@ -570,7 +719,7 @@ export function PluginsView({
                         {plugin.enabled && plugin.latencyMs != null ? ` · ${plugin.latencyMs}ms` : ''}
                       </span>
                     </div>
-                    <div className="flex items-baseline justify-between gap-3 text-[12px] pt-2 border-t border-[var(--border-subtle)]">
+                    <div className="flex items-baseline justify-between gap-3 text-[12px]">
                       <span className="text-[var(--ink-subtle)] shrink-0">官方协议</span>
                       <span
                         className="font-mono text-[var(--ink-muted)] truncate text-right"
@@ -592,15 +741,15 @@ export function PluginsView({
                     )}
                   </div>
 
-                  {/* Inline Protocol Handshake Test Trace */}
+                  {/* Inline Protocol Handshake Test Trace — borderless semantic surface tint */}
                   {testRes && (
                     <div
                       data-testid={`plugin-test-result-${plugin.id}`}
                       className={cn(
-                        'rounded-xl border p-3 text-[12px] space-y-1.5',
+                        'rounded-lg px-3.5 py-2.5 text-[12px] space-y-1.5',
                         testRes.ok
-                          ? 'border-[var(--ok)]/25 bg-[var(--ok)]/5'
-                          : 'border-[var(--err)]/25 bg-[var(--err)]/5',
+                          ? 'bg-[var(--ok)]/[0.07]'
+                          : 'bg-[var(--err)]/[0.07]',
                       )}
                     >
                       <div className="flex items-center justify-between gap-2">
@@ -702,22 +851,23 @@ export function PluginsView({
         </div>
       )}
 
-      {/* Plugin CLI & External SDK Quick Guide */}
+      {/* Plugin CLI & External SDK Quick Guide — hairline divided columns, zero nested boxes */}
       <Panel
         title="通过 CLI 或独立目录扩展插件"
         description={`将自定义插件放入 ${catalog?.pluginsDir || './plugins'}/<plugin-id>/index.mjs 即可自动发现加载，遵循统一 definePlugin SDK 规范。`}
+        bodyClassName="p-0"
       >
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-[var(--border-subtle)]">
           {CLI_SNIPPETS.map((snippet) => (
             <div
               key={snippet.cmd}
-              className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-subtle)]/50 p-3.5 flex flex-col justify-between gap-2.5"
+              className="px-5 py-4 flex flex-col justify-between gap-2.5 min-w-0 hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out"
             >
               <div className="flex items-center gap-1.5 text-[12px] text-[var(--ink-muted)]">
-                <Terminal className="size-3.5 text-[var(--ink-subtle)]" strokeWidth={1.75} />
-                <span>{snippet.label}</span>
+                <Terminal className="size-3.5 text-[var(--ink-subtle)] shrink-0" strokeWidth={1.75} />
+                <span className="truncate">{snippet.label}</span>
               </div>
-              <div className="flex items-center justify-between gap-2 rounded-lg bg-[var(--bg)] border border-[var(--border-subtle)] px-2.5 py-2">
+              <div className="flex items-center justify-between gap-2 rounded-lg bg-[var(--surface-subtle)]/75 px-2.5 py-2">
                 <code className="font-mono text-[11.5px] text-[var(--ink)] truncate" title={snippet.cmd}>
                   {snippet.cmd}
                 </code>
@@ -726,7 +876,7 @@ export function PluginsView({
                   onClick={() => void handleCopyCmd(snippet.cmd)}
                   aria-label={`复制命令：${snippet.cmd}`}
                   className={cn(
-                    'h-6 w-6 inline-flex items-center justify-center rounded text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] shrink-0 cursor-pointer',
+                    'h-6 w-6 inline-flex items-center justify-center rounded text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors duration-150 shrink-0 cursor-pointer',
                     FOCUS_RING,
                   )}
                 >
@@ -779,7 +929,7 @@ export function PluginsView({
 
                 <div data-vaul-no-drag className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
                   {editingPlugin.officialSpec?.auth && (
-                    <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-subtle)]/60 px-3.5 py-2.5 text-[12px] text-[var(--ink-muted)]">
+                    <div className="rounded-lg bg-[var(--surface-subtle)]/75 px-3.5 py-2.5 text-[12px] text-[var(--ink-muted)] leading-relaxed">
                       <span className="font-medium text-[var(--ink)]">官方鉴权说明：</span>
                       {editingPlugin.officialSpec.auth}
                     </div>
@@ -1050,6 +1200,6 @@ export function PluginsView({
           </Drawer.Content>
         </Drawer.Portal>
       </Drawer.Root>
-    </div>
+    </ModuleFrame>
   );
 }

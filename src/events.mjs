@@ -99,6 +99,7 @@ export class ControlPlaneEventBus {
     this.emitter.on('event', onEvent);
     req.on('close', cleanup);
     res.on('close', cleanup);
+    res.on('error', cleanup);
 
     sendFrame('connected', {
       type: 'connected',

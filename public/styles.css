@@ -1226,6 +1226,10 @@
     margin-block: calc(var(--spacing) * 1.5);
   }
 
+  .my-4 {
+    margin-block: calc(var(--spacing) * 4);
+  }
+
   .mt-0\.5 {
     margin-top: calc(var(--spacing) * .5);
   }
@@ -1340,6 +1344,10 @@
     display: inline-flex;
   }
 
+  .table {
+    display: table;
+  }
+
   .size-3 {
     width: calc(var(--spacing) * 3);
     height: calc(var(--spacing) * 3);
@@ -1369,6 +1377,10 @@
 
   .h-3 {
     height: calc(var(--spacing) * 3);
+  }
+
+  .h-3\.5 {
+    height: calc(var(--spacing) * 3.5);
   }
 
   .h-4 {
@@ -1423,6 +1435,10 @@
     height: 248px;
   }
 
+  .h-\[320px\] {
+    height: 320px;
+  }
+
   .h-\[340px\] {
     height: 340px;
   }
@@ -1431,12 +1447,16 @@
     height: 400px;
   }
 
+  .h-\[420px\] {
+    height: 420px;
+  }
+
   .h-\[460px\] {
     height: 460px;
   }
 
-  .h-\[540px\] {
-    height: 540px;
+  .h-\[520px\] {
+    height: 520px;
   }
 
   .h-\[560px\] {
@@ -1501,6 +1521,18 @@
 
   .w-12 {
     width: calc(var(--spacing) * 12);
+  }
+
+  .w-20 {
+    width: calc(var(--spacing) * 20);
+  }
+
+  .w-24 {
+    width: calc(var(--spacing) * 24);
+  }
+
+  .w-28 {
+    width: calc(var(--spacing) * 28);
   }
 
   .w-36 {
@@ -2103,7 +2135,17 @@
     background-color: var(--accent-soft);
   }
 
-  .bg-\[var\(--bg\)\], .bg-\[var\(--bg\)\]\/60 {
+  .bg-\[var\(--bg\)\], .bg-\[var\(--bg\)\]\/50 {
+    background-color: var(--bg);
+  }
+
+  @supports (color: color-mix(in lab, red, red)) {
+    .bg-\[var\(--bg\)\]\/50 {
+      background-color: color-mix(in oklab, var(--bg) 50%, transparent);
+    }
+  }
+
+  .bg-\[var\(--bg\)\]\/60 {
     background-color: var(--bg);
   }
 
@@ -2413,6 +2455,10 @@
 
   .py-6 {
     padding-block: calc(var(--spacing) * 6);
+  }
+
+  .py-8 {
+    padding-block: calc(var(--spacing) * 8);
   }
 
   .py-10 {

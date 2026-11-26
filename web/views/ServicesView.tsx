@@ -1,5 +1,14 @@
 import React from 'react';
-import { FileText, Search } from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  ChevronDown,
+  ChevronRight,
+  FileText,
+  RotateCw,
+  Search,
+} from 'lucide-react';
 import type { ServiceItem, SnapshotResponse } from '../types';
 import { executeServiceAction, issueConfirmToken } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
@@ -19,6 +28,7 @@ import {
   StatusIndicator,
   type ConfirmModalState,
 } from '../components/ui';
+import { ModuleFrame } from '../modules/ModuleFrame';
 
 const LAYER_FILTERS = [
   { value: 'all', label: '全部层级' },
@@ -29,12 +39,21 @@ const LAYER_FILTERS = [
 ] as const;
 
 type LayerFilter = (typeof LAYER_FILTERS)[number]['value'];
+type SortField = 'status' | 'name' | 'latency' | 'memory';
+type SortDir = 'asc' | 'desc';
 
 const ACTION_LABELS: Record<string, string> = {
   start: '启动',
   stop: '停止',
   restart: '重启',
   reload: '重载配置',
+};
+
+const STATUS_SEVERITY_RANK: Record<string, number> = {
+  err: 0,
+  warn: 1,
+  muted: 2,
+  ok: 3,
 };
 
 export function ServicesView({
@@ -48,19 +67,61 @@ export function ServicesView({
   snapshot: SnapshotResponse | null;
   readOnly: boolean;
   onRefresh: () => Promise<void>;
-  onOpenLogs: (unit: string) => void;
+  onOpenLogs: (unit: string, level?: 'all' | 'error' | 'warn') => void;
   onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
   onConfirm: (modal: ConfirmModalState) => void;
 }) {
   const [layer, setLayer] = React.useState<LayerFilter>('all');
   const [statusFilter, setStatusFilter] = React.useState('all');
   const [query, setQuery] = React.useState('');
+  const [sortField, setSortField] = React.useState<SortField>('status');
+  const [sortDir, setSortDir] = React.useState<SortDir>('asc');
+  const [expandedId, setExpandedId] = React.useState<string | null>(null);
 
   const allServices = snapshot?.services?.items || [];
-  const filtered = React.useMemo(
-    () => filterServices(allServices, { layer, status: statusFilter, query }),
-    [allServices, layer, statusFilter, query],
-  );
+  const filtered = React.useMemo(() => {
+    const base = filterServices(allServices, { layer, status: statusFilter, query });
+    const dir = sortDir === 'asc' ? 1 : -1;
+    return [...base].sort((a, b) => {
+      if (sortField === 'status') {
+        const ra = STATUS_SEVERITY_RANK[statusTone(a.status)] ?? 4;
+        const rb = STATUS_SEVERITY_RANK[statusTone(b.status)] ?? 4;
+        if (ra !== rb) return (ra - rb) * dir;
+        return (a.name || a.id).localeCompare(b.name || b.id);
+      }
+      if (sortField === 'latency') {
+        const la = a.probe?.latencyMs ?? -1;
+        const lb = b.probe?.latencyMs ?? -1;
+        return (la - lb) * dir;
+      }
+      if (sortField === 'memory') {
+        const ma = a.memoryBytes ?? a.memoryCurrent ?? -1;
+        const mb = b.memoryBytes ?? b.memoryCurrent ?? -1;
+        return (ma - mb) * dir;
+      }
+      return (a.name || a.id).localeCompare(b.name || b.id) * dir;
+    });
+  }, [allServices, layer, statusFilter, query, sortField, sortDir]);
+
+  const toggleSort = (field: SortField) => {
+    if (sortField === field) {
+      setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortDir(field === 'latency' || field === 'memory' ? 'desc' : 'asc');
+    }
+  };
+
+  const renderSortIcon = (field: SortField) => {
+    if (sortField !== field) {
+      return <ArrowUpDown className="size-3 text-[var(--ink-subtle)]/70" strokeWidth={1.75} />;
+    }
+    return sortDir === 'asc' ? (
+      <ArrowUp className="size-3 text-[var(--accent)]" strokeWidth={2} />
+    ) : (
+      <ArrowDown className="size-3 text-[var(--accent)]" strokeWidth={2} />
+    );
+  };
 
   const hasActiveFilters = layer !== 'all' || statusFilter !== 'all' || query.trim().length > 0;
   const resetFilters = () => {
@@ -70,6 +131,10 @@ export function ServicesView({
   };
 
   const healthyCount = allServices.filter((s) => statusTone(s.status) === 'ok').length;
+  const issueCount = allServices.filter((s) => {
+    const t = statusTone(s.status);
+    return t === 'err' || t === 'warn';
+  }).length;
 
   const triggerAction = (svc: ServiceItem, action: string) => {
     if (!action) return;
@@ -108,21 +173,11 @@ export function ServicesView({
   };
 
   return (
-    <div className="space-y-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">
-            受管服务
-          </h1>
-          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed text-pretty">
-            systemd 单元状态、监听端口、HTTP 探针延迟与白名单生命周期控制。
-          </p>
-        </div>
-        <div className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap">
-          健康 {healthyCount}/{allServices.length} · 当前显示 {filtered.length} 项
-        </div>
-      </div>
-
+    <ModuleFrame
+      title="受管服务"
+      description="systemd 单元状态、监听端口、HTTP 探针延迟与白名单生命周期控制，支持多维排序与单元详情展开。"
+      meta={`健康 ${healthyCount}/${allServices.length} · 异常 ${issueCount} · 显示 ${filtered.length} 项`}
+    >
       <Panel bodyClassName="p-0">
         <div className="px-5 sm:px-6 py-4 border-b border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3">
           <SegmentedFilter
@@ -182,107 +237,234 @@ export function ServicesView({
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
-                  <th className="py-2.5 pl-5 sm:pl-6 pr-2">服务与单元</th>
+                  <th className="py-2.5 pl-5 sm:pl-6 pr-2">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort('name')}
+                      className={cn(
+                        'inline-flex items-center gap-1 hover:text-[var(--ink)] transition-colors cursor-pointer select-none',
+                        FOCUS_RING,
+                      )}
+                    >
+                      服务与单元
+                      {renderSortIcon('name')}
+                    </button>
+                  </th>
                   <th className="py-2.5 px-2.5 whitespace-nowrap">层级</th>
-                  <th className="py-2.5 px-2.5 whitespace-nowrap">状态</th>
+                  <th className="py-2.5 px-2.5 whitespace-nowrap">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort('status')}
+                      className={cn(
+                        'inline-flex items-center gap-1 hover:text-[var(--ink)] transition-colors cursor-pointer select-none',
+                        FOCUS_RING,
+                      )}
+                    >
+                      状态
+                      {renderSortIcon('status')}
+                    </button>
+                  </th>
                   <th className="py-2.5 px-2.5 whitespace-nowrap">监听端口</th>
-                  <th className="py-2.5 px-2.5 whitespace-nowrap">探针延迟</th>
-                  <th className="py-2.5 px-2.5 text-right whitespace-nowrap">内存</th>
+                  <th className="py-2.5 px-2.5 whitespace-nowrap">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort('latency')}
+                      className={cn(
+                        'inline-flex items-center gap-1 hover:text-[var(--ink)] transition-colors cursor-pointer select-none',
+                        FOCUS_RING,
+                      )}
+                    >
+                      探针延迟
+                      {renderSortIcon('latency')}
+                    </button>
+                  </th>
+                  <th className="py-2.5 px-2.5 text-right whitespace-nowrap">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort('memory')}
+                      className={cn(
+                        'inline-flex items-center gap-1 ml-auto hover:text-[var(--ink)] transition-colors cursor-pointer select-none',
+                        FOCUS_RING,
+                      )}
+                    >
+                      内存
+                      {renderSortIcon('memory')}
+                    </button>
+                  </th>
                   <th className="py-2.5 pl-2 pr-5 sm:pr-6 text-right whitespace-nowrap">控制与日志</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
                 {filtered.map((svc) => {
                   const actions = svc.allowedActions || svc.actions || ['restart', 'start', 'stop'];
+                  const secondaryActions = actions.filter((a) => a !== 'restart');
+                  const canRestart = actions.includes('restart');
                   const memVal = svc.memoryBytes ?? svc.memoryCurrent;
                   const portText = (svc.ports || []).slice(0, 2).join(', ') || '-';
+                  const isExpanded = expandedId === svc.id;
                   return (
-                    <tr
-                      key={svc.id}
-                      className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out"
-                    >
-                      <td className="py-3 pl-5 sm:pl-6 pr-2 max-w-[240px]">
-                        <div className="flex items-center gap-2 min-w-0">
-                          <span className="font-medium text-[var(--ink)] truncate" title={svc.name || svc.id}>
-                            {svc.name || svc.id}
-                          </span>
-                          {(svc.risk === 'critical' || svc.critical) && (
-                            <span className="font-mono text-[11px] font-medium text-[var(--warn)] shrink-0 select-none">
-                              关键
-                            </span>
-                          )}
-                        </div>
-                        <div
-                          className="mt-0.5 font-mono text-[11.5px] text-[var(--ink-subtle)] truncate tabular-nums"
-                          title={`${svc.unit} · ${svc.scope || 'user'}`}
+                    <React.Fragment key={svc.id}>
+                      <tr className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out">
+                        <td className="py-3 pl-5 sm:pl-6 pr-2 max-w-[250px]">
+                          <div className="flex items-start gap-1.5 min-w-0">
+                            <button
+                              type="button"
+                              onClick={() => setExpandedId(isExpanded ? null : svc.id)}
+                              aria-expanded={isExpanded}
+                              aria-label={`${isExpanded ? '收起' : '展开'} ${svc.name || svc.id} 详情`}
+                              className={cn(
+                                'mt-0.5 p-0.5 rounded text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-subtle)] transition-colors cursor-pointer shrink-0',
+                                FOCUS_RING,
+                              )}
+                            >
+                              {isExpanded ? (
+                                <ChevronDown className="size-3.5" strokeWidth={1.75} />
+                              ) : (
+                                <ChevronRight className="size-3.5" strokeWidth={1.75} />
+                              )}
+                            </button>
+                            <div className="min-w-0">
+                              <div className="flex items-center gap-2 min-w-0">
+                                <span className="font-medium text-[var(--ink)] truncate" title={svc.name || svc.id}>
+                                  {svc.name || svc.id}
+                                </span>
+                                {(svc.risk === 'critical' || svc.critical) && (
+                                  <span className="font-mono text-[11px] font-medium text-[var(--warn)] shrink-0 select-none">
+                                    关键
+                                  </span>
+                                )}
+                              </div>
+                              <div
+                                className="mt-0.5 font-mono text-[11.5px] text-[var(--ink-subtle)] truncate tabular-nums"
+                                title={`${svc.unit} · ${svc.scope || 'user'}`}
+                              >
+                                {svc.unit} · {svc.scope || 'user'}
+                                {svc.pid ? ` · PID ${svc.pid}` : ''}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="py-3 px-2.5 text-[12.5px] text-[var(--ink-muted)] whitespace-nowrap">
+                          {layerLabel(svc.layer)}
+                        </td>
+                        <td className="py-3 px-2.5 whitespace-nowrap">
+                          <StatusIndicator status={svc.status} />
+                        </td>
+                        <td
+                          className="py-3 px-2.5 font-mono text-[12px] text-[var(--ink-muted)] max-w-[155px] truncate whitespace-nowrap tabular-nums"
+                          title={portText}
                         >
-                          {svc.unit} · {svc.scope || 'user'}
-                          {svc.pid ? ` · PID ${svc.pid}` : ''}
-                        </div>
-                      </td>
-                      <td className="py-3 px-2.5 text-[12.5px] text-[var(--ink-muted)] whitespace-nowrap">
-                        {layerLabel(svc.layer)}
-                      </td>
-                      <td className="py-3 px-2.5 whitespace-nowrap">
-                        <StatusIndicator status={svc.status} />
-                      </td>
-                      <td
-                        className="py-3 px-2.5 font-mono text-[12px] text-[var(--ink-muted)] max-w-[155px] truncate whitespace-nowrap tabular-nums"
-                        title={portText}
-                      >
-                        {portText}
-                      </td>
-                      <td className="py-3 px-2.5">
-                        {svc.probe ? (
-                          <LatencyMeter
-                            latencyMs={svc.probe.latencyMs}
-                            statusCode={svc.probe.statusCode}
-                            ok={svc.probe.ok !== false}
-                            error={svc.probe.error}
-                          />
-                        ) : (
-                          <span className="font-mono text-[12px] text-[var(--ink-subtle)]">-</span>
-                        )}
-                      </td>
-                      <td className="py-3 px-2.5 text-right font-mono text-[12px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
-                        {formatBytes(memVal)}
-                      </td>
-                      <td className="py-3 pl-2 pr-5 sm:pr-6 text-right whitespace-nowrap">
-                        <div className="inline-flex items-center justify-end gap-1.5">
-                          <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => onOpenLogs(svc.unit)}
-                          >
-                            <FileText className="size-4 text-[var(--ink-muted)]" strokeWidth={1.75} />
-                            日志
-                          </Button>
-                          <select
-                            defaultValue=""
-                            disabled={readOnly}
-                            aria-label={`操作服务 ${svc.name || svc.id}`}
-                            onChange={(e) => {
-                              const val = e.target.value;
-                              e.target.value = '';
-                              if (val) triggerAction(svc, val);
-                            }}
-                            className={cn(
-                              'ui-select h-8 pl-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg)] text-[12px] text-[var(--ink)] transition-colors duration-150 ease-out hover:border-[var(--border-strong)] focus:border-[var(--accent)] disabled:opacity-45 cursor-pointer',
-                              FOCUS_RING,
+                          {portText}
+                        </td>
+                        <td className="py-3 px-2.5">
+                          {svc.probe ? (
+                            <LatencyMeter
+                              latencyMs={svc.probe.latencyMs}
+                              statusCode={svc.probe.statusCode}
+                              ok={svc.probe.ok !== false}
+                              error={svc.probe.error}
+                            />
+                          ) : (
+                            <span className="font-mono text-[12px] text-[var(--ink-subtle)]">-</span>
+                          )}
+                        </td>
+                        <td className="py-3 px-2.5 text-right font-mono text-[12px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
+                          {formatBytes(memVal)}
+                        </td>
+                        <td className="py-3 pl-2 pr-5 sm:pr-6 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center justify-end gap-1.5">
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => onOpenLogs(svc.unit)}
+                            >
+                              <FileText className="size-3.5 text-[var(--ink-muted)]" strokeWidth={1.75} />
+                              日志
+                            </Button>
+                            {canRestart && (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                disabled={readOnly}
+                                onClick={() => triggerAction(svc, 'restart')}
+                                title={`重启 ${svc.name || svc.id}`}
+                              >
+                                <RotateCw className="size-3.5 text-[var(--ink-muted)]" strokeWidth={1.75} />
+                                重启
+                              </Button>
                             )}
-                          >
-                            <option value="" disabled>
-                              操作
-                            </option>
-                            {actions.map((act) => (
-                              <option key={act} value={act}>
-                                {ACTION_LABELS[act] || act}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
-                      </td>
-                    </tr>
+                            {secondaryActions.length > 0 && (
+                              <select
+                                defaultValue=""
+                                disabled={readOnly}
+                                aria-label={`更多操作 ${svc.name || svc.id}`}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  e.target.value = '';
+                                  if (val) triggerAction(svc, val);
+                                }}
+                                className={cn(
+                                  'ui-select h-8 pl-2.5 rounded-lg border border-[var(--border)] bg-[var(--bg)] text-[12px] text-[var(--ink)] transition-colors duration-150 ease-out hover:border-[var(--border-strong)] focus:border-[var(--accent)] disabled:opacity-45 cursor-pointer',
+                                  FOCUS_RING,
+                                )}
+                              >
+                                <option value="" disabled>
+                                  更多
+                                </option>
+                                {secondaryActions.map((act) => (
+                                  <option key={act} value={act}>
+                                    {ACTION_LABELS[act] || act}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                      {isExpanded && (
+                        <tr className="bg-[var(--surface-subtle)]/55">
+                          <td colSpan={7} className="px-5 sm:px-6 py-3.5">
+                            <div className="flex flex-wrap items-start justify-between gap-4">
+                              <dl className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-2.5 text-[12px] flex-1 min-w-[260px]">
+                                <div>
+                                  <dt className="text-[var(--ink-subtle)]">Systemd 状态</dt>
+                                  <dd className="mt-0.5 font-mono text-[var(--ink)] tabular-nums">
+                                    {[svc.activeState, svc.subState].filter(Boolean).join(' / ') || svc.status || '-'}
+                                  </dd>
+                                </div>
+                                <div>
+                                  <dt className="text-[var(--ink-subtle)]">角色职责</dt>
+                                  <dd className="mt-0.5 text-[var(--ink-muted)]">
+                                    {svc.role || layerLabel(svc.layer)}
+                                  </dd>
+                                </div>
+                                <div>
+                                  <dt className="text-[var(--ink-subtle)]">全部监听端口</dt>
+                                  <dd className="mt-0.5 font-mono text-[var(--ink)] tabular-nums">
+                                    {svc.ports && svc.ports.length > 0 ? svc.ports.join(', ') : '-'}
+                                  </dd>
+                                </div>
+                                <div>
+                                  <dt className="text-[var(--ink-subtle)]">上游依赖</dt>
+                                  <dd className="mt-0.5 font-mono text-[var(--ink-muted)]">
+                                    {svc.dependsOn && svc.dependsOn.length > 0 ? svc.dependsOn.join(' · ') : '无显式依赖'}
+                                  </dd>
+                                </div>
+                              </dl>
+                              <div className="flex items-center gap-2 shrink-0">
+                                <Button
+                                  variant="secondary"
+                                  size="sm"
+                                  onClick={() => onOpenLogs(svc.unit, 'error')}
+                                >
+                                  查看 Error 日志
+                                </Button>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
                   );
                 })}
               </tbody>
@@ -315,6 +497,6 @@ export function ServicesView({
           </div>
         )}
       </Panel>
-    </div>
+    </ModuleFrame>
   );
 }

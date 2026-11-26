@@ -156,9 +156,10 @@ export async function resolveSafePath(baseDir, requestedRelPath) {
 }
 
 export class SlidingWindowRateLimiter {
-  constructor({ windowMs = 60_000, maxRequests = 240 } = {}) {
+  constructor({ windowMs = 60_000, maxRequests = 240, maxBuckets = 4096 } = {}) {
     this.windowMs = windowMs;
     this.maxRequests = maxRequests;
+    this.maxBuckets = Math.max(64, Number(maxBuckets) || 4096);
     this.buckets = new Map();
     this.lastSweep = Date.now();
   }
@@ -168,28 +169,55 @@ export class SlidingWindowRateLimiter {
     if (now - this.lastSweep > this.windowMs) {
       this._sweep(now);
     }
-    let list = this.buckets.get(key);
-    if (!list) {
-      list = [];
-      this.buckets.set(key, list);
+    let bucket = this.buckets.get(key);
+    if (!bucket) {
+      if (this.buckets.size >= this.maxBuckets) {
+        const oldestKey = this.buckets.keys().next().value;
+        if (oldestKey !== undefined) this.buckets.delete(oldestKey);
+      }
+      bucket = { list: [], head: 0 };
+      this.buckets.set(key, bucket);
+    } else {
+      // Refresh LRU position so active clients aren't evicted before idle IPs
+      this.buckets.delete(key);
+      this.buckets.set(key, bucket);
     }
+    const { list } = bucket;
+    let { head } = bucket;
     const cutoff = now - this.windowMs;
-    while (list.length > 0 && list[0] <= cutoff) {
-      list.shift();
+    while (head < list.length && list[head] <= cutoff) {
+      head += 1;
     }
-    if (list.length >= this.maxRequests) {
-      const retryAfterSec = Math.max(1, Math.ceil((list[0] + this.windowMs - now) / 1000));
+    if (head > 64 && head * 2 >= list.length) {
+      bucket.list = list.slice(head);
+      bucket.head = 0;
+    } else {
+      bucket.head = head;
+    }
+    const activeLen = bucket.list.length - bucket.head;
+    if (activeLen >= this.maxRequests) {
+      const oldestTs = bucket.list[bucket.head];
+      const retryAfterSec = Math.max(1, Math.ceil((oldestTs + this.windowMs - now) / 1000));
       return { allowed: false, remaining: 0, retryAfterSec };
     }
-    list.push(now);
-    return { allowed: true, remaining: this.maxRequests - list.length, retryAfterSec: 0 };
+    bucket.list.push(now);
+    return { allowed: true, remaining: this.maxRequests - (activeLen + 1), retryAfterSec: 0 };
   }
 
   _sweep(now) {
     const cutoff = now - this.windowMs;
-    for (const [key, list] of this.buckets.entries()) {
-      while (list.length > 0 && list[0] <= cutoff) list.shift();
-      if (list.length === 0) this.buckets.delete(key);
+    for (const [key, bucket] of this.buckets.entries()) {
+      const { list } = bucket;
+      let { head } = bucket;
+      while (head < list.length && list[head] <= cutoff) head += 1;
+      if (head >= list.length) {
+        this.buckets.delete(key);
+      } else if (head > 64 && head * 2 >= list.length) {
+        bucket.list = list.slice(head);
+        bucket.head = 0;
+      } else {
+        bucket.head = head;
+      }
     }
     this.lastSweep = now;
   }

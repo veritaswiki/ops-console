@@ -1,8 +1,8 @@
 import React from 'react';
-import { FlaskConical, Search, Stethoscope } from 'lucide-react';
+import { Copy, FlaskConical, Search, Stethoscope } from 'lucide-react';
 import type { MemoryCompareResponse, MemorySearchResultItem, SnapshotResponse } from '../types';
-import { compareMemoryRetrieval, runMemoryDoctor, searchMemory } from '../api';
-import { cn } from '../lib/cn';
+import { compareMemoryRetrieval, copyToClipboard, runMemoryDoctor, searchMemory } from '../api';
+import { cn, FOCUS_RING } from '../lib/cn';
 import { formatCompactNumber, formatInteger } from '../utils/format';
 import {
   Button,
@@ -11,8 +11,19 @@ import {
   Panel,
   SegmentedFilter,
   StatusIndicator,
+  WidgetSkeleton,
 } from '../components/ui';
-import { ArchitectureGraph } from '../components/ArchitectureGraph';
+import { ModuleFrame } from '../modules/ModuleFrame';
+
+const COMPARE_PRESETS = [
+  'gateway circuit breaker',
+  'tailnet binding policy',
+  'structured logging',
+] as const;
+
+const ArchitectureGraph = React.lazy(() =>
+  import('../components/ArchitectureGraph').then((m) => ({ default: m.ArchitectureGraph })),
+);
 
 const PROVIDERS = [
   { value: 'all', label: '联合检索' },
@@ -60,10 +71,10 @@ export function MemoryView({
     }
   };
 
-  const handleCompare = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const q = compareQuery.trim();
+  const runCompareQuery = async (rawQuery: string) => {
+    const q = rawQuery.trim();
     if (!q) return;
+    setCompareQuery(q);
     setComparing(true);
     try {
       const res = await compareMemoryRetrieval(q);
@@ -73,6 +84,17 @@ export function MemoryView({
     } finally {
       setComparing(false);
     }
+  };
+
+  const handleCompare = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await runCompareQuery(compareQuery);
+  };
+
+  const handleCopyCompareJson = async () => {
+    if (!compareRes) return;
+    const ok = await copyToClipboard(JSON.stringify(compareRes, null, 2));
+    if (ok) onToast('已复制召回评测 JSON 报告', 'ok');
   };
 
   const handleDoctor = async () => {
@@ -97,16 +119,10 @@ export function MemoryView({
   };
 
   return (
-    <div className="space-y-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">
-            记忆与上下文引擎
-          </h1>
-          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed text-pretty">
-            按需启用可选记忆引擎插件（Nowledge Mem、OpenViking、Symbiote、Rerank），通过官方 REST API 与 CLI 采集并进行跨引擎召回质量对照评估。
-          </p>
-        </div>
+    <ModuleFrame
+      title="记忆与上下文引擎"
+      description="按需启用可选记忆引擎插件（Nowledge Mem、OpenViking、Symbiote、Rerank），通过官方 REST API 与 CLI 采集并进行跨引擎召回质量对照评估。"
+      actions={
         <Button
           variant="secondary"
           size="md"
@@ -116,7 +132,8 @@ export function MemoryView({
           <Stethoscope className="size-4 text-[var(--accent)]" strokeWidth={1.75} />
           {doctorBusy ? '诊断中...' : '运行官方自检'}
         </Button>
-      </div>
+      }
+    >
 
       {doctorOutput && (
         <Panel
@@ -138,9 +155,15 @@ export function MemoryView({
         description="并行向 Nowledge Mem 与 OpenViking 发起相同查询，量化重排模型 (Rerank) 带来的排序增益与端到端耗时。"
         actions={
           compareRes ? (
-            <span className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums">
-              nmem {compareRes.timingsMs.nmem}ms · ov {compareRes.timingsMs.openviking}ms · rerank {compareRes.timingsMs.rerank}ms
-            </span>
+            <div className="flex flex-wrap items-center gap-2.5">
+              <span className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums">
+                nmem {compareRes.timingsMs.nmem}ms · ov {compareRes.timingsMs.openviking}ms · rerank {compareRes.timingsMs.rerank}ms
+              </span>
+              <Button variant="secondary" size="sm" onClick={handleCopyCompareJson}>
+                <Copy className="size-3.5" strokeWidth={1.75} />
+                复制 JSON
+              </Button>
+            </div>
           ) : undefined
         }
       >
@@ -170,6 +193,23 @@ export function MemoryView({
             {comparing ? '评测中...' : '运行召回对比'}
           </Button>
         </form>
+        <div className="mt-2.5 flex flex-wrap items-center gap-2 text-[12px]">
+          <span className="text-[var(--ink-subtle)]">快速评测集：</span>
+          {COMPARE_PRESETS.map((preset) => (
+            <button
+              key={preset}
+              type="button"
+              disabled={comparing}
+              onClick={() => void runCompareQuery(preset)}
+              className={cn(
+                'px-2.5 py-1 rounded-md border border-[var(--border)] bg-[var(--surface-subtle)] font-mono text-[11.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:border-[var(--border-strong)] transition-colors cursor-pointer whitespace-nowrap',
+                FOCUS_RING,
+              )}
+            >
+              {preset}
+            </button>
+          ))}
+        </div>
 
         {compareRes && (
           <div className="mt-4 pt-4 border-t border-[var(--border-subtle)] overflow-x-auto" data-testid="memory-compare-results">
@@ -310,7 +350,9 @@ export function MemoryView({
         title="记忆链路与底层索引拓扑"
         description="展示活跃 Agent 到记忆引擎、向量索引、文档库与重排服务的调用关系。"
       >
-        <ArchitectureGraph snapshot={snapshot} mode="memory" />
+        <React.Suspense fallback={<WidgetSkeleton heightClass="h-[400px]" label="正在加载记忆链路拓扑" />}>
+          <ArchitectureGraph snapshot={snapshot} mode="memory" />
+        </React.Suspense>
       </Panel>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
@@ -481,6 +523,6 @@ export function MemoryView({
           )}
         </Panel>
       </div>
-    </div>
+    </ModuleFrame>
   );
 }

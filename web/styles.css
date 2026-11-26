@@ -77,7 +77,7 @@
   color-scheme: dark;
   /* 90/10 Pure Zinc System — Dark */
   --bg: #09090b;
-  --surface: rgba(24, 24, 27, 0.62);
+  --surface: rgba(24, 24, 27, 0.72);
   --surface-elevated: #121215;
   --surface-subtle: #18181b;
   --surface-hover: rgba(255, 255, 255, 0.045);

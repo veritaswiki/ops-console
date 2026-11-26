@@ -26,6 +26,22 @@ export function validateHttpUrl(rawUrl) {
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
       return { ok: false, error: 'URL must use http:// or https:// scheme' };
     }
+    const host = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    const ipv4Parts = host.split('.');
+    const isAlibabaMetadata = ipv4Parts.length === 4
+      && Number(ipv4Parts[0]) === 100
+      && Number(ipv4Parts[1]) === 100
+      && Number(ipv4Parts[2]) === 100
+      && Number(ipv4Parts[3]) === 200;
+    if (
+      host === '169.254.169.254'
+      || host === 'metadata.google.internal'
+      || host === 'metadata.goog'
+      || isAlibabaMetadata
+      || host.startsWith('169.254.')
+    ) {
+      return { ok: false, error: 'Cloud metadata addresses are blocked for security' };
+    }
     return { ok: true, value: str.replace(/\/+$/, '') };
   } catch {
     return { ok: false, error: `Invalid URL: ${str}` };

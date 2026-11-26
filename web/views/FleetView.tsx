@@ -1,6 +1,6 @@
 import React from 'react';
 import { Tabs, TabsIndicator, TabsList, TabsPanel, TabsTab } from '@ui-sdk/react/tabs';
-import { Copy, Check, Send, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Check, Copy, Search, Send, Trash2 } from 'lucide-react';
 import type { FleetNode, ProbeCommandItem, ProbesResponse, SnapshotResponse } from '../types';
 import {
   copyToClipboard,
@@ -11,6 +11,14 @@ import {
   submitMobileCheckin,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import {
+  latencyTierVar,
+  searchFleetNodes,
+  sortFleetNodes,
+  type FleetSortField,
+  type SortDir,
+} from '../lib/module-helpers';
+import { ModuleFrame } from '../modules/ModuleFrame';
 import {
   deviceTypeLabel,
   filterFleetNodes,
@@ -64,6 +72,9 @@ export function FleetView({
 
   const [selectedId, setSelectedId] = React.useState('');
   const [typeFilter, setTypeFilter] = React.useState<DeviceFilter>('all');
+  const [nodeQuery, setNodeQuery] = React.useState('');
+  const [sortField, setSortField] = React.useState<FleetSortField>('status');
+  const [sortDir, setSortDir] = React.useState<SortDir>('asc');
   const [copiedKey, setCopiedKey] = React.useState('');
   const [nodeCommands, setNodeCommands] = React.useState<ProbeCommandItem[]>([]);
   const [cmdBusy, setCmdBusy] = React.useState<string | null>(null);
@@ -108,16 +119,25 @@ export function FleetView({
   const selectedNode: FleetNode | null =
     nodes.find((n) => n.id === selectedId) || nodes[0] || null;
 
+  const cmdAbortRef = React.useRef<AbortController | null>(null);
+
   const loadNodeCommands = React.useCallback(async (nodeId: string) => {
+    cmdAbortRef.current?.abort();
     if (!nodeId) {
       setNodeCommands([]);
       return;
     }
+    const controller = new AbortController();
+    cmdAbortRef.current = controller;
     try {
-      const res = await fetchProbeCommands(nodeId);
-      setNodeCommands(res.items || []);
+      const res = await fetchProbeCommands(nodeId, controller.signal);
+      if (!controller.signal.aborted) {
+        setNodeCommands(res.items || []);
+      }
     } catch {
-      setNodeCommands([]);
+      if (!controller.signal.aborted) {
+        setNodeCommands([]);
+      }
     }
   }, []);
 
@@ -127,6 +147,9 @@ export function FleetView({
     } else {
       setNodeCommands([]);
     }
+    return () => {
+      cmdAbortRef.current?.abort();
+    };
   }, [selectedNode?.id, loadNodeCommands]);
 
   const handleEnqueueCommand = async (command: 'health-check' | 'collect-diag' | 'rotate-heartbeat') => {
@@ -147,10 +170,50 @@ export function FleetView({
     }
   };
 
-  const filteredNodes = React.useMemo(
-    () => filterFleetNodes(nodes, typeFilter),
-    [nodes, typeFilter],
-  );
+  const toggleSort = (field: FleetSortField) => {
+    if (sortField === field) {
+      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortDir(field === 'status' || field === 'name' ? 'asc' : 'desc');
+    }
+  };
+
+  const enrichedNodes = React.useMemo(() => {
+    const linkRttByNode = new Map<string, number>();
+    for (const l of links) {
+      if (l.rttMs == null || !Number.isFinite(l.rttMs)) continue;
+      if (l.to && !linkRttByNode.has(l.to)) linkRttByNode.set(l.to, l.rttMs);
+    }
+    return nodes.map((n) => {
+      if (n.network?.rttMs != null) return n;
+      const fallbackRtt = linkRttByNode.get(n.id);
+      if (fallbackRtt == null) return n;
+      return {
+        ...n,
+        network: {
+          ...n.network,
+          rttMs: fallbackRtt,
+        },
+      };
+    });
+  }, [nodes, links]);
+
+  const filteredNodes = React.useMemo(() => {
+    const byType = filterFleetNodes(enrichedNodes, typeFilter);
+    const bySearch = searchFleetNodes(byType, nodeQuery);
+    return sortFleetNodes(bySearch, sortField, sortDir);
+  }, [enrichedNodes, typeFilter, nodeQuery, sortField, sortDir]);
+
+  const maxRttMs = React.useMemo(() => {
+    let max = 100;
+    for (const n of enrichedNodes) {
+      if (n.network?.rttMs != null && n.network.rttMs > max) {
+        max = n.network.rttMs;
+      }
+    }
+    return max;
+  }, [enrichedNodes]);
 
   const handleCopy = async (key: string, text: string) => {
     const ok = await copyToClipboard(text);
@@ -262,22 +325,15 @@ export function FleetView({
   const probedCount = summary?.probed ?? enrolledList.length;
 
   return (
-    <div className="space-y-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">
-            全球节点与探针
-          </h1>
-          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed text-pretty">
-            融合 Tailscale 组网、只推送探针与移动端签到，实时观测跨地域服务器、笔记本与手机状态。
-          </p>
-        </div>
-        <div className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap">
-          {summary
-            ? `总计 ${totalCount} 台 · 在线 ${onlineCount} · 活跃链路 ${links.filter((l) => l.active).length}`
-            : '等待采集'}
-        </div>
-      </div>
+    <ModuleFrame
+      title="全球节点与探针"
+      description="融合 Tailscale 组网、只推送探针与移动端签到，实时观测跨地域服务器、笔记本与手机状态。"
+      meta={
+        summary
+          ? `总计 ${totalCount} 台 · 在线 ${onlineCount} · 活跃链路 ${links.filter((l) => l.active).length}`
+          : '等待采集'
+      }
+    >
 
       <KpiStrip
         cells={[
@@ -341,7 +397,26 @@ export function FleetView({
                 <div className="min-w-0">
                   <dt className="text-[12px] text-[var(--ink-subtle)]">Tailscale IP</dt>
                   <dd className="mt-0.5 font-mono text-[var(--ink)] tabular-nums truncate">
-                    {selectedNode.tailscaleIp || '-'}
+                    {selectedNode.tailscaleIp ? (
+                      <button
+                        type="button"
+                        onClick={() => void handleCopy(`inspector-ip-${selectedNode.id}`, selectedNode.tailscaleIp!)}
+                        className={cn(
+                          'inline-flex items-center gap-1.5 hover:text-[var(--accent)] transition-colors duration-150 cursor-pointer rounded',
+                          FOCUS_RING,
+                        )}
+                        title="点击复制 Tailscale IP"
+                      >
+                        <span>{selectedNode.tailscaleIp}</span>
+                        {copiedKey === `inspector-ip-${selectedNode.id}` ? (
+                          <Check className="size-3.5 text-[var(--ok)] shrink-0" strokeWidth={1.75} />
+                        ) : (
+                          <Copy className="size-3 text-[var(--ink-subtle)] shrink-0" strokeWidth={1.75} />
+                        )}
+                      </button>
+                    ) : (
+                      '-'
+                    )}
                   </dd>
                 </div>
                 <div className="min-w-0">
@@ -472,39 +547,147 @@ export function FleetView({
       </div>
 
       <Panel
-        title="全量纳管设备清单"
-        description="按设备类型筛选，点击任意行同步聚焦至上方地图与节点检视器。"
+        title="全量纳管设备对比矩阵"
+        description="支持按状态、CPU、内存与 RTT 延迟多维排序对比，点击 IP 一键复制，点击行同步聚焦地图。"
         bodyClassName="p-0"
         actions={
-          <SegmentedFilter
-            value={typeFilter}
-            onChange={setTypeFilter}
-            options={DEVICE_TYPE_FILTERS}
-            ariaLabel="设备类型筛选"
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative w-44 sm:w-52">
+              <Search
+                className="size-3.5 text-[var(--ink-subtle)] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                strokeWidth={1.75}
+              />
+              <input
+                type="search"
+                value={nodeQuery}
+                onChange={(e) => setNodeQuery(e.target.value)}
+                placeholder="搜索节点、地域或 IP..."
+                aria-label="搜索纳管节点"
+                data-testid="fleet-search-input"
+                className={cn('w-full h-8 pl-8 pr-2.5 sm:text-[12.5px]', inputBaseClass)}
+              />
+            </div>
+            <SegmentedFilter
+              value={typeFilter}
+              onChange={setTypeFilter}
+              options={DEVICE_TYPE_FILTERS}
+              ariaLabel="设备类型筛选"
+            />
+          </div>
         }
       >
         {filteredNodes.length === 0 ? (
           <EmptyState
-            title="当前设备分类暂无节点"
-            message="该设备类型下暂无已发现或已注册的节点。"
+            title="当前筛选下暂无节点"
+            message="未找到符合条件的纳管设备，可重置筛选或搜索关键词。"
             action={
-              typeFilter !== 'all'
-                ? { label: '显示全部设备', onClick: () => setTypeFilter('all') }
+              typeFilter !== 'all' || nodeQuery
+                ? {
+                    label: '显示全部设备',
+                    onClick: () => {
+                      setTypeFilter('all');
+                      setNodeQuery('');
+                    },
+                  }
                 : undefined
             }
           />
         ) : (
           <div className="overflow-x-auto">
-            <table className="w-full text-left border-collapse">
+            <table className="w-full text-left border-collapse" data-testid="fleet-comparison-table">
               <thead>
                 <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
-                  <th className="py-2.5 pl-5 sm:pl-6 pr-3">设备名称</th>
+                  <th className="py-2.5 pl-5 sm:pl-6 pr-3">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort('name')}
+                      className={cn(
+                        'inline-flex items-center gap-1 hover:text-[var(--ink)] transition-colors cursor-pointer rounded',
+                        FOCUS_RING,
+                      )}
+                    >
+                      设备名称
+                      {sortField === 'name' ? (
+                        sortDir === 'asc' ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />
+                      ) : (
+                        <ArrowUpDown className="size-3 opacity-50" />
+                      )}
+                    </button>
+                  </th>
                   <th className="py-2.5 px-3">类型与地域</th>
-                  <th className="py-2.5 px-3">状态</th>
+                  <th className="py-2.5 px-3">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort('status')}
+                      data-testid="fleet-sort-status"
+                      className={cn(
+                        'inline-flex items-center gap-1 hover:text-[var(--ink)] transition-colors cursor-pointer rounded',
+                        FOCUS_RING,
+                      )}
+                    >
+                      状态
+                      {sortField === 'status' ? (
+                        sortDir === 'asc' ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />
+                      ) : (
+                        <ArrowUpDown className="size-3 opacity-50" />
+                      )}
+                    </button>
+                  </th>
                   <th className="py-2.5 px-3">Tailscale IP</th>
-                  <th className="py-2.5 px-3 text-right">CPU / 电量</th>
-                  <th className="py-2.5 px-3 text-right">延迟</th>
+                  <th className="py-2.5 px-3 text-right">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort('cpu')}
+                      data-testid="fleet-sort-cpu"
+                      className={cn(
+                        'inline-flex items-center justify-end gap-1 hover:text-[var(--ink)] transition-colors cursor-pointer rounded',
+                        FOCUS_RING,
+                      )}
+                    >
+                      CPU / 电量
+                      {sortField === 'cpu' ? (
+                        sortDir === 'asc' ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />
+                      ) : (
+                        <ArrowUpDown className="size-3 opacity-50" />
+                      )}
+                    </button>
+                  </th>
+                  <th className="py-2.5 px-3 text-right">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort('mem')}
+                      data-testid="fleet-sort-mem"
+                      className={cn(
+                        'inline-flex items-center justify-end gap-1 hover:text-[var(--ink)] transition-colors cursor-pointer rounded',
+                        FOCUS_RING,
+                      )}
+                    >
+                      内存
+                      {sortField === 'mem' ? (
+                        sortDir === 'asc' ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />
+                      ) : (
+                        <ArrowUpDown className="size-3 opacity-50" />
+                      )}
+                    </button>
+                  </th>
+                  <th className="py-2.5 px-3 text-right">
+                    <button
+                      type="button"
+                      onClick={() => toggleSort('rtt')}
+                      data-testid="fleet-sort-rtt"
+                      className={cn(
+                        'inline-flex items-center justify-end gap-1 hover:text-[var(--ink)] transition-colors cursor-pointer rounded',
+                        FOCUS_RING,
+                      )}
+                    >
+                      RTT 延迟
+                      {sortField === 'rtt' ? (
+                        sortDir === 'asc' ? <ArrowUp className="size-3" /> : <ArrowDown className="size-3" />
+                      ) : (
+                        <ArrowUpDown className="size-3 opacity-50" />
+                      )}
+                    </button>
+                  </th>
                   <th className="py-2.5 pl-3 pr-5 sm:pr-6 text-right">最近上报</th>
                 </tr>
               </thead>
@@ -517,6 +700,10 @@ export function FleetView({
                       : n.cpu?.usagePct != null
                         ? `${Math.round(n.cpu.usagePct)}%`
                         : '-';
+                  const memPct = n.memory?.usedPct;
+                  const rtt = n.network?.rttMs;
+                  const rttRatio = rtt != null ? Math.min(100, Math.max(8, Math.round((rtt / maxRttMs) * 100))) : 0;
+                  const ipCopyKey = `row-ip-${n.id}`;
                   return (
                     <tr
                       key={n.id}
@@ -536,13 +723,62 @@ export function FleetView({
                         <StatusIndicator status={n.status} />
                       </td>
                       <td className="py-3 px-3 font-mono text-[12.5px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
-                        {n.tailscaleIp || '-'}
+                        {n.tailscaleIp ? (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleCopy(ipCopyKey, n.tailscaleIp!);
+                            }}
+                            title="点击复制 Tailscale IP"
+                            className={cn(
+                              'inline-flex items-center gap-1.5 hover:text-[var(--ink)] transition-colors cursor-pointer rounded',
+                              FOCUS_RING,
+                            )}
+                          >
+                            <span>{n.tailscaleIp}</span>
+                            {copiedKey === ipCopyKey ? (
+                              <Check className="size-3 text-[var(--ok)]" strokeWidth={2} />
+                            ) : (
+                              <Copy className="size-3 opacity-45" strokeWidth={1.75} />
+                            )}
+                          </button>
+                        ) : (
+                          '-'
+                        )}
                       </td>
                       <td className="py-3 px-3 text-right font-mono text-[12.5px] text-[var(--ink)] tabular-nums whitespace-nowrap">
                         {metric}
                       </td>
-                      <td className="py-3 px-3 text-right font-mono text-[12.5px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
-                        {n.network?.rttMs != null ? `${Math.round(n.network.rttMs)}ms` : '-'}
+                      <td
+                        className={cn(
+                          'py-3 px-3 text-right font-mono text-[12.5px] tabular-nums whitespace-nowrap',
+                          memPct != null && memPct >= 85
+                            ? 'text-[var(--warn)] font-medium'
+                            : 'text-[var(--ink-muted)]',
+                        )}
+                      >
+                        {memPct != null ? `${Math.round(memPct)}%` : '-'}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono text-[12.5px] tabular-nums whitespace-nowrap">
+                        {rtt != null ? (
+                          <div className="inline-flex items-center justify-end gap-2">
+                            <span className="hidden sm:inline-block w-14 h-1.5 rounded-full bg-[var(--surface-subtle)] overflow-hidden">
+                              <span
+                                className="block h-full rounded-full"
+                                style={{
+                                  width: `${rttRatio}%`,
+                                  backgroundColor: latencyTierVar(rtt),
+                                }}
+                              />
+                            </span>
+                            <span style={{ color: latencyTierVar(rtt) }}>
+                              {Math.round(rtt)}ms
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-[var(--ink-subtle)]">-</span>
+                        )}
                       </td>
                       <td className="py-3 pl-3 pr-5 sm:pr-6 text-right font-mono text-[12.5px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap">
                         {formatRelativeAge(n.lastHeartbeatAt || n.lastSeenAt, n.ageSec)}
@@ -844,6 +1080,6 @@ export function FleetView({
           </TabsPanel>
         </Tabs>
       </Panel>
-    </div>
+    </ModuleFrame>
   );
 }

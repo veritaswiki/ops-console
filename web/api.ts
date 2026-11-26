@@ -23,50 +23,134 @@ import type {
   SnapshotResponse,
 } from './types';
 
-export async function apiRequest<T = unknown>(
-  url: string,
-  options: RequestInit = {},
-): Promise<T> {
-  const headers: Record<string, string> = {
-    Accept: 'application/json',
-    ...((options.headers as Record<string, string>) || {}),
-  };
-  if (options.body && !headers['Content-Type']) {
-    headers['Content-Type'] = 'application/json';
-  }
-  const res = await fetch(url, {
-    credentials: 'same-origin',
-    ...options,
-    headers,
-  });
-  const text = await res.text();
-  let data: unknown = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = { raw: text };
-  }
-  if (!res.ok) {
-    const errObj = data as { error?: string; message?: string } | null;
-    const msg = errObj?.error || errObj?.message || `HTTP ${res.status}`;
-    const err = new Error(msg) as Error & { status?: number; payload?: unknown };
-    err.status = res.status;
-    err.payload = data;
-    throw err;
-  }
-  return data as T;
+interface ApiRequestOptions extends RequestInit {
+  /** Optional short-TTL cache duration in ms for idempotent GET requests (default 0 = no cache). */
+  cacheTtlMs?: number;
+  /** Skip in-flight deduplication when caller supplies an AbortSignal or forces fresh fetch. */
+  dedupe?: boolean;
 }
 
-export const fetchMeta = () => apiRequest<MetaResponse>('/api/meta');
+interface CacheEntry {
+  data: unknown;
+  expiresAt: number;
+}
 
-export const fetchSnapshot = (force = false) =>
-  apiRequest<SnapshotResponse>(force ? '/api/snapshot?refresh=1' : '/api/snapshot');
+const MAX_API_CACHE_ENTRIES = 64;
+const responseCache = new Map<string, CacheEntry>();
+const inflightGets = new Map<string, Promise<unknown>>();
 
-export const fetchProbes = () => apiRequest<ProbesResponse>('/api/probes');
+export function clearApiCache(prefix?: string): void {
+  if (!prefix) {
+    responseCache.clear();
+    return;
+  }
+  for (const key of responseCache.keys()) {
+    if (key.startsWith(prefix)) {
+      responseCache.delete(key);
+    }
+  }
+}
 
-export const fetchIncidents = (limit = 30) =>
+function setCachedResponse(key: string, data: unknown, ttlMs: number): void {
+  if (ttlMs <= 0) return;
+  if (responseCache.has(key)) {
+    responseCache.delete(key);
+  }
+  responseCache.set(key, { data, expiresAt: Date.now() + ttlMs });
+  while (responseCache.size > MAX_API_CACHE_ENTRIES) {
+    const oldest = responseCache.keys().next().value;
+    if (oldest === undefined) break;
+    responseCache.delete(oldest);
+  }
+}
+
+export async function apiRequest<T = unknown>(
+  url: string,
+  options: ApiRequestOptions = {},
+): Promise<T> {
+  const { cacheTtlMs = 0, dedupe = true, ...fetchOptions } = options;
+  const method = (fetchOptions.method || 'GET').toUpperCase();
+  const isGet = method === 'GET';
+
+  if (!isGet) {
+    // Any mutation invalidates cached read views so subsequent loads stay consistent
+    clearApiCache();
+  }
+
+  if (isGet && cacheTtlMs > 0 && !fetchOptions.signal) {
+    const cached = responseCache.get(url);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.data as T;
+    }
+    if (cached) responseCache.delete(url);
+  }
+
+  if (isGet && dedupe && !fetchOptions.signal && inflightGets.has(url)) {
+    return inflightGets.get(url) as Promise<T>;
+  }
+
+  const runFetch = async (): Promise<T> => {
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      ...((fetchOptions.headers as Record<string, string>) || {}),
+    };
+    if (fetchOptions.body && !headers['Content-Type']) {
+      headers['Content-Type'] = 'application/json';
+    }
+    const res = await fetch(url, {
+      credentials: 'same-origin',
+      ...fetchOptions,
+      headers,
+    });
+    const text = await res.text();
+    let data: unknown = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = { raw: text };
+    }
+    if (!res.ok) {
+      const errObj = data as { error?: string; message?: string } | null;
+      const msg = errObj?.error || errObj?.message || `HTTP ${res.status}`;
+      const err = new Error(msg) as Error & { status?: number; payload?: unknown };
+      err.status = res.status;
+      err.payload = data;
+      throw err;
+    }
+    if (isGet && cacheTtlMs > 0) {
+      setCachedResponse(url, data, cacheTtlMs);
+    }
+    return data as T;
+  };
+
+  if (isGet && dedupe && !fetchOptions.signal) {
+    const promise = runFetch().finally(() => {
+      inflightGets.delete(url);
+    });
+    inflightGets.set(url, promise);
+    return promise;
+  }
+
+  return runFetch();
+}
+
+export const fetchMeta = (signal?: AbortSignal) =>
+  apiRequest<MetaResponse>('/api/meta', { cacheTtlMs: 30000, signal });
+
+export const fetchSnapshot = (force = false, signal?: AbortSignal) =>
+  apiRequest<SnapshotResponse>(force ? '/api/snapshot?refresh=1' : '/api/snapshot', {
+    cacheTtlMs: force ? 0 : 2500,
+    dedupe: !force,
+    signal,
+  });
+
+export const fetchProbes = (signal?: AbortSignal) =>
+  apiRequest<ProbesResponse>('/api/probes', { cacheTtlMs: 4000, signal });
+
+export const fetchIncidents = (limit = 30, signal?: AbortSignal) =>
   apiRequest<{ items?: IncidentItem[]; incidents?: IncidentItem[]; stats?: { count?: number; retentionDays?: number } }>(
     `/api/incidents?limit=${limit}`,
+    { cacheTtlMs: 4000, signal },
   );
 
 export const saveIncidentNote = (incidentId: string | number, note: string) =>
@@ -78,18 +162,26 @@ export const saveIncidentNote = (incidentId: string | number, note: string) =>
     },
   );
 
-export const fetchMetricsSeries = (series = 'fleet', range: MetricsRange = '24h') => {
+export const fetchMetricsSeries = (
+  series = 'fleet',
+  range: MetricsRange = '24h',
+  signal?: AbortSignal,
+) => {
   const qs = new URLSearchParams({ series, range });
-  return apiRequest<MetricsSeriesResponse>(`/api/metrics/series?${qs.toString()}`);
+  return apiRequest<MetricsSeriesResponse>(`/api/metrics/series?${qs.toString()}`, {
+    cacheTtlMs: 8000,
+    signal,
+  });
 };
 
-export const fetchPrometheusMetrics = async (): Promise<string> => {
-  const res = await fetch('/api/metrics', { credentials: 'same-origin' });
+export const fetchPrometheusMetrics = async (signal?: AbortSignal): Promise<string> => {
+  const res = await fetch('/api/metrics', { credentials: 'same-origin', signal });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
   return res.text();
 };
 
-export const fetchAlerts = () => apiRequest<AlertsStateResponse>('/api/alerts');
+export const fetchAlerts = (signal?: AbortSignal) =>
+  apiRequest<AlertsStateResponse>('/api/alerts', { cacheTtlMs: 3000, signal });
 
 export const createAlertRule = (payload: {
   name: string;
@@ -136,15 +228,16 @@ export const setAlertSilence = (minutes: number) =>
     body: JSON.stringify({ minutes }),
   });
 
-export const fetchGatewayTelemetry = () =>
-  apiRequest<GatewayTelemetryResponse>('/api/gateway/telemetry');
+export const fetchGatewayTelemetry = (signal?: AbortSignal) =>
+  apiRequest<GatewayTelemetryResponse>('/api/gateway/telemetry', { cacheTtlMs: 5000, signal });
 
-export const compareMemoryRetrieval = (q: string) => {
+export const compareMemoryRetrieval = (q: string, signal?: AbortSignal) => {
   const qs = new URLSearchParams({ q });
-  return apiRequest<MemoryCompareResponse>(`/api/memory/compare?${qs.toString()}`);
+  return apiRequest<MemoryCompareResponse>(`/api/memory/compare?${qs.toString()}`, { signal });
 };
 
-export const fetchRunbooks = () => apiRequest<RunbooksResponse>('/api/runbooks');
+export const fetchRunbooks = (signal?: AbortSignal) =>
+  apiRequest<RunbooksResponse>('/api/runbooks', { cacheTtlMs: 5000, signal });
 
 export const runRunbook = (runbookId: string) =>
   apiRequest<{ ok?: boolean; run: RunbookExecution }>(
@@ -155,9 +248,10 @@ export const runRunbook = (runbookId: string) =>
     },
   );
 
-export const fetchProbeCommands = (nodeId: string) =>
+export const fetchProbeCommands = (nodeId: string, signal?: AbortSignal) =>
   apiRequest<{ ok?: boolean; nodeId: string; items: ProbeCommandItem[] }>(
     `/api/probes/${encodeURIComponent(nodeId)}/commands`,
+    { signal },
   );
 
 export const enqueueProbeCommand = (nodeId: string, command: string) =>
@@ -169,8 +263,8 @@ export const enqueueProbeCommand = (nodeId: string, command: string) =>
     },
   );
 
-export const fetchConfigStudio = () =>
-  apiRequest<ConfigStudioResponse>('/api/config/studio');
+export const fetchConfigStudio = (signal?: AbortSignal) =>
+  apiRequest<ConfigStudioResponse>('/api/config/studio', { cacheTtlMs: 5000, signal });
 
 export const validateConfigStudio = (rawJson: string) =>
   apiRequest<{ ok?: boolean; valid: boolean; errors: string[] }>('/api/config/validate', {
@@ -178,18 +272,24 @@ export const validateConfigStudio = (rawJson: string) =>
     body: JSON.stringify({ rawJson }),
   });
 
-export const fetchAudit = (limit = 40) =>
-  apiRequest<{ items?: AuditEntry[]; entries?: AuditEntry[] }>(`/api/audit?limit=${limit}`);
+export const fetchAudit = (limit = 40, signal?: AbortSignal) =>
+  apiRequest<{ items?: AuditEntry[]; entries?: AuditEntry[] }>(`/api/audit?limit=${limit}`, {
+    cacheTtlMs: 4000,
+    signal,
+  });
 
-export const fetchLogs = (params: {
-  source: string;
-  target: string;
-  since: string;
-  level: string;
-  q: string;
-  regex: boolean;
-  lines?: number;
-}) => {
+export const fetchLogs = (
+  params: {
+    source: string;
+    target: string;
+    since: string;
+    level: string;
+    q: string;
+    regex: boolean;
+    lines?: number;
+  },
+  signal?: AbortSignal,
+) => {
   const qs = new URLSearchParams();
   qs.set('source', params.source);
   if (params.target) qs.set('target', params.target);
@@ -198,7 +298,7 @@ export const fetchLogs = (params: {
   if (params.q.trim()) qs.set('q', params.q.trim());
   if (params.regex) qs.set('regex', '1');
   qs.set('lines', String(params.lines ?? 200));
-  return apiRequest<LogsResponse>(`/api/logs?${qs.toString()}`);
+  return apiRequest<LogsResponse>(`/api/logs?${qs.toString()}`, { signal, dedupe: false });
 };
 
 export const buildLogStreamUrl = (params: {
@@ -328,8 +428,12 @@ export const revokeProbe = (probeId: string) =>
     method: 'DELETE',
   });
 
-export const fetchPlugins = (refresh = false) =>
-  apiRequest<PluginsResponse>(refresh ? '/api/plugins?refresh=1' : '/api/plugins');
+export const fetchPlugins = (refresh = false, signal?: AbortSignal) =>
+  apiRequest<PluginsResponse>(refresh ? '/api/plugins?refresh=1' : '/api/plugins', {
+    cacheTtlMs: refresh ? 0 : 4000,
+    dedupe: !refresh,
+    signal,
+  });
 
 export const togglePlugin = (pluginId: string, enabled: boolean) =>
   apiRequest<{ ok?: boolean; id: string; enabled: boolean }>(

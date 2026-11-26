@@ -8,20 +8,26 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { Cpu, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, ArrowUpDown, Cpu, Search, X } from 'lucide-react';
 import type { GatewayTelemetryResponse, SnapshotResponse } from '../types';
 import { fetchGatewayTelemetry } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
 import { formatBytes, formatCompactNumber, formatUptime } from '../utils/format';
 import {
   EmptyState,
+  inputBaseClass,
   KpiStrip,
   Panel,
   ResourceMeter,
   SegmentedFilter,
   StatusIndicator,
+  WidgetSkeleton,
 } from '../components/ui';
-import { ArchitectureGraph } from '../components/ArchitectureGraph';
+import { ModuleFrame } from '../modules/ModuleFrame';
+
+const ArchitectureGraph = React.lazy(() =>
+  import('../components/ArchitectureGraph').then((m) => ({ default: m.ArchitectureGraph })),
+);
 
 const TELEMETRY_MODES = [
   { value: 'tokens', label: 'Token 吞吐 (K)' },
@@ -54,18 +60,21 @@ export function AgentsView({
 
   const [telemetry, setTelemetry] = React.useState<GatewayTelemetryResponse | null>(null);
   const [chartMode, setChartMode] = React.useState<TelemetryMode>('tokens');
+  const [procQuery, setProcQuery] = React.useState('');
+  const [procSort, setProcSort] = React.useState<'cpu' | 'mem' | 'pid'>('cpu');
+  const [procSortDir, setProcSortDir] = React.useState<'asc' | 'desc'>('desc');
 
   React.useEffect(() => {
-    let alive = true;
-    fetchGatewayTelemetry()
+    const controller = new AbortController();
+    fetchGatewayTelemetry(controller.signal)
       .then((res) => {
-        if (alive) setTelemetry(res);
+        if (!controller.signal.aborted) setTelemetry(res);
       })
       .catch(() => {
         // Non-blocking secondary telemetry
       });
     return () => {
-      alive = false;
+      controller.abort();
     };
   }, []);
 
@@ -75,16 +84,57 @@ export function AgentsView({
     }
   }, [selectedPid]);
 
+  const toggleProcSort = (field: 'cpu' | 'mem' | 'pid') => {
+    if (procSort === field) {
+      setProcSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setProcSort(field);
+      setProcSortDir(field === 'pid' ? 'asc' : 'desc');
+    }
+  };
+
+  const renderProcSortIcon = (field: 'cpu' | 'mem' | 'pid') => {
+    if (procSort !== field) {
+      return <ArrowUpDown className="size-3 text-[var(--ink-subtle)]/70" strokeWidth={1.75} />;
+    }
+    return procSortDir === 'asc' ? (
+      <ArrowUp className="size-3 text-[var(--accent)]" strokeWidth={2} />
+    ) : (
+      <ArrowDown className="size-3 text-[var(--accent)]" strokeWidth={2} />
+    );
+  };
+
   const filteredProcesses = React.useMemo(() => {
+    let base = processes;
     if (selectedPid != null) {
       const pidMatches = processes.filter((p) => p.pid === selectedPid);
-      if (pidMatches.length > 0) return pidMatches;
+      if (pidMatches.length > 0) base = pidMatches;
+    } else if (selectedCategory) {
+      base = processes.filter(
+        (p) => (p.categoryLabel || p.category || 'Agent') === selectedCategory,
+      );
     }
-    if (!selectedCategory) return processes;
-    return processes.filter(
-      (p) => (p.categoryLabel || p.category || 'Agent') === selectedCategory,
-    );
-  }, [processes, selectedCategory, selectedPid]);
+    const q = procQuery.trim().toLowerCase();
+    if (q) {
+      base = base.filter((p) => {
+        const hay = `${p.pid} ${p.categoryLabel || p.category || ''} ${p.cmd || p.command || ''}`.toLowerCase();
+        return hay.includes(q);
+      });
+    }
+    const dir = procSortDir === 'asc' ? 1 : -1;
+    return [...base].sort((a, b) => {
+      if (procSort === 'cpu') return ((a.cpu ?? 0) - (b.cpu ?? 0)) * dir;
+      if (procSort === 'mem') {
+        return ((a.memoryBytes ?? a.rssBytes ?? 0) - (b.memoryBytes ?? b.rssBytes ?? 0)) * dir;
+      }
+      return (a.pid - b.pid) * dir;
+    });
+  }, [processes, selectedCategory, selectedPid, procQuery, procSort, procSortDir]);
+
+  const totalProviderCost = React.useMemo(
+    () => (telemetry?.providers || []).reduce((sum, p) => sum + (p.costUsd || 0), 0),
+    [telemetry?.providers],
+  );
 
   const providers = magpie?.providers || [];
   const totalModels = magpie?.totalModels || providers.reduce((sum, p) => sum + p.count, 0) || 1;
@@ -96,22 +146,15 @@ export function AgentsView({
     : 0;
 
   return (
-    <div className="space-y-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">
-            网关与 Agent 运行时
-          </h1>
-          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed text-pretty">
-            Magpie 模型网关 Token/成本治理、渠道熔断状态、活跃 Agent 会话、本地加速器与进程监控。
-          </p>
-        </div>
-        <div className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap">
-          {magpie?.reachable
-            ? `${formatCompactNumber(magpie.totalModels ?? 0)} 模型 · ${providers.length} 渠道 · ${processes.length} 活跃进程`
-            : `${processes.length} 活跃进程`}
-        </div>
-      </div>
+    <ModuleFrame
+      title="网关与 Agent 运行时"
+      description="Magpie 模型网关 Token/成本占比治理、渠道熔断状态、活跃 Agent 会话、本地加速器与可排序进程监控。"
+      meta={
+        magpie?.reachable
+          ? `${formatCompactNumber(magpie.totalModels ?? 0)} 模型 · ${providers.length} 渠道 · ${processes.length} 活跃进程`
+          : `${processes.length} 活跃进程`
+      }
+    >
 
       {summary && (
         <KpiStrip
@@ -301,7 +344,27 @@ export function AgentsView({
                         {p.avgTtftMs}ms
                       </td>
                       <td className="py-2.5 pl-3 pr-5 sm:pr-6 text-right font-mono text-[12.5px] font-medium text-[var(--ink)] tabular-nums whitespace-nowrap">
-                        ${p.costUsd.toFixed(2)}
+                        {(() => {
+                          const sharePct = totalProviderCost > 0
+                            ? Math.round(((p.costUsd || 0) / totalProviderCost) * 100)
+                            : 0;
+                          return (
+                            <div className="inline-flex flex-col items-end gap-1 min-w-[82px]">
+                              <span>
+                                ${p.costUsd.toFixed(2)}
+                                <span className="ml-1 text-[11px] font-normal text-[var(--ink-subtle)]">
+                                  {sharePct}%
+                                </span>
+                              </span>
+                              <span className="w-16 h-[2px] rounded-full bg-[var(--border-subtle)] overflow-hidden">
+                                <span
+                                  className="block h-full bg-[var(--accent)]"
+                                  style={{ width: `${Math.min(100, sharePct)}%` }}
+                                />
+                              </span>
+                            </div>
+                          );
+                        })()}
                       </td>
                     </tr>
                   ))}
@@ -420,11 +483,13 @@ export function AgentsView({
         title="Agent 路由与模型分发图谱"
         description="点击左侧任意 Agent 运行时进程组即可快速筛选下方进程列表。"
       >
-        <ArchitectureGraph
-          snapshot={snapshot}
-          mode="agents"
-          onSelectAgentCategory={onSelectCategory}
-        />
+        <React.Suspense fallback={<WidgetSkeleton heightClass="h-[400px]" label="正在加载 Agent 分发图谱" />}>
+          <ArchitectureGraph
+            snapshot={snapshot}
+            mode="agents"
+            onSelectAgentCategory={onSelectCategory}
+          />
+        </React.Suspense>
       </Panel>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -503,40 +568,52 @@ export function AgentsView({
 
       <Panel
         title="本地活跃 Agent 进程"
-        description="按配置的进程匹配规则实时发现正在运行的编码与编排 Agent。"
+        description="按配置的进程匹配规则实时发现正在运行的编码与编排 Agent，支持按 CPU / 内存排序及命令行过滤。"
         bodyClassName="p-0"
         actions={
-          selectedPid != null || selectedCategory ? (
-            <div className="flex flex-wrap items-center gap-2">
-              {selectedPid != null && onSelectPid && (
-                <button
-                  type="button"
-                  data-testid="clear-pid-filter"
-                  onClick={() => onSelectPid(null)}
-                  className={cn(
-                    'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[12.5px] font-mono font-medium text-[var(--accent)] hover:opacity-85 active:scale-[0.97] transition-[opacity,transform] duration-150 ease-out cursor-pointer select-none',
-                    FOCUS_RING,
-                  )}
-                >
-                  <span className="tabular-nums">PID {selectedPid}</span>
-                  <X className="size-3.5" strokeWidth={1.75} />
-                </button>
-              )}
-              {selectedCategory && (
-                <button
-                  type="button"
-                  onClick={() => onSelectCategory('')}
-                  className={cn(
-                    'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-subtle)] text-[12.5px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] active:scale-[0.97] transition-[background-color,transform] duration-150 ease-out cursor-pointer select-none',
-                    FOCUS_RING,
-                  )}
-                >
-                  <span>筛选：{selectedCategory}</span>
-                  <X className="size-3.5 text-[var(--ink-muted)]" strokeWidth={1.75} />
-                </button>
-              )}
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="relative w-full sm:w-52">
+              <Search
+                className="size-3.5 text-[var(--ink-subtle)] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                strokeWidth={1.75}
+              />
+              <input
+                type="search"
+                value={procQuery}
+                onChange={(e) => setProcQuery(e.target.value)}
+                placeholder="过滤 PID 或命令行..."
+                aria-label="过滤 Agent 进程"
+                className={cn('h-9 sm:h-8 w-full pl-8 pr-2.5', inputBaseClass)}
+              />
             </div>
-          ) : undefined
+            {selectedPid != null && onSelectPid && (
+              <button
+                type="button"
+                data-testid="clear-pid-filter"
+                onClick={() => onSelectPid(null)}
+                className={cn(
+                  'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--accent)]/40 bg-[var(--accent-soft)] text-[12.5px] font-mono font-medium text-[var(--accent)] hover:opacity-85 active:scale-[0.97] transition-[opacity,transform] duration-150 ease-out cursor-pointer select-none',
+                  FOCUS_RING,
+                )}
+              >
+                <span className="tabular-nums">PID {selectedPid}</span>
+                <X className="size-3.5" strokeWidth={1.75} />
+              </button>
+            )}
+            {selectedCategory && (
+              <button
+                type="button"
+                onClick={() => onSelectCategory('')}
+                className={cn(
+                  'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-subtle)] text-[12.5px] font-medium text-[var(--ink)] hover:bg-[var(--surface-hover)] active:scale-[0.97] transition-[background-color,transform] duration-150 ease-out cursor-pointer select-none',
+                  FOCUS_RING,
+                )}
+              >
+                <span>筛选：{selectedCategory}</span>
+                <X className="size-3.5 text-[var(--ink-muted)]" strokeWidth={1.75} />
+              </button>
+            )}
+          </div>
         }
       >
         {filteredProcesses.length === 0 ? (
@@ -544,10 +621,11 @@ export function AgentsView({
             title="未匹配到活跃进程"
             message="当前主机没有匹配到活跃 Agent 进程。"
             action={
-              selectedCategory || selectedPid != null
+              selectedCategory || selectedPid != null || procQuery.trim()
                 ? {
                     label: '清除筛选',
                     onClick: () => {
+                      setProcQuery('');
                       onSelectCategory('');
                       onSelectPid?.(null);
                     },
@@ -560,10 +638,46 @@ export function AgentsView({
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
-                  <th className="py-2.5 pl-5 sm:pl-6 pr-3">PID</th>
+                  <th className="py-2.5 pl-5 sm:pl-6 pr-3">
+                    <button
+                      type="button"
+                      onClick={() => toggleProcSort('pid')}
+                      className={cn(
+                        'inline-flex items-center gap-1 hover:text-[var(--ink)] transition-colors cursor-pointer select-none',
+                        FOCUS_RING,
+                      )}
+                    >
+                      PID
+                      {renderProcSortIcon('pid')}
+                    </button>
+                  </th>
                   <th className="py-2.5 px-3">分类</th>
-                  <th className="py-2.5 px-3 text-right">CPU</th>
-                  <th className="py-2.5 px-3 text-right">内存</th>
+                  <th className="py-2.5 px-3 text-right">
+                    <button
+                      type="button"
+                      onClick={() => toggleProcSort('cpu')}
+                      className={cn(
+                        'inline-flex items-center gap-1 ml-auto hover:text-[var(--ink)] transition-colors cursor-pointer select-none',
+                        FOCUS_RING,
+                      )}
+                    >
+                      CPU
+                      {renderProcSortIcon('cpu')}
+                    </button>
+                  </th>
+                  <th className="py-2.5 px-3 text-right">
+                    <button
+                      type="button"
+                      onClick={() => toggleProcSort('mem')}
+                      className={cn(
+                        'inline-flex items-center gap-1 ml-auto hover:text-[var(--ink)] transition-colors cursor-pointer select-none',
+                        FOCUS_RING,
+                      )}
+                    >
+                      内存
+                      {renderProcSortIcon('mem')}
+                    </button>
+                  </th>
                   <th className="py-2.5 pl-3 pr-5 sm:pr-6">命令行</th>
                 </tr>
               </thead>
@@ -611,6 +725,6 @@ export function AgentsView({
           </div>
         )}
       </Panel>
-    </div>
+    </ModuleFrame>
   );
 }

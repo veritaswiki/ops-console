@@ -47,6 +47,10 @@ export class ActionController {
       unitName = svc.unit;
     }
     this._pruneExpiredTokens();
+    if (this.confirmTokens.size >= 256) {
+      const oldest = this.confirmTokens.keys().next().value;
+      if (oldest !== undefined) this.confirmTokens.delete(oldest);
+    }
     const token = crypto.randomBytes(16).toString('hex');
     const expiresAt = Date.now() + 30_000;
     this.confirmTokens.set(token, { unitId: String(unitId), unitName, action, expiresAt });

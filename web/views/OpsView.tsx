@@ -4,7 +4,9 @@ import {
   Check,
   CheckCircle2,
   Copy,
+  Download,
   Play,
+  Search,
   ShieldCheck,
   XCircle,
 } from 'lucide-react';
@@ -28,6 +30,12 @@ import {
   validateConfigStudio,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import {
+  auditEntriesToCsv,
+  filterAuditEntries,
+  type AuditOutcomeFilter,
+} from '../lib/module-helpers';
+import { ModuleFrame } from '../modules/ModuleFrame';
 import { formatDateTime, statusLabel } from '../utils/format';
 import {
   Button,
@@ -38,6 +46,12 @@ import {
   StatusIndicator,
   type ConfirmModalState,
 } from '../components/ui';
+
+const AUDIT_OUTCOME_OPTIONS = [
+  { value: 'all', label: '全部' },
+  { value: 'ok', label: '成功' },
+  { value: 'fail', label: '失败' },
+] as const;
 
 const OPS_TABS = [
   { value: 'tasks', label: '巡检与定时任务' },
@@ -75,6 +89,10 @@ export function OpsView({
   const [runningRbId, setRunningRbId] = React.useState<string | null>(null);
   const [latestExecution, setLatestExecution] = React.useState<RunbookExecution | null>(null);
 
+  // Audit multi-dimensional filter state
+  const [auditQuery, setAuditQuery] = React.useState('');
+  const [auditOutcome, setAuditOutcome] = React.useState<AuditOutcomeFilter>('all');
+
   // Config Studio & Prometheus state
   const [studio, setStudio] = React.useState<ConfigStudioResponse | null>(null);
   const [configDraft, setConfigDraft] = React.useState('');
@@ -87,6 +105,34 @@ export function OpsView({
   const [copiedKey, setCopiedKey] = React.useState('');
 
   const timers: TimerItem[] = snapshot?.services?.timers || snapshot?.timers || [];
+
+  const filteredAudit = React.useMemo(
+    () => filterAuditEntries(audit, { query: auditQuery, outcome: auditOutcome }),
+    [audit, auditQuery, auditOutcome],
+  );
+
+  const handleExportAuditCsv = async () => {
+    if (filteredAudit.length === 0) {
+      onToast('当前没有可导出的审计记录', 'info');
+      return;
+    }
+    const csv = auditEntriesToCsv(filteredAudit);
+    try {
+      const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ops-console-audit-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+      onToast(`已导出 ${filteredAudit.length} 条审计记录 CSV`, 'ok');
+    } catch {
+      const ok = await copyToClipboard(csv);
+      onToast(ok ? '已复制审计 CSV 到剪贴板' : '导出失败', ok ? 'ok' : 'err');
+    }
+  };
 
   const loadRunbooks = React.useCallback(async () => {
     try {
@@ -221,23 +267,18 @@ export function OpsView({
   const allIncidents = incidents.length > 0 ? incidents : snapshot?.incidents || [];
 
   return (
-    <div className="space-y-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">
-            运维、Runbook 与配置治理
-          </h1>
-          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed text-pretty">
-            白名单巡检备份、受控自愈预案 (Runbooks)、配置 Schema 校验、RBAC 权限态势与 Prometheus 指标导出。
-          </p>
-        </div>
+    <ModuleFrame
+      title="运维、Runbook 与配置治理"
+      description="白名单巡检备份、受控自愈预案 (Runbooks)、配置 Schema 校验、RBAC 权限态势与 Prometheus 指标导出。"
+      actions={
         <SegmentedFilter
           value={tab}
           onChange={setTab}
           options={OPS_TABS}
           ariaLabel="运维子视图切换"
         />
-      </div>
+      }
+    >
 
       {tab === 'tasks' && (
         <div className="space-y-6">
@@ -393,14 +434,62 @@ export function OpsView({
 
             <Panel
               title="不可变操作审计轨迹"
-              description="所有写操作、探针登记与命令触发均留痕可溯。"
+              description={`所有写操作、探针登记与命令触发均留痕可溯，当前匹配 ${filteredAudit.length}/${audit.length} 条。`}
               bodyClassName="p-0"
+              actions={
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={filteredAudit.length === 0}
+                  onClick={() => void handleExportAuditCsv()}
+                  data-testid="audit-export-csv-btn"
+                >
+                  <Download className="size-3.5 text-[var(--ink-muted)]" strokeWidth={1.75} />
+                  导出 CSV
+                </Button>
+              }
             >
-              {audit.length === 0 ? (
-                <EmptyState message="暂无操作审计记录。" />
+              <div className="px-5 sm:px-6 py-3 border-b border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-2.5">
+                <div className="relative flex-1 min-w-[160px]">
+                  <Search
+                    className="size-3.5 text-[var(--ink-subtle)] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none"
+                    strokeWidth={1.75}
+                  />
+                  <input
+                    type="search"
+                    value={auditQuery}
+                    onChange={(e) => setAuditQuery(e.target.value)}
+                    placeholder="过滤操作、目标或执行人..."
+                    aria-label="过滤审计记录"
+                    data-testid="audit-search-input"
+                    className={cn('w-full h-8 pl-8 pr-2.5 sm:text-[12.5px]', inputBaseClass)}
+                  />
+                </div>
+                <SegmentedFilter
+                  value={auditOutcome}
+                  onChange={setAuditOutcome}
+                  options={AUDIT_OUTCOME_OPTIONS}
+                  ariaLabel="按结果筛选审计日志"
+                />
+              </div>
+              {filteredAudit.length === 0 ? (
+                <EmptyState
+                  message={audit.length === 0 ? '暂无操作审计记录。' : '当前筛选条件下无匹配审计记录。'}
+                  action={
+                    auditQuery || auditOutcome !== 'all'
+                      ? {
+                          label: '重置筛选',
+                          onClick: () => {
+                            setAuditQuery('');
+                            setAuditOutcome('all');
+                          },
+                        }
+                      : undefined
+                  }
+                />
               ) : (
                 <div className="overflow-x-auto">
-                  <table className="w-full text-left border-collapse">
+                  <table className="w-full text-left border-collapse" data-testid="audit-log-table">
                     <thead>
                       <tr className="border-b border-[var(--border)] text-[12px] font-medium text-[var(--ink-subtle)]">
                         <th className="py-2.5 pl-5 sm:pl-6 pr-3">时间</th>
@@ -409,7 +498,7 @@ export function OpsView({
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
-                      {audit.slice(0, 15).map((item, idx) => (
+                      {filteredAudit.slice(0, 20).map((item, idx) => (
                         <tr key={`${item.ts || idx}-${idx}`} className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out">
                           <td className="py-2.5 pl-5 sm:pl-6 pr-3 font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap">
                             {formatDateTime(item.ts || item.timestamp)}
@@ -486,13 +575,18 @@ export function OpsView({
 
           {latestExecution && (
             <Panel
-              title={`最新执行追踪：${latestExecution.runbookName}`}
-              description={`执行 ID ${latestExecution.id} · 耗时 ${latestExecution.durationMs}ms · 触发人 ${latestExecution.actor}`}
+              title={`执行追踪：${latestExecution.runbookName}`}
+              description={`执行 ID ${latestExecution.id} · 开始于 ${formatDateTime(latestExecution.startedAt)} · 耗时 ${latestExecution.durationMs}ms · 触发人 ${latestExecution.actor}`}
               actions={
-                <StatusIndicator
-                  status={latestExecution.ok ? 'healthy' : 'failed'}
-                  label={latestExecution.ok ? '全部步骤通过' : '存在失败步骤'}
-                />
+                <div className="flex items-center gap-3">
+                  <StatusIndicator
+                    status={latestExecution.ok ? 'healthy' : 'failed'}
+                    label={latestExecution.ok ? '全部步骤通过' : '存在失败步骤'}
+                  />
+                  <Button variant="ghost" size="sm" onClick={() => setLatestExecution(null)}>
+                    收起
+                  </Button>
+                </div>
               }
             >
               <ul className="divide-y divide-[var(--border-subtle)]" data-testid="runbook-trace">
@@ -520,7 +614,7 @@ export function OpsView({
 
           <Panel
             title="Runbook 历史执行记录"
-            description="所有编排预案的触发时间、结果与步骤数审计历史。"
+            description="点击任意历史记录行可在上方展开完整的逐步执行追踪与耗时明细。"
             bodyClassName="p-0"
           >
             {!runbooksState || runbooksState.runs.length === 0 ? (
@@ -538,23 +632,34 @@ export function OpsView({
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
-                    {runbooksState.runs.map((run) => (
-                      <tr key={run.id} className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out">
-                        <td className="py-2.5 pl-5 sm:pl-6 pr-3 font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap">
-                          {formatDateTime(run.startedAt)}
-                        </td>
-                        <td className="py-2.5 px-3 font-medium text-[var(--ink)]">{run.runbookName}</td>
-                        <td className="py-2.5 px-3 whitespace-nowrap">
-                          <StatusIndicator status={run.ok ? 'healthy' : 'failed'} label={run.ok ? '通过' : '异常'} />
-                        </td>
-                        <td className="py-2.5 px-3 text-right font-mono text-[12px] text-[var(--ink-muted)] tabular-nums">
-                          {run.steps.filter((s) => s.ok).length}/{run.steps.length}
-                        </td>
-                        <td className="py-2.5 pl-3 pr-5 sm:pr-6 text-right font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums">
-                          {run.durationMs}ms
-                        </td>
-                      </tr>
-                    ))}
+                    {runbooksState.runs.map((run) => {
+                      const isInspected = latestExecution?.id === run.id;
+                      return (
+                        <tr
+                          key={run.id}
+                          onClick={() => setLatestExecution(run)}
+                          data-testid={`runbook-history-row-${run.id}`}
+                          className={cn(
+                            'cursor-pointer transition-colors duration-150 ease-out',
+                            isInspected ? 'bg-[var(--accent-soft)]' : 'hover:bg-[var(--surface-hover)]',
+                          )}
+                        >
+                          <td className="py-2.5 pl-5 sm:pl-6 pr-3 font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap">
+                            {formatDateTime(run.startedAt)}
+                          </td>
+                          <td className="py-2.5 px-3 font-medium text-[var(--ink)]">{run.runbookName}</td>
+                          <td className="py-2.5 px-3 whitespace-nowrap">
+                            <StatusIndicator status={run.ok ? 'healthy' : 'failed'} label={run.ok ? '通过' : '异常'} />
+                          </td>
+                          <td className="py-2.5 px-3 text-right font-mono text-[12px] text-[var(--ink-muted)] tabular-nums">
+                            {run.steps.filter((s) => s.ok).length}/{run.steps.length}
+                          </td>
+                          <td className="py-2.5 pl-3 pr-5 sm:pr-6 text-right font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums">
+                            {run.durationMs}ms
+                          </td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -589,7 +694,7 @@ export function OpsView({
                 spellCheck={false}
                 aria-label="配置 JSON 编辑器"
                 className={cn(
-                  'w-full p-3.5 font-mono text-[12px] leading-relaxed resize-y',
+                  'w-full p-3.5 font-mono sm:text-[12px] leading-relaxed resize-y',
                   inputBaseClass,
                 )}
               />
@@ -597,20 +702,26 @@ export function OpsView({
                 <div
                   data-testid="config-validation-result"
                   className={cn(
-                    'mt-3 rounded-lg border px-3.5 py-2.5 text-[12.5px]',
+                    'mt-3 rounded-lg px-3.5 py-2.5 text-[12.5px] flex items-start gap-2',
                     validationResult.valid
-                      ? 'border-[var(--ok)]/30 bg-[var(--ok)]/5 text-[var(--ok)]'
-                      : 'border-[var(--err)]/30 bg-[var(--err)]/5 text-[var(--err)]',
+                      ? 'bg-[var(--ok)]/[0.08] text-[var(--ok)]'
+                      : 'bg-[var(--err)]/[0.08] text-[var(--err)]',
                   )}
                 >
                   {validationResult.valid ? (
-                    <span className="font-medium">Schema 预检通过：未发现结构或端口范围错误。</span>
+                    <>
+                      <CheckCircle2 className="size-4 shrink-0 mt-0.5" strokeWidth={1.75} />
+                      <span className="font-medium">Schema 预检通过：未发现结构或端口范围错误。</span>
+                    </>
                   ) : (
-                    <ul className="list-disc pl-4 space-y-1">
-                      {validationResult.errors.map((err, i) => (
-                        <li key={i}>{err}</li>
-                      ))}
-                    </ul>
+                    <>
+                      <XCircle className="size-4 shrink-0 mt-0.5" strokeWidth={1.75} />
+                      <ul className="list-disc pl-4 space-y-1">
+                        {validationResult.errors.map((err, i) => (
+                          <li key={i}>{err}</li>
+                        ))}
+                      </ul>
+                    </>
                   )}
                 </div>
               )}
@@ -710,6 +821,6 @@ export function OpsView({
           </Panel>
         </div>
       )}
-    </div>
+    </ModuleFrame>
   );
 }

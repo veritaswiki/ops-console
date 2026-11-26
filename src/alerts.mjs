@@ -140,27 +140,48 @@ export function extractMetricValue(metric, snapshot) {
       return typeof v === 'number' && Number.isFinite(v) ? v : null;
     }
     case 'host.disk.maxPercent': {
-      const disks = snapshot.host?.disks || [];
-      if (!disks.length) return 0;
-      return Math.max(...disks.map((d) => Number(d.usePercent ?? d.usedPercent ?? 0)));
+      const disks = snapshot.host?.disks;
+      if (!disks || disks.length === 0) return 0;
+      let maxPct = 0;
+      for (let i = 0; i < disks.length; i += 1) {
+        const pct = Number(disks[i].usePercent ?? disks[i].usedPercent ?? 0);
+        if (pct > maxPct) maxPct = pct;
+      }
+      return maxPct;
     }
     case 'gateway.latencyMs': {
       const v = snapshot.magpie?.latencyMs;
       return typeof v === 'number' && Number.isFinite(v) ? v : null;
     }
     case 'services.failedCount': {
-      const items = snapshot.services?.items || [];
-      return items.filter((s) => s.status === 'failed' || (!s.optional && s.status === 'inactive')).length;
+      const items = snapshot.services?.items;
+      if (!items) return 0;
+      let count = 0;
+      for (let i = 0; i < items.length; i += 1) {
+        const s = items[i];
+        if (s.status === 'failed' || (!s.optional && s.status === 'inactive')) count += 1;
+      }
+      return count;
     }
     case 'memory.offlineEngines': {
-      const mem = snapshot.memory || {};
-      return ['nmem', 'openviking', 'symbiote', 'rerank']
-        .map((k) => mem[k])
-        .filter((e) => e?.enabled && !e.reachable).length;
+      const mem = snapshot.memory;
+      if (!mem) return 0;
+      let offline = 0;
+      if (mem.nmem?.enabled && !mem.nmem.reachable) offline += 1;
+      if (mem.openviking?.enabled && !mem.openviking.reachable) offline += 1;
+      if (mem.symbiote?.enabled && !mem.symbiote.reachable) offline += 1;
+      if (mem.rerank?.enabled && !mem.rerank.reachable) offline += 1;
+      return offline;
     }
     case 'fleet.offlineCount': {
-      const nodes = snapshot.fleet?.nodes || [];
-      return nodes.filter((n) => n.status === 'offline' || n.status === 'failed').length;
+      const nodes = snapshot.fleet?.nodes;
+      if (!nodes) return 0;
+      let offline = 0;
+      for (let i = 0; i < nodes.length; i += 1) {
+        const st = nodes[i].status;
+        if (st === 'offline' || st === 'failed') offline += 1;
+      }
+      return offline;
     }
     default:
       return null;
@@ -192,10 +213,15 @@ export function computeSlaSummary({ services = [], incidents = [], windowDays = 
   let totalDowntimeMs = 0;
   let resolvedCount = 0;
   let totalResolutionMs = 0;
+  let totalIncidents = 0;
+  let openIncidents = 0;
 
-  for (const inc of incidents) {
+  for (let i = 0; i < incidents.length; i += 1) {
+    const inc = incidents[i];
+    if (!inc.resolvedAt) openIncidents += 1;
     const tsMs = Date.parse(inc.ts || '');
     if (!Number.isFinite(tsMs) || tsMs < sinceMs) continue;
+    totalIncidents += 1;
     const isDegraded = inc.toState === 'failed' || inc.toState === 'offline' || inc.toState === 'degraded';
     if (!isDegraded) continue;
     const resolvedMs = inc.resolvedAt ? Date.parse(inc.resolvedAt) : nowMs;
@@ -206,30 +232,37 @@ export function computeSlaSummary({ services = [], incidents = [], windowDays = 
       totalResolutionMs += dur;
     }
     const key = inc.entityKey || `service:${inc.node}`;
-    const prev = byEntity.get(key) || { downtimeMs: 0, count: 0 };
+    let prev = byEntity.get(key);
+    if (!prev) {
+      prev = { downtimeMs: 0, count: 0 };
+      byEntity.set(key, prev);
+    }
     prev.downtimeMs += dur;
     prev.count += 1;
-    byEntity.set(key, prev);
   }
 
-  const trackedServices = services.filter((s) => !s.optional);
-  const serviceSlas = trackedServices.map((svc) => {
-    const key = `service:${svc.id}`;
-    const rec = byEntity.get(key) || { downtimeMs: 0, count: 0 };
-    const uptimePct = Math.max(0, Math.min(100, ((windowMs - rec.downtimeMs) / windowMs) * 100));
-    return {
+  const serviceSlas = [];
+  let uptimeSum = 0;
+  for (let i = 0; i < services.length; i += 1) {
+    const svc = services[i];
+    if (svc.optional) continue;
+    const rec = byEntity.get(`service:${svc.id}`);
+    const downtimeMs = rec ? rec.downtimeMs : 0;
+    const uptimePct = Number(Math.max(0, Math.min(100, ((windowMs - downtimeMs) / windowMs) * 100)).toFixed(3));
+    uptimeSum += uptimePct;
+    serviceSlas.push({
       id: svc.id,
       name: svc.name || svc.unit,
       layer: svc.layer || 'core',
-      uptimePct: Number(uptimePct.toFixed(3)),
-      incidents: rec.count,
-      downtimeMin: Math.round(rec.downtimeMs / 60_000),
+      uptimePct,
+      incidents: rec ? rec.count : 0,
+      downtimeMin: Math.round(downtimeMs / 60_000),
       status: svc.status || 'healthy',
-    };
-  });
+    });
+  }
 
   const avgUptime = serviceSlas.length
-    ? Number((serviceSlas.reduce((acc, s) => acc + s.uptimePct, 0) / serviceSlas.length).toFixed(3))
+    ? Number((uptimeSum / serviceSlas.length).toFixed(3))
     : 99.98;
   const mttrMinutes = resolvedCount > 0 ? Math.round(totalResolutionMs / resolvedCount / 60_000) : 0;
 
@@ -237,8 +270,8 @@ export function computeSlaSummary({ services = [], incidents = [], windowDays = 
     windowDays,
     overallUptimePct: avgUptime,
     mttrMinutes,
-    totalIncidents: incidents.filter((i) => Date.parse(i.ts || '') >= sinceMs).length,
-    openIncidents: incidents.filter((i) => !i.resolvedAt).length,
+    totalIncidents,
+    openIncidents,
     totalDowntimeMin: Math.round(totalDowntimeMs / 60_000),
     services: serviceSlas,
   };
@@ -250,7 +283,9 @@ export class AlertEngine {
     this.logger = logger;
     this.demo = Boolean(demo);
     this.rules = DEFAULT_RULES.map((r) => ({ ...r }));
+    this.rulesById = new Map(this.rules.map((r) => [r.id, r]));
     this.alerts = [];
+    this.alertsById = new Map();
     this.silenceUntilMs = 0;
     this.lastFiredByRule = new Map();
 
@@ -288,6 +323,7 @@ export class AlertEngine {
           summary: 'OpenViking 批处理期间内存峰值 86.4%，目前已回落至 38.8%',
         },
       ];
+      for (const a of this.alerts) this.alertsById.set(a.id, a);
     }
   }
 
@@ -366,12 +402,13 @@ export class AlertEngine {
       builtin: false,
     };
     this.rules.unshift(rule);
+    this.rulesById.set(rule.id, rule);
     this.eventBus?.emit('alert_rule_created', { ruleId: rule.id, name: rule.name });
     return rule;
   }
 
   updateRule(ruleId, patch) {
-    const rule = this.rules.find((r) => r.id === ruleId);
+    const rule = this.rulesById.get(ruleId);
     if (!rule) {
       const err = new Error(`未找到告警规则: ${ruleId}`);
       err.statusCode = 404;
@@ -400,19 +437,21 @@ export class AlertEngine {
   }
 
   deleteRule(ruleId) {
-    const idx = this.rules.findIndex((r) => r.id === ruleId);
-    if (idx < 0) {
+    if (!this.rulesById.has(ruleId)) {
       const err = new Error(`未找到告警规则: ${ruleId}`);
       err.statusCode = 404;
       throw err;
     }
+    const idx = this.rules.findIndex((r) => r.id === ruleId);
     const [removed] = this.rules.splice(idx, 1);
+    this.rulesById.delete(ruleId);
+    this.lastFiredByRule.delete(ruleId);
     this.eventBus?.emit('alert_rule_deleted', { ruleId: removed.id });
     return removed;
   }
 
   ackAlert(alertId, actor = 'web') {
-    const item = this.alerts.find((a) => a.id === alertId);
+    const item = this.alertsById.get(alertId);
     if (!item) {
       const err = new Error(`未找到告警事件: ${alertId}`);
       err.statusCode = 404;
@@ -466,7 +505,11 @@ export class AlertEngine {
         summary: `${rule.metric} 当前值 ${val} 触发条件 (${rule.operator} ${rule.threshold})`,
       };
       this.alerts.unshift(alert);
-      if (this.alerts.length > 100) this.alerts.length = 100;
+      this.alertsById.set(alert.id, alert);
+      while (this.alerts.length > 100) {
+        const evicted = this.alerts.pop();
+        if (evicted) this.alertsById.delete(evicted.id);
+      }
       newlyFired.push(alert);
       this.eventBus?.emit('alert_fired', alert);
     }

@@ -3,22 +3,12 @@ import { MotionConfig } from 'motion/react';
 import { Toaster, toast } from 'sonner';
 import { Drawer } from 'vaul';
 import {
-  Bell,
-  Blocks,
-  Bot,
-  Database,
-  Globe,
-  Layers,
-  LayoutGrid,
   LogOut,
   Menu,
   Moon,
-  Network,
   RefreshCw,
   Search,
   Sun,
-  Terminal,
-  Wrench,
   X,
 } from 'lucide-react';
 import type {
@@ -43,101 +33,44 @@ import {
   Button,
   CommandPalette,
   ConfirmAlertDialog,
+  ViewSkeleton,
   type CommandEntry,
   type ConfirmModalState,
 } from './components/ui';
 import { OverviewView } from './views/OverviewView';
-import { AlertsView } from './views/AlertsView';
-import { FleetView } from './views/FleetView';
-import { ServicesView } from './views/ServicesView';
-import { PluginsView } from './views/PluginsView';
-import { MemoryView } from './views/MemoryView';
-import { AgentsView } from './views/AgentsView';
-import { NetworkView } from './views/NetworkView';
-import { LogsView } from './views/LogsView';
-import { OpsView } from './views/OpsView';
 import { OfflineIndicator, PWAInstallButton } from './hooks/usePWA';
+import {
+  CONSOLE_MODULES,
+  getModuleByChord,
+  getModuleById,
+  getModulesGroupedByDomain,
+  loadAgentsView,
+  loadAlertsView,
+  loadFleetView,
+  loadLogsView,
+  loadMemoryView,
+  loadNetworkView,
+  loadOpsView,
+  loadPluginsView,
+  loadServicesView,
+  MODULE_DOMAINS,
+  parseViewFromHash,
+  prefetchModule,
+} from './modules/registry';
+import { ModuleBoundary } from './modules/ModuleBoundary';
 
-interface NavItemConfig {
-  key: ViewId;
-  label: string;
-  section: string;
-  keywords: string[];
-  icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
-}
+const AlertsView = React.lazy(() => loadAlertsView().then((m) => ({ default: m.AlertsView })));
+const FleetView = React.lazy(() => loadFleetView().then((m) => ({ default: m.FleetView })));
+const ServicesView = React.lazy(() => loadServicesView().then((m) => ({ default: m.ServicesView })));
+const PluginsView = React.lazy(() => loadPluginsView().then((m) => ({ default: m.PluginsView })));
+const MemoryView = React.lazy(() => loadMemoryView().then((m) => ({ default: m.MemoryView })));
+const AgentsView = React.lazy(() => loadAgentsView().then((m) => ({ default: m.AgentsView })));
+const NetworkView = React.lazy(() => loadNetworkView().then((m) => ({ default: m.NetworkView })));
+const LogsView = React.lazy(() => loadLogsView().then((m) => ({ default: m.LogsView })));
+const OpsView = React.lazy(() => loadOpsView().then((m) => ({ default: m.OpsView })));
 
-const NAV_ITEMS: NavItemConfig[] = [
-  {
-    key: 'overview',
-    label: '系统总览',
-    section: '观测',
-    keywords: ['overview', 'dashboard', '总览', '架构', '拓扑', '主界面'],
-    icon: LayoutGrid,
-  },
-  {
-    key: 'alerts',
-    label: '告警与事件',
-    section: '观测',
-    keywords: ['alerts', 'sla', 'incident', 'postmortem', '告警', '事件', '复盘', '规则'],
-    icon: Bell,
-  },
-  {
-    key: 'fleet',
-    label: '全球节点',
-    section: '观测',
-    keywords: ['fleet', 'map', 'probe', '节点', '地图', '探针', '手机'],
-    icon: Globe,
-  },
-  {
-    key: 'services',
-    label: '受管服务',
-    section: '基础设施',
-    keywords: ['services', 'systemd', 'service', '服务', '重启', '进程'],
-    icon: Layers,
-  },
-  {
-    key: 'plugins',
-    label: '插件与接入',
-    section: '基础设施',
-    keywords: ['plugins', 'mcp', 'a2a', 'agent', 'openai', 'ollama', 'connector', '插件', '接入', '协议'],
-    icon: Blocks,
-  },
-  {
-    key: 'memory',
-    label: '记忆引擎',
-    section: '基础设施',
-    keywords: ['memory', 'nmem', 'openviking', 'symbiote', 'rerank', '记忆', '检索'],
-    icon: Database,
-  },
-  {
-    key: 'agents',
-    label: '网关与 Agent',
-    section: '基础设施',
-    keywords: ['agents', 'magpie', 'gateway', 'mcp', '模型', '网关'],
-    icon: Bot,
-  },
-  {
-    key: 'network',
-    label: '网络与防火墙',
-    section: '基础设施',
-    keywords: ['network', 'tailscale', 'mihomo', 'syncthing', 'ssh', '网络', '防火墙'],
-    icon: Network,
-  },
-  {
-    key: 'logs',
-    label: '统一日志',
-    section: '运维',
-    keywords: ['logs', 'journald', 'tail', 'stream', '日志', '实时流'],
-    icon: Terminal,
-  },
-  {
-    key: 'ops',
-    label: '运维与审计',
-    section: '运维',
-    keywords: ['ops', 'timers', 'backup', 'audit', 'incidents', '运维', '备份', '审计'],
-    icon: Wrench,
-  },
-];
+const DOMAIN_TITLE_MAP = new Map(MODULE_DOMAINS.map((d) => [d.id, d.title]));
+const GROUPED_MODULES = getModulesGroupedByDomain();
 
 const THEME_STORAGE_KEY = 'ops-console-theme';
 
@@ -168,7 +101,7 @@ function applyTheme(theme: 'light' | 'dark') {
 }
 
 export function App() {
-  const [view, setView] = React.useState<ViewId>('overview');
+  const [view, setView] = React.useState<ViewId>(() => parseViewFromHash(window.location.hash) || 'overview');
   const [theme, setTheme] = React.useState<'light' | 'dark'>(() => readInitialTheme());
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const [commandOpen, setCommandOpen] = React.useState(false);
@@ -249,38 +182,60 @@ export function App() {
     }
   }, []);
 
-  // Initial bootstrap
+  // Parallel initial bootstrap: fetchMeta + loadSnapshot concurrently (zero serial waterfall)
   React.useEffect(() => {
+    const controller = new AbortController();
     let active = true;
-    (async () => {
-      try {
-        const m = await fetchMeta();
-        if (active) {
-          setMeta(m);
-          if (m.appName) {
-            document.title = m.appName;
-          }
+    const metaTask = fetchMeta(controller.signal)
+      .then((m) => {
+        if (!active) return;
+        setMeta(m);
+        if (m.appName) {
+          document.title = m.appName;
         }
-      } catch {
+      })
+      .catch(() => {
         // Proceed even if meta temporarily fails
-      }
-      await Promise.all([loadSnapshot(false), loadProbes(), loadOpsData()]);
-    })();
+      });
+    void Promise.all([metaTask, loadSnapshot(false)]);
     return () => {
       active = false;
+      controller.abort();
     };
-  }, [loadSnapshot, loadProbes, loadOpsData]);
+  }, [loadSnapshot]);
 
-  // Refresh secondary views when switching into them
+  // Refresh secondary views on-demand using module dataDeps manifest
   React.useEffect(() => {
-    if (view === 'fleet') {
-      loadProbes();
-    } else if (view === 'ops' || view === 'alerts') {
-      loadOpsData();
+    const mod = getModuleById(view);
+    if (mod.dataDeps.includes('probes')) {
+      void loadProbes();
+    }
+    if (mod.dataDeps.includes('ops')) {
+      void loadOpsData();
     }
   }, [view, loadProbes, loadOpsData]);
 
-  // Real-time SSE delta event bus subscription
+  // URL Hash deep-link sync (Grafana / Tailscale Admin style shareable routes)
+  React.useEffect(() => {
+    const nextHash = `#${view}`;
+    if (window.location.hash !== nextHash) {
+      window.history.replaceState(null, '', nextHash);
+    }
+  }, [view]);
+
+  React.useEffect(() => {
+    const onHashChange = () => {
+      const parsed = parseViewFromHash(window.location.hash);
+      if (parsed) setView(parsed);
+    };
+    window.addEventListener('hashchange', onHashChange);
+    return () => window.removeEventListener('hashchange', onHashChange);
+  }, []);
+
+  // Real-time SSE delta event bus subscription (aligned with backend event names)
+  const viewRef = React.useRef<ViewId>(view);
+  viewRef.current = view;
+
   React.useEffect(() => {
     if (typeof EventSource === 'undefined') return;
     let timer: number | null = null;
@@ -290,13 +245,35 @@ export function App() {
         timer = null;
         if (document.visibilityState === 'visible') {
           void loadSnapshot(false);
-          void loadOpsData();
+          const activeMod = getModuleById(viewRef.current);
+          if (activeMod.dataDeps.includes('ops')) {
+            void loadOpsData();
+          }
+          if (activeMod.dataDeps.includes('probes')) {
+            void loadProbes();
+          }
         }
       }, 600);
     };
 
     const es = new EventSource('/api/events/stream');
-    const eventTypes = ['audit', 'alert', 'probe', 'runbook', 'service', 'incident', 'plugins_updated'];
+    const eventTypes = [
+      'probe_heartbeat',
+      'alert_fired',
+      'alert_acked',
+      'alert_rule_created',
+      'alert_rule_updated',
+      'alert_rule_deleted',
+      'alert_silence_updated',
+      'service_action',
+      'timer_action',
+      'incident_updated',
+      'probe_command',
+      'runbook_step',
+      'ops_health',
+      'ops_backup',
+      'plugins_updated',
+    ];
     for (const type of eventTypes) {
       es.addEventListener(type, scheduleDeltaSync);
     }
@@ -305,7 +282,7 @@ export function App() {
       if (timer != null) window.clearTimeout(timer);
       es.close();
     };
-  }, [loadSnapshot, loadOpsData]);
+  }, [loadSnapshot, loadOpsData, loadProbes]);
 
   // Polling interval
   React.useEffect(() => {
@@ -318,17 +295,63 @@ export function App() {
     return () => window.clearInterval(timer);
   }, [pollMs, loadSnapshot]);
 
-  // Global Cmd+K / Ctrl+K shortcut — instant response (frequency-gated)
+  // Global Cmd+K / Ctrl+K + Linear-style G+<key> chord navigation
   React.useEffect(() => {
+    let chordArmed = false;
+    let chordTimer: number | null = null;
+
+    const clearChord = () => {
+      chordArmed = false;
+      if (chordTimer != null) {
+        window.clearTimeout(chordTimer);
+        chordTimer = null;
+      }
+    };
+
+    const isEditableTarget = (target: EventTarget | null): boolean => {
+      if (!(target instanceof HTMLElement)) return false;
+      const tag = target.tagName;
+      return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target.isContentEditable;
+    };
+
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
         e.preventDefault();
+        clearChord();
         setCommandOpen((prev) => !prev);
+        return;
+      }
+      if (e.metaKey || e.ctrlKey || e.altKey || commandOpen || confirmState?.open) {
+        clearChord();
+        return;
+      }
+      if (isEditableTarget(e.target)) return;
+
+      const key = e.key.toLowerCase();
+      if (chordArmed) {
+        const targetView = getModuleByChord(key);
+        clearChord();
+        if (targetView) {
+          e.preventDefault();
+          setView(targetView);
+          setMobileNavOpen(false);
+          window.scrollTo({ top: 0 });
+        }
+        return;
+      }
+
+      if (key === 'g') {
+        chordArmed = true;
+        chordTimer = window.setTimeout(clearChord, 900);
       }
     };
+
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
+    return () => {
+      clearChord();
+      window.removeEventListener('keydown', onKeyDown);
+    };
+  }, [commandOpen, confirmState?.open]);
 
   const handleOpenLogs = React.useCallback(
     (unit: string, level: 'all' | 'error' | 'warn' = 'all') => {
@@ -376,14 +399,15 @@ export function App() {
   const commandEntries = React.useMemo<CommandEntry[]>(() => {
     const list: CommandEntry[] = [];
 
-    for (const item of NAV_ITEMS) {
+    for (const mod of CONSOLE_MODULES) {
       list.push({
-        id: `nav:${item.key}`,
-        label: item.label,
+        id: `nav:${mod.id}`,
+        label: mod.label,
         group: '视图导航',
-        keywords: item.keywords,
-        meta: item.section,
-        onSelect: () => handleSelectView(item.key),
+        keywords: [...mod.keywords, `g ${mod.chord}`],
+        meta: DOMAIN_TITLE_MAP.get(mod.domain) || mod.domain,
+        shortcut: `G ${mod.chord.toUpperCase()}`,
+        onSelect: () => handleSelectView(mod.id),
       });
     }
 
@@ -513,15 +537,8 @@ export function App() {
   const readOnly = Boolean(meta?.readOnly);
   const demoMode = Boolean(meta?.demo);
   const brandTitle = meta?.appName || 'Ops Console';
-  const activeNav = NAV_ITEMS.find((n) => n.key === view) || NAV_ITEMS[0];
-
-  const navSections = React.useMemo(() => {
-    const order = ['观测', '基础设施', '运维'];
-    return order.map((sec) => ({
-      title: sec,
-      items: NAV_ITEMS.filter((i) => i.section === sec),
-    }));
-  }, []);
+  const activeModule = getModuleById(view);
+  const activeDomainTitle = DOMAIN_TITLE_MAP.get(activeModule.domain) || activeModule.domain;
 
   const failedSvcCount = React.useMemo(() => {
     return (snapshot?.services?.items || []).filter(
@@ -572,22 +589,24 @@ export function App() {
 
       {/* Zero click dead zones: continuous hit area via internal py-2.5 padding */}
       <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-5" aria-label="主导航">
-        {navSections.map((sec) => (
-          <div key={sec.title}>
+        {GROUPED_MODULES.map(({ domain, modules }) => (
+          <div key={domain.id}>
             <div className="px-2.5 pb-1.5 text-[11.5px] font-medium text-[var(--ink-subtle)] select-none">
-              {sec.title}
+              {domain.title}
             </div>
             <div className="flex flex-col">
-              {sec.items.map((item) => {
-                const Icon = item.icon;
-                const isActive = view === item.key;
+              {modules.map((mod) => {
+                const Icon = mod.icon;
+                const isActive = view === mod.id;
                 return (
                   <button
-                    key={item.key}
+                    key={mod.id}
                     type="button"
-                    data-view={item.key}
+                    data-view={mod.id}
                     aria-current={isActive ? 'page' : undefined}
-                    onClick={() => handleSelectView(item.key)}
+                    onClick={() => handleSelectView(mod.id)}
+                    onMouseEnter={() => prefetchModule(mod.id)}
+                    onFocus={() => prefetchModule(mod.id)}
                     className={cn(
                       'w-full flex items-center justify-between gap-2.5 px-2.5 py-2.5 rounded-lg text-[13.5px] font-medium select-none cursor-pointer whitespace-nowrap',
                       'transition-colors duration-150 ease-out',
@@ -605,14 +624,14 @@ export function App() {
                         )}
                         strokeWidth={1.75}
                       />
-                      <span className="truncate">{item.label}</span>
+                      <span className="truncate">{mod.label}</span>
                     </span>
-                    {item.key === 'services' && failedSvcCount > 0 && (
+                    {mod.badgeKey === 'failedServices' && failedSvcCount > 0 && (
                       <span className="font-mono text-[11.5px] font-semibold text-[var(--err)] tabular-nums shrink-0">
                         {failedSvcCount}
                       </span>
                     )}
-                    {item.key === 'alerts' && activeAlertsCount > 0 && (
+                    {mod.badgeKey === 'alerts' && activeAlertsCount > 0 && (
                       <span className="font-mono text-[11.5px] font-semibold text-[var(--warn)] tabular-nums shrink-0">
                         {activeAlertsCount}
                       </span>
@@ -695,11 +714,11 @@ export function App() {
                 </Button>
                 <div className="flex items-center gap-2 min-w-0 text-[13px] select-none">
                   <span className="hidden sm:inline text-[var(--ink-subtle)] whitespace-nowrap">
-                    {activeNav.section}
+                    {activeDomainTitle}
                   </span>
                   <span className="hidden sm:inline text-[var(--ink-subtle)]/50" aria-hidden="true">/</span>
                   <span className="font-medium text-[var(--ink)] truncate whitespace-nowrap">
-                    {activeNav.label}
+                    {activeModule.label}
                   </span>
                 </div>
               </div>
@@ -773,8 +792,8 @@ export function App() {
                   title="立即同步遥测快照"
                   onClick={() => {
                     loadSnapshot(true);
-                    if (view === 'fleet') loadProbes();
-                    if (view === 'ops') loadOpsData();
+                    if (activeModule.dataDeps.includes('probes')) loadProbes();
+                    if (activeModule.dataDeps.includes('ops')) loadOpsData();
                   }}
                 >
                   <RefreshCw
@@ -809,113 +828,102 @@ export function App() {
             </div>
           )}
 
-          {/* Active View Shell */}
+          {/* Active View Shell with per-module fault boundary */}
           <main className="flex-1 w-full max-w-[1200px] mx-auto px-4 sm:px-8 py-6 sm:py-9">
             {loading && !snapshot ? (
-              <div className="space-y-8" aria-busy="true" aria-label="正在加载遥测视图">
-                <div className="flex items-end justify-between gap-4">
-                  <div className="space-y-2">
-                    <div className="h-7 w-36 rounded-lg bg-[var(--surface-subtle)] animate-pulse" />
-                    <div className="h-4 w-72 max-w-[75vw] rounded-md bg-[var(--surface-subtle)] animate-pulse" />
-                  </div>
-                  <div className="hidden sm:block h-4 w-44 rounded-md bg-[var(--surface-subtle)] animate-pulse" />
-                </div>
-                <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                  <div className="lg:col-span-5 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
-                  <div className="lg:col-span-7 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
-                </div>
-                <div className="h-[540px] rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
-              </div>
+              <ViewSkeleton />
             ) : (
-              <>
-                {view === 'overview' && (
-                  <OverviewView
-                    snapshot={snapshot}
-                    incidents={incidents}
-                    onOpenLogs={handleOpenLogs}
-                    onSelectAgentCategory={handleSelectAgentCategory}
-                    onOpenPlugins={() => handleSelectView('plugins')}
-                  />
-                )}
-                {view === 'alerts' && (
-                  <AlertsView
-                    incidents={incidents}
-                    readOnly={readOnly}
-                    onRefreshIncidents={loadOpsData}
-                    onToast={pushToast}
-                    onConfirm={setConfirmState}
-                  />
-                )}
-                {view === 'fleet' && (
-                  <FleetView
-                    snapshot={snapshot}
-                    probes={probes}
-                    readOnly={readOnly}
-                    onRefresh={() => loadSnapshot(true)}
-                    onRefreshProbes={loadProbes}
-                    onToast={pushToast}
-                    onConfirm={setConfirmState}
-                  />
-                )}
-                {view === 'services' && (
-                  <ServicesView
-                    snapshot={snapshot}
-                    readOnly={readOnly}
-                    onRefresh={() => loadSnapshot(true)}
-                    onOpenLogs={handleOpenLogs}
-                    onToast={pushToast}
-                    onConfirm={setConfirmState}
-                  />
-                )}
-                {view === 'plugins' && (
-                  <PluginsView
-                    readOnly={readOnly}
-                    onSnapshotChanged={() => void loadSnapshot(true)}
-                    onToast={pushToast}
-                    onConfirm={setConfirmState}
-                  />
-                )}
-                {view === 'memory' && (
-                  <MemoryView snapshot={snapshot} readOnly={readOnly} onToast={pushToast} />
-                )}
-                {view === 'agents' && (
-                  <AgentsView
-                    snapshot={snapshot}
-                    selectedCategory={agentCategory}
-                    selectedPid={agentPid}
-                    onSelectCategory={(cat) => {
-                      setAgentPid(null);
-                      setAgentCategory(cat);
-                    }}
-                    onSelectPid={setAgentPid}
-                  />
-                )}
-                {view === 'network' && (
-                  <NetworkView snapshot={snapshot} meta={meta} onToast={pushToast} />
-                )}
-                {view === 'logs' && (
-                  <LogsView
-                    snapshot={snapshot}
-                    meta={meta}
-                    initialUnit={logsInitialUnit}
-                    initialLevel={logsInitialLevel}
-                    requestNonce={logsRequestNonce}
-                    onToast={pushToast}
-                  />
-                )}
-                {view === 'ops' && (
-                  <OpsView
-                    snapshot={snapshot}
-                    incidents={incidents}
-                    audit={audit}
-                    readOnly={readOnly}
-                    onRefresh={() => loadSnapshot(true)}
-                    onRefreshOps={loadOpsData}
-                    onToast={pushToast}
-                    onConfirm={setConfirmState}
-                  />
-                )}
-              </>
+              <ModuleBoundary moduleId={activeModule.id} moduleLabel={activeModule.label}>
+                <React.Suspense fallback={<ViewSkeleton />}>
+                  {view === 'overview' && (
+                    <OverviewView
+                      snapshot={snapshot}
+                      incidents={incidents}
+                      onOpenLogs={handleOpenLogs}
+                      onSelectAgentCategory={handleSelectAgentCategory}
+                      onOpenPlugins={() => handleSelectView('plugins')}
+                    />
+                  )}
+                  {view === 'alerts' && (
+                    <AlertsView
+                      incidents={incidents}
+                      readOnly={readOnly}
+                      onRefreshIncidents={loadOpsData}
+                      onToast={pushToast}
+                      onConfirm={setConfirmState}
+                    />
+                  )}
+                  {view === 'fleet' && (
+                    <FleetView
+                      snapshot={snapshot}
+                      probes={probes}
+                      readOnly={readOnly}
+                      onRefresh={() => loadSnapshot(true)}
+                      onRefreshProbes={loadProbes}
+                      onToast={pushToast}
+                      onConfirm={setConfirmState}
+                    />
+                  )}
+                  {view === 'services' && (
+                    <ServicesView
+                      snapshot={snapshot}
+                      readOnly={readOnly}
+                      onRefresh={() => loadSnapshot(true)}
+                      onOpenLogs={handleOpenLogs}
+                      onToast={pushToast}
+                      onConfirm={setConfirmState}
+                    />
+                  )}
+                  {view === 'plugins' && (
+                    <PluginsView
+                      readOnly={readOnly}
+                      onSnapshotChanged={() => void loadSnapshot(true)}
+                      onToast={pushToast}
+                      onConfirm={setConfirmState}
+                    />
+                  )}
+                  {view === 'memory' && (
+                    <MemoryView snapshot={snapshot} readOnly={readOnly} onToast={pushToast} />
+                  )}
+                  {view === 'agents' && (
+                    <AgentsView
+                      snapshot={snapshot}
+                      selectedCategory={agentCategory}
+                      selectedPid={agentPid}
+                      onSelectCategory={(cat) => {
+                        setAgentPid(null);
+                        setAgentCategory(cat);
+                      }}
+                      onSelectPid={setAgentPid}
+                    />
+                  )}
+                  {view === 'network' && (
+                    <NetworkView snapshot={snapshot} meta={meta} onToast={pushToast} />
+                  )}
+                  {view === 'logs' && (
+                    <LogsView
+                      snapshot={snapshot}
+                      meta={meta}
+                      initialUnit={logsInitialUnit}
+                      initialLevel={logsInitialLevel}
+                      requestNonce={logsRequestNonce}
+                      onToast={pushToast}
+                    />
+                  )}
+                  {view === 'ops' && (
+                    <OpsView
+                      snapshot={snapshot}
+                      incidents={incidents}
+                      audit={audit}
+                      readOnly={readOnly}
+                      onRefresh={() => loadSnapshot(true)}
+                      onRefreshOps={loadOpsData}
+                      onToast={pushToast}
+                      onConfirm={setConfirmState}
+                    />
+                  )}
+                </React.Suspense>
+              </ModuleBoundary>
             )}
           </main>
         </div>

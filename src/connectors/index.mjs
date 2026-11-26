@@ -14,48 +14,33 @@ import { collectRemoteNodes } from './remote-ssh.mjs';
 import { collectFirewall } from './firewall.mjs';
 
 async function collectOpsStateFiles(config) {
-  let health = null;
-  let backup = null;
-  let alerts = [];
-  let activeOpsJobs = [];
-
-  if (config.ops.healthLatestPath) {
-    try {
-      health = JSON.parse(await fs.readFile(config.ops.healthLatestPath, 'utf8'));
-    } catch {
-      health = null;
-    }
-  }
-  if (config.ops.backupLastRunPath) {
-    try {
-      backup = JSON.parse(await fs.readFile(config.ops.backupLastRunPath, 'utf8'));
-    } catch {
-      backup = null;
-    }
-  }
-  if (config.ops.alertsLogPath) {
-    try {
-      const raw = await fs.readFile(config.ops.alertsLogPath, 'utf8');
-      alerts = raw.trim().split('\n').filter(Boolean).slice(-25).reverse();
-    } catch {
-      alerts = [];
-    }
-  }
-  try {
-    const { stdout } = await runCmd(
+  const [health, backup, alerts, activeOpsJobs] = await Promise.all([
+    config.ops.healthLatestPath
+      ? fs.readFile(config.ops.healthLatestPath, 'utf8').then((raw) => JSON.parse(raw)).catch(() => null)
+      : Promise.resolve(null),
+    config.ops.backupLastRunPath
+      ? fs.readFile(config.ops.backupLastRunPath, 'utf8').then((raw) => JSON.parse(raw)).catch(() => null)
+      : Promise.resolve(null),
+    config.ops.alertsLogPath
+      ? fs.readFile(config.ops.alertsLogPath, 'utf8')
+          .then((raw) => raw.trim().split('\n').filter(Boolean).slice(-25).reverse())
+          .catch(() => [])
+      : Promise.resolve([]),
+    runCmd(
       'systemctl',
       ['--user', 'list-units', '--type=service', '--state=running', '--no-legend', '--no-pager', 'ops-*'],
       { timeout: 2000 },
-    );
-    activeOpsJobs = stdout
-      .trim()
-      .split('\n')
-      .filter(Boolean)
-      .map((l) => l.trim().split(/\s+/)[0])
-      .filter((u) => u !== 'ops-console.service');
-  } catch {
-    activeOpsJobs = [];
-  }
+    )
+      .then(({ stdout }) =>
+        stdout
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((l) => l.trim().split(/\s+/)[0])
+          .filter((u) => u !== 'ops-console.service'),
+      )
+      .catch(() => []),
+  ]);
 
   return { health, backup, alerts, activeOpsJobs };
 }
@@ -255,6 +240,24 @@ export class ConnectorHub {
           }
         }
         const nodes = [...demoById.values()];
+        let online = 0;
+        let reachable = 0;
+        let meshOnly = 0;
+        let probed = 0;
+        let servers = 0;
+        let laptops = 0;
+        let mobiles = 0;
+        for (const node of nodes) {
+          const isOnline = node.status === 'healthy' || node.status === 'degraded';
+          const isMeshOnly = node.status === 'standby' && node.transport !== 'offline';
+          if (isOnline) online += 1;
+          if (isMeshOnly) meshOnly += 1;
+          if (isOnline || isMeshOnly) reachable += 1;
+          if (node.probeMode === 'local' || node.probeLive) probed += 1;
+          if (node.deviceType === 'hub' || node.deviceType === 'server' || node.deviceType === 'edge') servers += 1;
+          else if (node.deviceType === 'laptop') laptops += 1;
+          else if (node.deviceType === 'mobile') mobiles += 1;
+        }
         return {
           ...patchedDemo,
           fleet: {
@@ -262,13 +265,13 @@ export class ConnectorHub {
             nodes,
             summary: {
               total: nodes.length,
-              online: nodes.filter((node) => node.status === 'healthy' || node.status === 'degraded').length,
-              reachable: nodes.filter((node) => node.status === 'healthy' || node.status === 'degraded' || (node.status === 'standby' && node.transport !== 'offline')).length,
-              meshOnly: nodes.filter((node) => node.status === 'standby' && node.transport !== 'offline').length,
-              probed: nodes.filter((node) => node.probeMode === 'local' || node.probeLive).length,
-              servers: nodes.filter((node) => node.deviceType === 'hub' || node.deviceType === 'server' || node.deviceType === 'edge').length,
-              laptops: nodes.filter((node) => node.deviceType === 'laptop').length,
-              mobiles: nodes.filter((node) => node.deviceType === 'mobile').length,
+              online,
+              reachable,
+              meshOnly,
+              probed,
+              servers,
+              laptops,
+              mobiles,
             },
           },
         };

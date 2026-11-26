@@ -24,7 +24,7 @@ import {
 } from '@ui-sdk/react/dialog';
 import { Switch, SwitchThumb } from '@ui-sdk/react/switch';
 import { Meter, MeterIndicator, MeterTrack } from '@ui-sdk/react/meter';
-import { Inbox, Search, X } from 'lucide-react';
+import { AlertTriangle, Inbox, RefreshCw, Search, X } from 'lucide-react';
 import type { StatusTone } from '../types';
 import { cn, FOCUS_RING } from '../lib/cn';
 import { clampPercent, classifyLatency, statusLabel, statusTone } from '../utils/format';
@@ -313,8 +313,8 @@ export function Panel({
       )}
     >
       {(title || actions) && (
-        <div className="flex flex-wrap items-center justify-between gap-4 px-5 sm:px-6 py-4 border-b border-[var(--border-subtle)]">
-          <div className="min-w-0 flex-1">
+        <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-3 px-5 sm:px-6 py-4 border-b border-[var(--border-subtle)]">
+          <div className="min-w-[min(100%,220px)] flex-1">
             {title && (
               <h2 className="text-[15px] font-semibold tracking-tight text-[var(--ink)] leading-snug text-balance">
                 {title}
@@ -327,7 +327,7 @@ export function Panel({
             )}
           </div>
           {actions && (
-            <div className="flex flex-wrap items-center gap-2.5 min-w-0 max-w-full shrink-0">
+            <div className="flex flex-wrap items-center gap-2.5 min-w-0 max-w-full">
               {actions}
             </div>
           )}
@@ -510,6 +510,89 @@ export function KpiStrip({ cells, asymmetric = false }: { cells: KpiCellData[]; 
           )}
         </div>
       ))}
+    </div>
+  );
+}
+
+export function ErrorState({
+  title = '数据加载失败',
+  message,
+  onRetry,
+  retrying = false,
+}: {
+  title?: string;
+  message: string;
+  onRetry?: () => void;
+  retrying?: boolean;
+}) {
+  return (
+    <div
+      role="alert"
+      className="py-12 px-6 flex flex-col items-center justify-center text-center gap-3"
+    >
+      <div className="h-10 w-10 rounded-xl border border-[var(--err)]/25 bg-[var(--err)]/5 flex items-center justify-center text-[var(--err)]">
+        <AlertTriangle className="size-4" strokeWidth={1.75} aria-hidden="true" />
+      </div>
+      <div className="space-y-1 max-w-sm">
+        <p className="text-[14px] font-medium text-[var(--ink)] text-balance">{title}</p>
+        <p className="text-[13px] text-[var(--ink-muted)] leading-relaxed text-pretty">
+          {message}
+        </p>
+      </div>
+      {onRetry && (
+        <Button variant="secondary" size="sm" onClick={onRetry} disabled={retrying} className="mt-1">
+          <RefreshCw className={cn('size-3.5', retrying && 'animate-spin')} strokeWidth={1.75} />
+          {retrying ? '重试中...' : '重新加载'}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+export function WidgetSkeleton({
+  heightClass = 'h-[320px]',
+  label = '正在加载视图模块',
+}: {
+  heightClass?: string;
+  label?: string;
+}) {
+  return (
+    <div
+      aria-busy="true"
+      aria-label={label}
+      className={cn(
+        'w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg)]/50 p-4 flex flex-col justify-between animate-pulse',
+        heightClass,
+      )}
+    >
+      <div className="flex items-center justify-between gap-4">
+        <div className="h-3.5 w-36 rounded bg-[var(--surface-subtle)]" />
+        <div className="h-3.5 w-24 rounded bg-[var(--surface-subtle)]" />
+      </div>
+      <div className="flex-1 my-4 rounded-lg bg-[var(--surface-subtle)]/60" />
+      <div className="flex items-center justify-between gap-4">
+        <div className="h-3 w-20 rounded bg-[var(--surface-subtle)]" />
+        <div className="h-3 w-28 rounded bg-[var(--surface-subtle)]" />
+      </div>
+    </div>
+  );
+}
+
+export function ViewSkeleton() {
+  return (
+    <div className="space-y-8" aria-busy="true" aria-label="正在加载遥测视图">
+      <div className="flex items-end justify-between gap-4">
+        <div className="space-y-2">
+          <div className="h-7 w-36 rounded-lg bg-[var(--surface-subtle)] animate-pulse" />
+          <div className="h-4 w-72 max-w-[75vw] rounded-md bg-[var(--surface-subtle)] animate-pulse" />
+        </div>
+        <div className="hidden sm:block h-4 w-44 rounded-md bg-[var(--surface-subtle)] animate-pulse" />
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        <div className="lg:col-span-5 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
+        <div className="lg:col-span-7 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
+      </div>
+      <div className="h-[420px] rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
     </div>
   );
 }

@@ -1,5 +1,13 @@
 import React from 'react';
+import { Check, RotateCcw, SlidersHorizontal } from 'lucide-react';
 import type { IncidentItem, SnapshotResponse, StatusTone } from '../types';
+import { cn, FOCUS_RING } from '../lib/cn';
+import {
+  DEFAULT_OVERVIEW_PREFS,
+  parseOverviewPrefs,
+  type OverviewPanelPrefs,
+} from '../lib/module-helpers';
+import { ModuleFrame } from '../modules/ModuleFrame';
 import {
   formatBytes,
   formatCompactNumber,
@@ -16,9 +24,24 @@ import {
   ResourceMeter,
   SegmentedFilter,
   StatusIndicator,
+  WidgetSkeleton,
 } from '../components/ui';
-import { ArchitectureGraph } from '../components/ArchitectureGraph';
-import { MetricsChart } from '../components/MetricsChart';
+
+const OVERVIEW_PREFS_KEY = 'ops-console-overview-prefs-v1';
+
+const PANEL_TOGGLE_ITEMS: ReadonlyArray<{ key: keyof OverviewPanelPrefs; label: string }> = [
+  { key: 'metrics', label: '历史指标趋势' },
+  { key: 'graph', label: '架构依赖图谱' },
+  { key: 'connectors', label: '插件与连接器' },
+  { key: 'storageEvents', label: '存储与事件' },
+];
+
+const ArchitectureGraph = React.lazy(() =>
+  import('../components/ArchitectureGraph').then((m) => ({ default: m.ArchitectureGraph })),
+);
+const MetricsChart = React.lazy(() =>
+  import('../components/MetricsChart').then((m) => ({ default: m.MetricsChart })),
+);
 
 const GRAPH_FILTERS = [
   { value: 'all', label: '全部' },
@@ -44,6 +67,37 @@ export function OverviewView({
   onOpenPlugins?: () => void;
 }) {
   const [graphFilter, setGraphFilter] = React.useState<GraphFilter>('all');
+  const [customizeOpen, setCustomizeOpen] = React.useState(false);
+  const [panelPrefs, setPanelPrefs] = React.useState<OverviewPanelPrefs>(() => {
+    try {
+      return parseOverviewPrefs(window.localStorage.getItem(OVERVIEW_PREFS_KEY));
+    } catch {
+      return { ...DEFAULT_OVERVIEW_PREFS };
+    }
+  });
+
+  const updatePanelPref = (key: keyof OverviewPanelPrefs) => {
+    setPanelPrefs((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      try {
+        window.localStorage.setItem(OVERVIEW_PREFS_KEY, JSON.stringify(next));
+      } catch {
+        // Ignore storage quota errors
+      }
+      return next;
+    });
+  };
+
+  const resetPanelPrefs = () => {
+    setPanelPrefs({ ...DEFAULT_OVERVIEW_PREFS });
+    try {
+      window.localStorage.removeItem(OVERVIEW_PREFS_KEY);
+    } catch {
+      // Ignore storage errors
+    }
+  };
+
+  const hiddenPanelsCount = PANEL_TOGGLE_ITEMS.filter((p) => !panelPrefs[p.key]).length;
 
   const host = snapshot?.host;
   const services = snapshot?.services?.items || [];
@@ -217,23 +271,64 @@ export function OverviewView({
   const fleetTotalNum = fleetSum ? (fleetSum.total ?? 0) : tsTotal;
 
   return (
-    <div className="space-y-8">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">
-            系统总览
-          </h1>
-          <p className="mt-1.5 text-sm text-[var(--ink-muted)] leading-relaxed text-pretty">
-            全栈服务健康度、主机负载、记忆引擎与组网连接状态。
-          </p>
-        </div>
-        <div
-          className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums truncate max-w-full"
-          title={hostMeta}
+    <ModuleFrame
+      title="系统总览"
+      description="全栈服务健康度、主机负载、记忆引擎与组网连接状态。"
+      meta={hostMeta}
+      actions={
+        <Button
+          variant="secondary"
+          size="sm"
+          onClick={() => setCustomizeOpen((v) => !v)}
+          data-testid="overview-customize-btn"
         >
-          {hostMeta}
+          <SlidersHorizontal className="size-3.5 text-[var(--ink-muted)]" strokeWidth={1.75} />
+          自定义面板{hiddenPanelsCount > 0 ? ` (${4 - hiddenPanelsCount}/4)` : ''}
+        </Button>
+      }
+    >
+      {customizeOpen && (
+        <div
+          data-testid="overview-customize-bar"
+          className="rounded-xl bg-[var(--surface-subtle)]/75 px-4 py-3 flex flex-wrap items-center justify-between gap-3"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-[12px] font-medium text-[var(--ink-muted)] mr-1">
+              显示工作台面板
+            </span>
+            {PANEL_TOGGLE_ITEMS.map((item) => {
+              const active = panelPrefs[item.key];
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => updatePanelPref(item.key)}
+                  data-testid={`overview-toggle-${item.key}`}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[12px] font-medium border transition-colors duration-150 cursor-pointer select-none',
+                    FOCUS_RING,
+                    active
+                      ? 'border-[var(--border-strong)] bg-[var(--surface)] text-[var(--ink)]'
+                      : 'border-transparent text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)]',
+                  )}
+                >
+                  <Check
+                    className={cn('size-3', active ? 'text-[var(--accent)] opacity-100' : 'opacity-20')}
+                    strokeWidth={2}
+                  />
+                  {item.label}
+                </button>
+              );
+            })}
+          </div>
+          {hiddenPanelsCount > 0 && (
+            <Button variant="ghost" size="sm" onClick={resetPanelPrefs}>
+              <RotateCcw className="size-3.5" strokeWidth={1.75} />
+              恢复默认
+            </Button>
+          )}
         </div>
-      </div>
+      )}
 
       <KpiStrip
         asymmetric
@@ -268,12 +363,14 @@ export function OverviewView({
           },
           {
             label: '记忆引擎',
-            value: memEngines.length ? `${memOk}/${memEngines.length}` : '-',
+            value: memEngines.length ? `${memOk}/${memEngines.length}` : '待启用',
             numeric: memEngines.length
               ? { primary: memOk, denominator: memEngines.length }
               : undefined,
-            sub: `${formatCompactNumber(snapshot?.memory?.nmem?.stats?.memories ?? 0)} 记忆 · ${snapshot?.memory?.openviking?.skillsCount ?? 0} 技能`,
-            tone: memEngines.length > 0 && memOk < memEngines.length ? 'warn' : 'ok',
+            sub: memEngines.length
+              ? `${formatCompactNumber(snapshot?.memory?.nmem?.stats?.memories ?? 0)} 记忆 · ${snapshot?.memory?.openviking?.skillsCount ?? 0} 技能`
+              : '可在「插件与接入」按需开启',
+            tone: memEngines.length === 0 ? 'muted' : memOk < memEngines.length ? 'warn' : 'ok',
           },
           {
             label: '全球节点',
@@ -284,32 +381,51 @@ export function OverviewView({
         ]}
       />
 
-      <MetricsChart />
+      {panelPrefs.metrics && (
+        <React.Suspense
+          fallback={
+            <Panel
+              title="历史指标与聚合趋势"
+              description="直连 SQLite WAL 原始样本与 1m / 5m 聚合表，支持跨尺度回溯资源水位与探针延迟。"
+            >
+              <WidgetSkeleton heightClass="h-[248px]" label="正在加载历史趋势图表" />
+            </Panel>
+          }
+        >
+          <MetricsChart />
+        </React.Suspense>
+      )}
 
-      <Panel
-        title="统一架构与依赖图谱"
-        description="按入口 Agent、模型网关、记忆上下文与网络底座实时映射依赖关系，点击节点高亮上下游并下钻日志。"
-        actions={
-          <SegmentedFilter
-            value={graphFilter}
-            onChange={setGraphFilter}
-            options={GRAPH_FILTERS}
-            ariaLabel="架构图谱筛选"
-          />
-        }
-      >
-        <ArchitectureGraph
-          snapshot={snapshot}
-          mode="full"
-          filter={graphFilter}
-          onOpenLogs={onOpenLogs}
-          onSelectAgentCategory={onSelectAgentCategory}
-        />
-      </Panel>
-
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      {panelPrefs.graph && (
         <Panel
-          className="lg:col-span-7"
+          title="统一架构与依赖图谱"
+          description="按入口 Agent、模型网关、记忆上下文与网络底座实时映射依赖关系，点击节点高亮上下游并下钻日志。"
+          actions={
+            <SegmentedFilter
+              value={graphFilter}
+              onChange={setGraphFilter}
+              options={GRAPH_FILTERS}
+              ariaLabel="架构图谱筛选"
+            />
+          }
+        >
+          <React.Suspense fallback={<WidgetSkeleton heightClass="h-[520px]" label="正在加载架构依赖图谱" />}>
+            <ArchitectureGraph
+              snapshot={snapshot}
+              mode="full"
+              filter={graphFilter}
+              onOpenLogs={onOpenLogs}
+              onSelectAgentCategory={onSelectAgentCategory}
+            />
+          </React.Suspense>
+        </Panel>
+      )}
+
+      {(panelPrefs.connectors || panelPrefs.storageEvents) && (
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+        {panelPrefs.connectors && (
+        <Panel
+          className={panelPrefs.storageEvents ? 'lg:col-span-7' : 'lg:col-span-12'}
           bodyClassName="p-0"
           title="已启用插件与连接器状态"
           description="通过各组件官方协议（MCP / A2A / OpenAI / REST API / 结构化 CLI）实时采集。"
@@ -365,9 +481,11 @@ export function OverviewView({
             </div>
           )}
         </Panel>
+        )}
 
+        {panelPrefs.storageEvents && (
         <Panel
-          className="lg:col-span-5"
+          className={panelPrefs.connectors ? 'lg:col-span-5' : 'lg:col-span-12'}
           title="主机存储与近期事件"
           description="挂载点容量使用率、持久化状态变更时间线与近期告警。"
         >
@@ -479,7 +597,9 @@ export function OverviewView({
             </div>
           </div>
         </Panel>
+        )}
       </div>
-    </div>
+      )}
+    </ModuleFrame>
   );
 }
