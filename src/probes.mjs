@@ -192,6 +192,39 @@ export function sanitizeProbePayload(raw, expectedNodeId) {
       count: clampNum(raw.agents?.count, 0, 10000, 0),
       categories,
     },
+    mcps: Array.isArray(raw.mcps)
+      ? raw.mcps
+          .filter((m) => m && typeof m === 'object' && m.name)
+          .slice(0, 32)
+          .map((m) => ({
+            id: cleanStr(m.id || '', 64) || null,
+            name: cleanStr(m.name, 80),
+            transport: cleanStr(m.transport || 'streamable-http', 24),
+            endpoint: cleanStr(m.endpoint || '', 200) || null,
+            command: cleanStr(m.command || '', 120) || null,
+            enabled: m.enabled !== false,
+            status: cleanStr(m.status || 'healthy', 24),
+            toolsCount: clampNum(m.toolsCount, 0, 1000, 0),
+            latencyMs: clampNum(m.latencyMs, 0, 60000, null),
+            scope: cleanStr(m.scope || 'node-reported', 32),
+          }))
+      : [],
+    harnesses: Array.isArray(raw.harnesses)
+      ? raw.harnesses
+          .filter((h) => h && typeof h === 'object' && h.name)
+          .slice(0, 16)
+          .map((h) => ({
+            id: cleanStr(h.id || '', 64) || null,
+            name: cleanStr(h.name, 80),
+            harness: cleanStr(h.harness || 'custom-a2a', 32),
+            status: cleanStr(h.status || 'healthy', 24),
+            agentCardUrl: cleanStr(h.agentCardUrl || '', 200) || null,
+            rpcUrl: cleanStr(h.rpcUrl || '', 200) || null,
+            modelHint: cleanStr(h.modelHint || '', 64) || null,
+            delegatable: h.delegatable !== false,
+            skills: Array.isArray(h.skills) ? h.skills.slice(0, 12) : [],
+          }))
+      : [],
     regionOverride: cleanStr(raw.region || '', 64),
     note: cleanStr(raw.note || '', 120),
     hubRttMs: clampNum(raw.hubRttMs, 0, 60000, null),
@@ -701,6 +734,8 @@ export class ProbeRegistry {
         battery: data?.battery || null,
         network: data?.network || null,
         watchedServices: data?.services || [],
+        mcps: data?.mcps || [],
+        harnesses: data?.harnesses || [],
         agentsCount: data?.agents?.count ?? 0,
         backupDisk: sshRem?.backupDisk || (sshRem?.backup && sshRem.backup !== 'n/a' ? sshRem.backup : null),
         rttMs: data?.hubRttMs ?? (sshRem?.reachable ? sshRem.rttMs : null),
@@ -863,7 +898,14 @@ export class ProbeRegistry {
       err.statusCode = 400;
       throw err;
     }
-    const ALLOWED_PROBE_COMMANDS = new Set(['health-check', 'collect-diag', 'rotate-heartbeat']);
+    const ALLOWED_PROBE_COMMANDS = new Set([
+      'health-check',
+      'collect-diag',
+      'rotate-heartbeat',
+      'mcp-sync',
+      'mcp-restart',
+      'agent-discover',
+    ]);
     const cleanCmd = String(command || '').trim().toLowerCase();
     if (!ALLOWED_PROBE_COMMANDS.has(cleanCmd)) {
       const err = new Error(`Command not in probe allowlist: ${command}`);

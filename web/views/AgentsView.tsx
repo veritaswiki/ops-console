@@ -8,12 +8,31 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { ArrowDown, ArrowUp, ArrowUpDown, Cpu, Search, X } from 'lucide-react';
-import type { GatewayTelemetryResponse, SnapshotResponse } from '../types';
-import { fetchGatewayTelemetry } from '../api';
+import { ArrowDown, ArrowUp, ArrowUpDown, Cpu, RefreshCw, Search, X } from 'lucide-react';
+import type {
+  A2AAgentPeer,
+  A2ASkillCatalogItem,
+  A2AStateResponse,
+  GatewayTelemetryResponse,
+  ReasoningEffort,
+  SnapshotResponse,
+} from '../types';
+import {
+  deleteA2ARoutingRule,
+  discoverA2AAgent,
+  fetchA2AState,
+  fetchGatewayTelemetry,
+  saveA2ATopologyPositions,
+  setLeadA2AAgent,
+  updateA2AAgent,
+  updateA2AOrchestrationConfig,
+  updateA2ASkill,
+  upsertA2ARoutingRule,
+} from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
 import { formatBytes, formatCompactNumber, formatUptime } from '../utils/format';
 import {
+  Button,
   EmptyState,
   inputBaseClass,
   KpiStrip,
@@ -22,12 +41,30 @@ import {
   SegmentedFilter,
   StatusIndicator,
   WidgetSkeleton,
+  type ConfirmModalState,
 } from '../components/ui';
+import { A2AOrchestratorSection } from '../components/A2AOrchestratorSection';
+import { AgentLogsSection } from '../components/AgentLogsSection';
+import { SwarmMemorySection } from '../components/SwarmMemorySection';
 import { ModuleFrame } from '../modules/ModuleFrame';
 
 const ArchitectureGraph = React.lazy(() =>
   import('../components/ArchitectureGraph').then((m) => ({ default: m.ArchitectureGraph })),
 );
+
+const AgentOrchestrationCanvas = React.lazy(() =>
+  import('../components/AgentOrchestrationCanvas').then((m) => ({ default: m.AgentOrchestrationCanvas })),
+);
+
+const AGENT_TABS = [
+  { value: 'a2a', label: 'A2A 调度' },
+  { value: 'topology', label: '集群拓扑' },
+  { value: 'swarm', label: '蜂群与记忆' },
+  { value: 'logs', label: 'Agent 日志' },
+  { value: 'gateway', label: '网关与进程' },
+] as const;
+
+type AgentTab = (typeof AGENT_TABS)[number]['value'];
 
 const TELEMETRY_MODES = [
   { value: 'tokens', label: 'Token 吞吐 (K)' },
@@ -43,26 +80,72 @@ function formatHourLabel(ts: number): string {
 
 export function AgentsView({
   snapshot,
+  readOnly = false,
   selectedCategory,
   selectedPid = null,
   onSelectCategory,
   onSelectPid,
+  onSnapshotChanged,
+  onToast,
+  onConfirm,
 }: {
   snapshot: SnapshotResponse | null;
+  readOnly?: boolean;
   selectedCategory: string;
   selectedPid?: number | null;
   onSelectCategory: (category: string) => void;
   onSelectPid?: (pid: number | null) => void;
+  onSnapshotChanged?: () => void;
+  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onConfirm?: (modal: ConfirmModalState) => void;
 }) {
   const magpie = snapshot?.magpie;
   const processes = snapshot?.agents?.processes || [];
   const rowRefs = React.useRef<Record<number, HTMLTableRowElement | null>>({});
 
+  const [activeTab, setActiveTab] = React.useState<AgentTab>(
+    selectedPid != null || Boolean(selectedCategory) ? 'gateway' : 'a2a',
+  );
   const [telemetry, setTelemetry] = React.useState<GatewayTelemetryResponse | null>(null);
+  const [topologyState, setTopologyState] = React.useState<A2AStateResponse | null>(null);
+  const [topologyLoading, setTopologyLoading] = React.useState(false);
+  const [focusedLogAgentId, setFocusedLogAgentId] = React.useState<string>('all');
   const [chartMode, setChartMode] = React.useState<TelemetryMode>('tokens');
   const [procQuery, setProcQuery] = React.useState('');
   const [procSort, setProcSort] = React.useState<'cpu' | 'mem' | 'pid'>('cpu');
   const [procSortDir, setProcSortDir] = React.useState<'asc' | 'desc'>('desc');
+
+  React.useEffect(() => {
+    if (selectedPid != null || selectedCategory) {
+      setActiveTab('gateway');
+    }
+  }, [selectedPid, selectedCategory]);
+
+  const loadTopologyState = React.useCallback(async (signal?: AbortSignal) => {
+    setTopologyLoading(true);
+    try {
+      const res = await fetchA2AState(signal);
+      if (!signal?.aborted) setTopologyState(res);
+    } catch (err) {
+      if (!signal?.aborted) {
+        onToast?.(`加载 Agent 编排状态失败：${(err as Error).message}`, 'err');
+      }
+    } finally {
+      if (!signal?.aborted) setTopologyLoading(false);
+    }
+  }, [onToast]);
+
+  React.useEffect(() => {
+    if (activeTab !== 'topology' && activeTab !== 'swarm' && activeTab !== 'logs') return;
+    const controller = new AbortController();
+    void loadTopologyState(controller.signal);
+    return () => controller.abort();
+  }, [activeTab, loadTopologyState]);
+
+  const handleJumpToAgentLogs = React.useCallback((agentId: string) => {
+    setFocusedLogAgentId(agentId || 'all');
+    setActiveTab('logs');
+  }, []);
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -145,18 +228,202 @@ export function AgentsView({
     ? Math.min(100, Math.round((summary.estimatedCostUsd24h / summary.dailyBudgetUsd) * 100))
     : 0;
 
+  const noopToast = React.useCallback(() => {}, []);
+  const noopConfirm = React.useCallback(() => {}, []);
+  const noopRefresh = React.useCallback(() => {}, []);
+
+  const fleetNodes = snapshot?.fleet?.nodes || [];
+
+  const handleTopologyUpdateConfig = async (patch: Record<string, unknown>) => {
+    if (readOnly) return;
+    try {
+      await updateA2AOrchestrationConfig(patch);
+      await loadTopologyState();
+      onToast?.('编排调度策略已更新并持久化', 'ok');
+    } catch (err) {
+      onToast?.(`更新策略失败：${(err as Error).message}`, 'err');
+    }
+  };
+
+  const handleTopologySavePositions = async (positions: Record<string, { x: number; y: number }>) => {
+    if (readOnly) return;
+    try {
+      await saveA2ATopologyPositions(positions);
+      await loadTopologyState();
+    } catch (err) {
+      onToast?.(`保存节点排版失败：${(err as Error).message}`, 'err');
+    }
+  };
+
+  const handleTopologyUpsertRule = async (payload: Parameters<typeof upsertA2ARoutingRule>[0]) => {
+    if (readOnly) return;
+    try {
+      const res = await upsertA2ARoutingRule(payload);
+      onToast?.(`已保存路由策略「${res.rule.name}」`, 'ok');
+      await loadTopologyState();
+    } catch (err) {
+      onToast?.(`保存路由失败：${(err as Error).message}`, 'err');
+    }
+  };
+
+  const handleTopologyDeleteRule = async (ruleId: string) => {
+    if (readOnly) return;
+    try {
+      await deleteA2ARoutingRule(ruleId);
+      onToast?.('已移除路由边', 'ok');
+      await loadTopologyState();
+    } catch (err) {
+      onToast?.(`删除路由失败：${(err as Error).message}`, 'err');
+    }
+  };
+
+  const handleTopologyUpdateAgent = async (
+    agentId: string,
+    patch: { modelHint?: string; reasoningEffort?: ReasoningEffort; delegatable?: boolean },
+  ) => {
+    if (readOnly) return;
+    try {
+      await updateA2AAgent(agentId, patch);
+      onToast?.('Agent 参数已更新', 'ok');
+      await loadTopologyState();
+    } catch (err) {
+      onToast?.(`更新 Agent 参数失败：${(err as Error).message}`, 'err');
+    }
+  };
+
+  const handleTopologySetLead = async (agentId: string) => {
+    if (readOnly) return;
+    try {
+      const res = await setLeadA2AAgent(agentId);
+      onToast?.(`已选举「${res.leadAgent?.name || agentId}」为当前主 Agent`, 'ok');
+      await loadTopologyState();
+      onSnapshotChanged?.();
+    } catch (err) {
+      onToast?.(`切换主 Agent 失败：${(err as Error).message}`, 'err');
+    }
+  };
+
+  const handleTopologyDiscover = async (agent: A2AAgentPeer) => {
+    try {
+      const res = await discoverA2AAgent(agent.id);
+      onToast?.(
+        res.ok ? `${agent.name} 探活成功 (${res.latencyMs ?? 0}ms)` : `${agent.name} 暂不可达${res.error ? `：${res.error}` : ''}`,
+        res.ok ? 'ok' : 'err',
+      );
+      await loadTopologyState();
+    } catch (err) {
+      onToast?.(`探活失败：${(err as Error).message}`, 'err');
+    }
+  };
+
+  const handleTopologyToggleSkill = async (skill: A2ASkillCatalogItem, agentId: string) => {
+    if (readOnly) return;
+    try {
+      await updateA2ASkill(skill.id, { toggleAgentId: agentId });
+      await loadTopologyState();
+    } catch (err) {
+      onToast?.(`更新 Skill 挂载失败：${(err as Error).message}`, 'err');
+    }
+  };
+
   return (
     <ModuleFrame
-      title="网关与 Agent 运行时"
-      description="Magpie 模型网关 Token/成本占比治理、渠道熔断状态、活跃 Agent 会话、本地加速器与可排序进程监控。"
+      title="Agent 编排调度中心"
+      description="无内置自有 Harness 的核心编排工作台：可视化拖拽路由（Codex / Pi / Claude / Gemini / DSH 专家评审）、集群连接拓扑、Skill 与版本编排及多端会话同步。"
       meta={
         magpie?.reachable
-          ? `${formatCompactNumber(magpie.totalModels ?? 0)} 模型 · ${providers.length} 渠道 · ${processes.length} 活跃进程`
-          : `${processes.length} 活跃进程`
+          ? `A2A v0.3 · ${formatCompactNumber(magpie.totalModels ?? 0)} 模型 · ${processes.length} 活跃进程`
+          : `A2A v0.3 · ${processes.length} 活跃进程`
+      }
+      actions={
+        <SegmentedFilter
+          value={activeTab}
+          onChange={setActiveTab}
+          options={AGENT_TABS}
+          ariaLabel="切换 Agent 编排中心、集群拓扑与模型网关视图"
+        />
       }
     >
-
-      {summary && (
+      {activeTab === 'a2a' ? (
+        <A2AOrchestratorSection
+          snapshot={snapshot}
+          readOnly={readOnly}
+          onSnapshotChanged={onSnapshotChanged || noopRefresh}
+          onToast={onToast || noopToast}
+          onConfirm={onConfirm || noopConfirm}
+        />
+      ) : activeTab === 'topology' ? (
+        <Panel
+          title="Agent 集群连接拓扑与节点编排 (React Flow)"
+          description="融合全节点探针状态与 A2A 路由链路：可视化展示宿主机与主/子 Agent 连接延迟、实时健康度、各 Agent 当前 Skill 清单及版本状态，支持拖拽编排与连线调优。"
+          actions={
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={topologyLoading}
+              onClick={() => void loadTopologyState()}
+              data-testid="topology-refresh-btn"
+            >
+              <RefreshCw className={cn('size-3.5', topologyLoading && 'animate-spin')} strokeWidth={1.75} />
+              刷新拓扑
+            </Button>
+          }
+        >
+          {topologyState?.orchestrationConfig ? (
+            <React.Suspense
+              fallback={<WidgetSkeleton heightClass="h-[580px]" label="正在加载 React Flow 集群拓扑编排视图" />}
+            >
+              <AgentOrchestrationCanvas
+                agents={topologyState.agents}
+                fleetNodes={fleetNodes}
+                skillCatalog={topologyState.skillCatalog}
+                routingRules={topologyState.routingRules}
+                leadAgentId={topologyState.leadAgentId}
+                orchestrationConfig={topologyState.orchestrationConfig}
+                readOnly={readOnly}
+                initialLens="cluster"
+                canvasHeightClass="h-[580px]"
+                onUpdateConfig={handleTopologyUpdateConfig}
+                onSavePositions={handleTopologySavePositions}
+                onUpsertRule={handleTopologyUpsertRule}
+                onDeleteRule={handleTopologyDeleteRule}
+                onUpdateAgent={handleTopologyUpdateAgent}
+                onSetLead={handleTopologySetLead}
+                onDiscoverAgent={handleTopologyDiscover}
+                onToggleSkillAgent={handleTopologyToggleSkill}
+                onInspectLogs={handleJumpToAgentLogs}
+              />
+            </React.Suspense>
+          ) : (
+            <WidgetSkeleton heightClass="h-[580px]" label="正在采集 Agent 集群节点与路由拓扑" />
+          )}
+        </Panel>
+      ) : activeTab === 'swarm' ? (
+        topologyState?.swarmMetrics && topologyState?.dshTeamConfig ? (
+          <SwarmMemorySection
+            agents={topologyState.agents}
+            swarmMetrics={topologyState.swarmMetrics}
+            engramMemory={topologyState.engramMemory || []}
+            dshTeamConfig={topologyState.dshTeamConfig}
+            readOnly={readOnly}
+            onReload={loadTopologyState}
+            onOpenAgentLogs={handleJumpToAgentLogs}
+            onToast={onToast}
+          />
+        ) : (
+          <WidgetSkeleton heightClass="h-[460px]" label="正在加载蜂群协同指标与 Engram × SM-2 记忆引擎" />
+        )
+      ) : activeTab === 'logs' ? (
+        <AgentLogsSection
+          agents={topologyState?.agents || []}
+          initialAgentId={focusedLogAgentId}
+          readOnly={readOnly}
+          onToast={onToast}
+          onDataMutated={() => void loadTopologyState()}
+        />
+      ) : (
+        <>
+          {summary && (
         <KpiStrip
           asymmetric
           cells={[
@@ -725,6 +992,8 @@ export function AgentsView({
           </div>
         )}
       </Panel>
+        </>
+      )}
     </ModuleFrame>
   );
 }

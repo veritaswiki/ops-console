@@ -1,12 +1,22 @@
 import type {
+  A2AAgentPeer,
+  A2ACollaborationLog,
+  A2ADshTeamConfig,
+  A2AEngramEntry,
+  A2AStateResponse,
+  A2ASwarmMetrics,
+  A2ATaskRecord,
   AlertEvent,
   AlertRule,
   AlertsStateResponse,
   AuditEntry,
   ConfigStudioResponse,
+  FleetMcpServer,
   GatewayTelemetryResponse,
   IncidentItem,
   LogsResponse,
+  McpFleetResponse,
+  McpTestResult,
   MemoryCompareResponse,
   MemorySearchResultItem,
   MetaResponse,
@@ -483,6 +493,402 @@ export const removeCustomPlugin = (pluginId: string) =>
       method: 'DELETE',
     },
   );
+
+// ─── Fleet-Wide MCP Control Plane ────────────────────────────────────────────
+export const fetchMcps = (nodeId = '', signal?: AbortSignal) => {
+  const qs = nodeId ? `?nodeId=${encodeURIComponent(nodeId)}` : '';
+  return apiRequest<McpFleetResponse>(`/api/mcps${qs}`, { cacheTtlMs: 3000, signal });
+};
+
+export const registerMcp = (payload: {
+  name: string;
+  transport: 'streamable-http' | 'stdio' | 'sse';
+  endpoint?: string;
+  command?: string;
+  args?: string[] | string;
+  nodeIds: string[];
+  envRefs?: string[];
+  scope?: string;
+  description?: string;
+}) =>
+  apiRequest<{ ok?: boolean; created: FleetMcpServer[]; queuedCommands: ProbeCommandItem[] }>(
+    '/api/mcps',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+
+export const toggleMcp = (mcpId: string, enabled: boolean) =>
+  apiRequest<{ ok?: boolean; item: FleetMcpServer; queuedCommand?: ProbeCommandItem | null }>(
+    `/api/mcps/${encodeURIComponent(mcpId)}/toggle`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    },
+  );
+
+export const testMcp = (mcpId: string) =>
+  apiRequest<McpTestResult>(`/api/mcps/${encodeURIComponent(mcpId)}/test`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+
+export const syncMcpToNodes = (mcpId: string, targetNodeIds: string[]) =>
+  apiRequest<{ ok?: boolean; synced: FleetMcpServer[]; queuedCommands: ProbeCommandItem[] }>(
+    `/api/mcps/${encodeURIComponent(mcpId)}/sync`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ targetNodeIds }),
+    },
+  );
+
+export const deleteMcp = (mcpId: string) =>
+  apiRequest<{ ok?: boolean; id: string }>(`/api/mcps/${encodeURIComponent(mcpId)}`, {
+    method: 'DELETE',
+  });
+
+// ─── Harness-Free A2A Lead/Worker Orchestrator ───────────────────────────────
+export const fetchA2AState = (signal?: AbortSignal) =>
+  apiRequest<A2AStateResponse>('/api/a2a/state', { cacheTtlMs: 3000, signal });
+
+export const setLeadA2AAgent = (agentId: string) =>
+  apiRequest<{ ok?: boolean; leadAgentId: string; leadAgent: A2AAgentPeer }>('/api/a2a/lead', {
+    method: 'POST',
+    body: JSON.stringify({ agentId }),
+  });
+
+export const registerA2AAgent = (payload: {
+  name: string;
+  harness: string;
+  nodeId: string;
+  agentCardUrl: string;
+  rpcUrl?: string;
+  modelHint?: string;
+  skills?: string[] | string;
+  boundMcpIds?: string[];
+  setAsLead?: boolean;
+  description?: string;
+}) =>
+  apiRequest<{ ok?: boolean; agent: A2AAgentPeer }>('/api/a2a/agents', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const updateA2AAgent = (
+  agentId: string,
+  patch: {
+    delegatable?: boolean;
+    boundMcpIds?: string[];
+    name?: string;
+    modelHint?: string;
+    reasoningEffort?: string;
+    version?: string;
+  },
+) =>
+  apiRequest<{ ok?: boolean; agent: A2AAgentPeer }>(
+    `/api/a2a/agents/${encodeURIComponent(agentId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    },
+  );
+
+export const deleteA2AAgent = (agentId: string) =>
+  apiRequest<{ ok?: boolean; id: string; leadAgentId: string | null }>(
+    `/api/a2a/agents/${encodeURIComponent(agentId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
+
+export const discoverA2AAgent = (agentId: string) =>
+  apiRequest<{ ok: boolean; id: string; summary?: string; error?: string; latencyMs?: number }>(
+    `/api/a2a/agents/${encodeURIComponent(agentId)}/discover`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+  );
+
+export const discoverLocalA2AAgents = () =>
+  apiRequest<{
+    ok: boolean;
+    scannedAt: string;
+    discoveredCount: number;
+    newlyRegistered: number;
+    items: Array<{
+      id: string;
+      name: string;
+      harness: string;
+      nodeId: string;
+      version: string;
+      latestVersion: string;
+      updateAvailable: boolean;
+      installPath: string;
+      alreadyRegistered: boolean;
+    }>;
+  }>('/api/a2a/discover-local', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+
+export const updateA2AOrchestrationConfig = (patch: Record<string, unknown>) =>
+  apiRequest<{ ok?: boolean; orchestrationConfig: A2AStateResponse['orchestrationConfig'] }>('/api/a2a/config', {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  });
+
+export const saveA2ATopologyPositions = (positions: Record<string, { x: number; y: number }>) =>
+  apiRequest<{ ok?: boolean; updated: number }>('/api/a2a/topology', {
+    method: 'PUT',
+    body: JSON.stringify({ positions }),
+  });
+
+export const upsertA2ARoutingRule = (payload: {
+  id?: string;
+  name?: string;
+  sourceAgentId: string;
+  targetAgentId: string;
+  taskCategory?: string;
+  matchKeywords?: string[] | string;
+  targetModel?: string;
+  reasoningEffort?: string;
+  priority?: number;
+  enabled?: boolean;
+  requireDshReview?: boolean;
+}) =>
+  apiRequest<{ ok?: boolean; rule: A2AStateResponse['routingRules'][number] }>('/api/a2a/routes', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const deleteA2ARoutingRule = (ruleId: string) =>
+  apiRequest<{ ok?: boolean; id: string }>(`/api/a2a/routes/${encodeURIComponent(ruleId)}`, {
+    method: 'DELETE',
+  });
+
+export const upsertA2ASkill = (payload: {
+  id?: string;
+  name: string;
+  version?: string;
+  provider?: string;
+  description?: string;
+  enabled?: boolean;
+  assignedAgentIds?: string[];
+}) =>
+  apiRequest<{ ok?: boolean; skill: A2AStateResponse['skillCatalog'][number] }>('/api/a2a/skills', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const updateA2ASkill = (
+  skillId: string,
+  patch: { enabled?: boolean; version?: string; assignedAgentIds?: string[]; toggleAgentId?: string },
+) =>
+  apiRequest<{ ok?: boolean; skill: A2AStateResponse['skillCatalog'][number] }>(
+    `/api/a2a/skills/${encodeURIComponent(skillId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    },
+  );
+
+export const deleteA2ASkill = (skillId: string) =>
+  apiRequest<{ ok?: boolean; id: string }>(`/api/a2a/skills/${encodeURIComponent(skillId)}`, {
+    method: 'DELETE',
+  });
+
+export const createA2ASession = (payload: {
+  title: string;
+  primaryAgentId?: string;
+  participatingAgentIds?: string[];
+  syncedNodes?: string[];
+  syncMode?: string;
+  gitBranch?: string;
+}) =>
+  apiRequest<{ ok?: boolean; session: A2AStateResponse['sessions'][number] }>('/api/a2a/sessions', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const syncA2ASession = (sessionId: string, extraNodes?: string[]) =>
+  apiRequest<{ ok?: boolean; session: A2AStateResponse['sessions'][number] }>(
+    `/api/a2a/sessions/${encodeURIComponent(sessionId)}/sync`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ extraNodes }),
+    },
+  );
+
+export const handoffA2ASession = (sessionId: string, targetAgentId: string) =>
+  apiRequest<{ ok?: boolean; session: A2AStateResponse['sessions'][number] }>(
+    `/api/a2a/sessions/${encodeURIComponent(sessionId)}/handoff`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ targetAgentId }),
+    },
+  );
+
+export const dispatchA2ATask = (payload: {
+  prompt: string;
+  targetAgentId?: string;
+  executionMode?: string;
+  modelOverride?: string;
+  reasoningEffort?: string;
+  requireDshReview?: boolean;
+  sessionId?: string;
+  requiredSkill?: string;
+  mcpIds?: string[];
+}) =>
+  apiRequest<{ ok?: boolean; task: A2ATaskRecord }>('/api/a2a/tasks', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const cancelA2ATask = (taskId: string) =>
+  apiRequest<{ ok?: boolean; task: A2ATaskRecord }>(
+    `/api/a2a/tasks/${encodeURIComponent(taskId)}/cancel`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+  );
+
+export const fetchA2ALogs = (
+  params: { agentId?: string; eventType?: string; level?: string; q?: string; limit?: number } = {},
+  signal?: AbortSignal,
+) => {
+  const sp = new URLSearchParams();
+  if (params.agentId && params.agentId !== 'all') sp.set('agentId', params.agentId);
+  if (params.eventType && params.eventType !== 'all') sp.set('eventType', params.eventType);
+  if (params.level && params.level !== 'all') sp.set('level', params.level);
+  if (params.q) sp.set('q', params.q);
+  if (params.limit) sp.set('limit', String(params.limit));
+  const qs = sp.toString();
+  return apiRequest<{ ok?: boolean; total: number; items: A2ACollaborationLog[] }>(
+    `/api/a2a/logs${qs ? `?${qs}` : ''}`,
+    { cacheTtlMs: 0, signal },
+  );
+};
+
+export const fetchA2ASwarmMetrics = (signal?: AbortSignal) =>
+  apiRequest<{
+    ok?: boolean;
+    swarmMetrics: A2ASwarmMetrics;
+    dshTeamConfig: A2ADshTeamConfig;
+    engramMemory: A2AEngramEntry[];
+  }>('/api/a2a/swarm/metrics', { cacheTtlMs: 2000, signal });
+
+export const upsertA2AEngram = (payload: {
+  id?: string;
+  title: string;
+  content: string;
+  keyPattern?: string[] | string;
+  category?: string;
+  sourceAgentId?: string;
+  dshVerified?: boolean;
+}) =>
+  apiRequest<{ ok?: boolean; engram: A2AEngramEntry }>('/api/a2a/memory/engrams', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const reviewA2AEngram = (engramId: string, quality: number) =>
+  apiRequest<{ ok?: boolean; engram: A2AEngramEntry }>(
+    `/api/a2a/memory/engrams/${encodeURIComponent(engramId)}/review`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ quality }),
+    },
+  );
+
+export const consolidateA2AMemory = (payload: {
+  engramMemoryRatioPct?: number;
+  consensusPolicy?: string;
+  maxReworkRounds?: number;
+  autoConsolidateOnPass?: boolean;
+  runSweep?: boolean;
+}) =>
+  apiRequest<{
+    ok?: boolean;
+    reinforcedCount: number;
+    dshTeamConfig: A2ADshTeamConfig;
+    engramMemory: A2AEngramEntry[];
+    swarmMetrics: A2ASwarmMetrics;
+  }>('/api/a2a/memory/consolidate', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const runDshTeamCollaboration = (payload: {
+  prompt: string;
+  useEngramLookup?: boolean;
+  consensusPolicy?: string;
+  sessionId?: string;
+}) =>
+  apiRequest<{
+    ok?: boolean;
+    task: A2ATaskRecord;
+    policy: string;
+    approved: boolean;
+    matchedEngrams: A2AEngramEntry[];
+    swarmMetrics: A2ASwarmMetrics;
+  }>('/api/a2a/dsh-team/run', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export function openA2ALogStream(
+  params: { agentId?: string; eventType?: string; level?: string },
+  handlers: {
+    onInit?: (items: A2ACollaborationLog[]) => void;
+    onLog?: (entry: A2ACollaborationLog) => void;
+    onStateChange?: (state: 'connecting' | 'live' | 'error') => void;
+  },
+): () => void {
+  const sp = new URLSearchParams();
+  if (params.agentId && params.agentId !== 'all') sp.set('agentId', params.agentId);
+  if (params.eventType && params.eventType !== 'all') sp.set('eventType', params.eventType);
+  if (params.level && params.level !== 'all') sp.set('level', params.level);
+  const qs = sp.toString();
+  const url = `/api/a2a/logs/stream${qs ? `?${qs}` : ''}`;
+
+  handlers.onStateChange?.('connecting');
+  const es = new EventSource(url, { withCredentials: true });
+
+  es.addEventListener('init', (ev) => {
+    handlers.onStateChange?.('live');
+    try {
+      const parsed = JSON.parse((ev as MessageEvent).data) as { items?: A2ACollaborationLog[] };
+      if (Array.isArray(parsed?.items)) {
+        handlers.onInit?.(parsed.items);
+      }
+    } catch {
+      // ignore malformed frame
+    }
+  });
+
+  es.addEventListener('a2a_log', (ev) => {
+    handlers.onStateChange?.('live');
+    try {
+      const entry = JSON.parse((ev as MessageEvent).data) as A2ACollaborationLog;
+      if (entry?.id) {
+        handlers.onLog?.(entry);
+      }
+    } catch {
+      // ignore malformed frame
+    }
+  });
+
+  es.onerror = () => {
+    handlers.onStateChange?.('error');
+  };
+
+  return () => {
+    es.close();
+  };
+}
 
 export const logoutSession = () =>
   apiRequest('/api/auth/logout', { method: 'POST', body: JSON.stringify({}) });

@@ -48,6 +48,7 @@ import {
   loadAlertsView,
   loadFleetView,
   loadLogsView,
+  loadMcpView,
   loadMemoryView,
   loadNetworkView,
   loadOpsView,
@@ -63,6 +64,7 @@ const AlertsView = React.lazy(() => loadAlertsView().then((m) => ({ default: m.A
 const FleetView = React.lazy(() => loadFleetView().then((m) => ({ default: m.FleetView })));
 const ServicesView = React.lazy(() => loadServicesView().then((m) => ({ default: m.ServicesView })));
 const PluginsView = React.lazy(() => loadPluginsView().then((m) => ({ default: m.PluginsView })));
+const McpView = React.lazy(() => loadMcpView().then((m) => ({ default: m.McpView })));
 const MemoryView = React.lazy(() => loadMemoryView().then((m) => ({ default: m.MemoryView })));
 const AgentsView = React.lazy(() => loadAgentsView().then((m) => ({ default: m.AgentsView })));
 const NetworkView = React.lazy(() => loadNetworkView().then((m) => ({ default: m.NetworkView })));
@@ -124,6 +126,7 @@ export function App() {
   const [recentServiceUnits, setRecentServiceUnits] = React.useState<string[]>([]);
   const [agentCategory, setAgentCategory] = React.useState<string>('');
   const [agentPid, setAgentPid] = React.useState<number | null>(null);
+  const [mcpInitialNode, setMcpInitialNode] = React.useState<string>('');
   const [confirmState, setConfirmState] = React.useState<ConfirmModalState | null>(null);
 
   const pushToast = React.useCallback((text: string, tone: 'info' | 'ok' | 'err' = 'info') => {
@@ -273,6 +276,8 @@ export function App() {
       'ops_health',
       'ops_backup',
       'plugins_updated',
+      'mcps_updated',
+      'a2a_updated',
     ];
     for (const type of eventTypes) {
       es.addEventListener(type, scheduleDeltaSync);
@@ -860,6 +865,11 @@ export function App() {
                       readOnly={readOnly}
                       onRefresh={() => loadSnapshot(true)}
                       onRefreshProbes={loadProbes}
+                      onOpenNodeMcps={(nodeId) => {
+                        setMcpInitialNode(nodeId);
+                        handleSelectView('mcp');
+                      }}
+                      onOpenA2A={() => handleSelectView('agents')}
                       onToast={pushToast}
                       onConfirm={setConfirmState}
                     />
@@ -882,12 +892,23 @@ export function App() {
                       onConfirm={setConfirmState}
                     />
                   )}
+                  {view === 'mcp' && (
+                    <McpView
+                      snapshot={snapshot}
+                      readOnly={readOnly}
+                      initialNodeId={mcpInitialNode}
+                      onSnapshotChanged={() => void loadSnapshot(true)}
+                      onToast={pushToast}
+                      onConfirm={setConfirmState}
+                    />
+                  )}
                   {view === 'memory' && (
                     <MemoryView snapshot={snapshot} readOnly={readOnly} onToast={pushToast} />
                   )}
                   {view === 'agents' && (
                     <AgentsView
                       snapshot={snapshot}
+                      readOnly={readOnly}
                       selectedCategory={agentCategory}
                       selectedPid={agentPid}
                       onSelectCategory={(cat) => {
@@ -895,6 +916,9 @@ export function App() {
                         setAgentCategory(cat);
                       }}
                       onSelectPid={setAgentPid}
+                      onSnapshotChanged={() => void loadSnapshot(true)}
+                      onToast={pushToast}
+                      onConfirm={setConfirmState}
                     />
                   )}
                   {view === 'network' && (

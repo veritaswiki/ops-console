@@ -792,6 +792,8 @@ export async function collectProbeMetrics(config = {}, state = {}) {
     tailscale,
     services,
     agents,
+    mcps: Array.isArray(config.mcps) ? config.mcps.slice(0, 32) : [],
+    harnesses: Array.isArray(config.harnesses) ? config.harnesses.slice(0, 16) : [],
     hubRttMs,
   };
 }
@@ -928,6 +930,8 @@ export async function loadProbeConfig(options = {}) {
     : ['/'];
   const watchServices = normalizeWatchServices(fileConfig.watchServices);
   const detectAgents = fileConfig.detectAgents !== false;
+  const mcps = Array.isArray(fileConfig.mcps) ? fileConfig.mcps.slice(0, 32) : [];
+  const harnesses = Array.isArray(fileConfig.harnesses) ? fileConfig.harnesses.slice(0, 16) : [];
 
   return {
     configPath: resolvedConfigPath,
@@ -939,6 +943,8 @@ export async function loadProbeConfig(options = {}) {
     mounts: mounts.length > 0 ? mounts : ['/'],
     watchServices,
     detectAgents,
+    mcps,
+    harnesses,
     once: Boolean(cli.once),
     dryRun: Boolean(cli.dryRun),
   };

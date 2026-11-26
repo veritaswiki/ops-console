@@ -1,6 +1,17 @@
 import React from 'react';
 import { Tabs, TabsIndicator, TabsList, TabsPanel, TabsTab } from '@ui-sdk/react/tabs';
-import { ArrowDown, ArrowUp, ArrowUpDown, Check, Copy, Search, Send, Trash2 } from 'lucide-react';
+import {
+  ArrowDown,
+  ArrowUp,
+  ArrowUpDown,
+  Check,
+  Copy,
+  Crown,
+  ExternalLink,
+  Search,
+  Send,
+  Trash2,
+} from 'lucide-react';
 import type { FleetNode, ProbeCommandItem, ProbesResponse, SnapshotResponse } from '../types';
 import {
   copyToClipboard,
@@ -8,6 +19,7 @@ import {
   enrollProbe,
   fetchProbeCommands,
   revokeProbe,
+  setLeadA2AAgent,
   submitMobileCheckin,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
@@ -55,6 +67,8 @@ export function FleetView({
   readOnly,
   onRefresh,
   onRefreshProbes,
+  onOpenNodeMcps,
+  onOpenA2A,
   onToast,
   onConfirm,
 }: {
@@ -63,6 +77,8 @@ export function FleetView({
   readOnly: boolean;
   onRefresh: () => Promise<void>;
   onRefreshProbes: () => Promise<void>;
+  onOpenNodeMcps?: (nodeId: string) => void;
+  onOpenA2A?: () => void;
   onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
   onConfirm: (modal: ConfirmModalState) => void;
 }) {
@@ -152,7 +168,9 @@ export function FleetView({
     };
   }, [selectedNode?.id, loadNodeCommands]);
 
-  const handleEnqueueCommand = async (command: 'health-check' | 'collect-diag' | 'rotate-heartbeat') => {
+  const handleEnqueueCommand = async (
+    command: 'health-check' | 'collect-diag' | 'rotate-heartbeat' | 'mcp-sync',
+  ) => {
     if (!selectedNode) return;
     if (readOnly) {
       onToast('只读模式已禁用探针指令下发', 'err');
@@ -167,6 +185,20 @@ export function FleetView({
       onToast(`指令入队失败：${(err as Error).message}`, 'err');
     } finally {
       setCmdBusy(null);
+    }
+  };
+
+  const handleElectNodeHarnessAsLead = async (agentId: string, name: string) => {
+    if (readOnly) {
+      onToast('只读模式已禁用切换主 Agent', 'err');
+      return;
+    }
+    try {
+      await setLeadA2AAgent(agentId);
+      onToast(`已将 ${name} 设为当前全网主 Agent (Lead Harness)`, 'ok');
+      await onRefresh();
+    } catch (err) {
+      onToast(`切换主 Agent 失败：${(err as Error).message}`, 'err');
     }
   };
 
@@ -381,7 +413,7 @@ export function FleetView({
 
         <Panel
           className="xl:col-span-4"
-          title={selectedNode ? selectedNode.name : '节点检视器'}
+          title={selectedNode ? selectedNode.name : '节点全维检视器'}
           description={
             selectedNode
               ? `${deviceTypeLabel(selectedNode.deviceType)} · ${selectedNode.region || 'Tailnet'}${selectedNode.role ? ` · ${selectedNode.role}` : ''}`
@@ -391,158 +423,320 @@ export function FleetView({
         >
           {!selectedNode ? (
             <EmptyState message="未选中任何节点。" />
-          ) : (
-            <div className="space-y-4">
-              <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-[13px] pb-4 border-b border-[var(--border-subtle)]">
-                <div className="min-w-0">
-                  <dt className="text-[12px] text-[var(--ink-subtle)]">Tailscale IP</dt>
-                  <dd className="mt-0.5 font-mono text-[var(--ink)] tabular-nums truncate">
-                    {selectedNode.tailscaleIp ? (
-                      <button
-                        type="button"
-                        onClick={() => void handleCopy(`inspector-ip-${selectedNode.id}`, selectedNode.tailscaleIp!)}
-                        className={cn(
-                          'inline-flex items-center gap-1.5 hover:text-[var(--accent)] transition-colors duration-150 cursor-pointer rounded',
-                          FOCUS_RING,
-                        )}
-                        title="点击复制 Tailscale IP"
-                      >
-                        <span>{selectedNode.tailscaleIp}</span>
-                        {copiedKey === `inspector-ip-${selectedNode.id}` ? (
-                          <Check className="size-3.5 text-[var(--ok)] shrink-0" strokeWidth={1.75} />
+          ) : (() => {
+            const nodeServices = selectedNode.watchedServices || selectedNode.services || [];
+            const nodeDisks = Array.isArray(selectedNode.disks) && selectedNode.disks.length > 0
+              ? selectedNode.disks
+              : (selectedNode.disk?.usedPct != null
+                ? [{ mount: selectedNode.disk.mount || '/', usedPct: selectedNode.disk.usedPct }]
+                : []);
+            const nodeMcps = selectedNode.mcps || [];
+            const nodeHarnesses = selectedNode.harnesses || [];
+            return (
+              <Tabs defaultValue="hardware" key={selectedNode.id}>
+                <TabsList className="ui-tabs-list mb-4" data-testid="node-inspector-tabs">
+                  <TabsTab value="hardware" className="ui-tabs-tab">
+                    硬件与磁盘
+                  </TabsTab>
+                  <TabsTab value="services" className="ui-tabs-tab">
+                    服务 ({nodeServices.length})
+                  </TabsTab>
+                  <TabsTab value="mcps" className="ui-tabs-tab">
+                    MCP ({nodeMcps.length})
+                  </TabsTab>
+                  <TabsTab value="harnesses" className="ui-tabs-tab">
+                    Agent ({nodeHarnesses.length})
+                  </TabsTab>
+                  <TabsIndicator className="ui-tabs-indicator" />
+                </TabsList>
+
+                <TabsPanel value="hardware" className="space-y-4">
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-3 text-[13px] pb-4 border-b border-[var(--border-subtle)]">
+                    <div className="min-w-0">
+                      <dt className="text-[12px] text-[var(--ink-subtle)]">Tailscale IP</dt>
+                      <dd className="mt-0.5 font-mono text-[var(--ink)] tabular-nums truncate">
+                        {selectedNode.tailscaleIp ? (
+                          <button
+                            type="button"
+                            onClick={() => void handleCopy(`inspector-ip-${selectedNode.id}`, selectedNode.tailscaleIp!)}
+                            className={cn(
+                              'inline-flex items-center gap-1.5 hover:text-[var(--accent)] transition-colors duration-150 cursor-pointer rounded',
+                              FOCUS_RING,
+                            )}
+                            title="点击复制 Tailscale IP"
+                          >
+                            <span>{selectedNode.tailscaleIp}</span>
+                            {copiedKey === `inspector-ip-${selectedNode.id}` ? (
+                              <Check className="size-3.5 text-[var(--ok)] shrink-0" strokeWidth={1.75} />
+                            ) : (
+                              <Copy className="size-3 text-[var(--ink-subtle)] shrink-0" strokeWidth={1.75} />
+                            )}
+                          </button>
                         ) : (
-                          <Copy className="size-3 text-[var(--ink-subtle)] shrink-0" strokeWidth={1.75} />
+                          '-'
                         )}
-                      </button>
-                    ) : (
-                      '-'
+                      </dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-[12px] text-[var(--ink-subtle)]">系统 / 内核</dt>
+                      <dd
+                        className="mt-0.5 font-mono text-[var(--ink)] truncate"
+                        title={[selectedNode.os, selectedNode.arch, selectedNode.kernel].filter(Boolean).join(' / ')}
+                      >
+                        {[selectedNode.os, selectedNode.arch, selectedNode.kernel].filter(Boolean).join(' / ') || '-'}
+                      </dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-[12px] text-[var(--ink-subtle)]">最近心跳</dt>
+                      <dd className="mt-0.5 font-mono text-[var(--ink)] tabular-nums truncate">
+                        {formatRelativeAge(selectedNode.lastHeartbeatAt || selectedNode.lastSeenAt, selectedNode.ageSec ?? selectedNode.probeAgeSec)}
+                      </dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-[12px] text-[var(--ink-subtle)]">运行时长</dt>
+                      <dd className="mt-0.5 font-mono text-[var(--ink)] tabular-nums truncate">
+                        {formatUptime(selectedNode.uptimeSec)}
+                      </dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-[12px] text-[var(--ink-subtle)]">延迟 / 吞吐</dt>
+                      <dd className="mt-0.5 font-mono text-[var(--ink)] tabular-nums truncate">
+                        {selectedNode.network?.rttMs != null || selectedNode.rttMs != null
+                          ? `${Math.round(selectedNode.network?.rttMs ?? selectedNode.rttMs ?? 0)}ms`
+                          : '-'}
+                        {selectedNode.network?.rxBytesPerSec != null
+                          ? ` · ↓${formatBytes(selectedNode.network.rxBytesPerSec)}/s`
+                          : (selectedNode.network?.relay ? ` (${selectedNode.network.relay})` : '')}
+                      </dd>
+                    </div>
+                    <div className="min-w-0">
+                      <dt className="text-[12px] text-[var(--ink-subtle)]">采集模式</dt>
+                      <dd className="mt-0.5 font-mono text-[var(--ink)] truncate">
+                        {selectedNode.probeMode || 'tailscale'}
+                        {selectedNode.cpu?.cores ? ` · ${selectedNode.cpu.cores}C` : ''}
+                      </dd>
+                    </div>
+                  </dl>
+
+                  <div className="space-y-3 pb-3 border-b border-[var(--border-subtle)]">
+                    {selectedNode.cpu?.usagePct != null && (
+                      <ResourceMeter
+                        label={`CPU${selectedNode.cpu.load1 != null ? ` (Load ${selectedNode.cpu.load1.toFixed(2)})` : ''}`}
+                        value={selectedNode.cpu.usagePct}
+                        valueText={`${Math.round(selectedNode.cpu.usagePct)}%`}
+                      />
                     )}
-                  </dd>
-                </div>
-                <div className="min-w-0">
-                  <dt className="text-[12px] text-[var(--ink-subtle)]">系统平台</dt>
-                  <dd className="mt-0.5 font-mono text-[var(--ink)] truncate" title={[selectedNode.os, selectedNode.arch].filter(Boolean).join(' / ')}>
-                    {[selectedNode.os, selectedNode.arch].filter(Boolean).join(' / ') || '-'}
-                  </dd>
-                </div>
-                <div className="min-w-0">
-                  <dt className="text-[12px] text-[var(--ink-subtle)]">最近心跳</dt>
-                  <dd className="mt-0.5 font-mono text-[var(--ink)] tabular-nums truncate">
-                    {formatRelativeAge(selectedNode.lastHeartbeatAt || selectedNode.lastSeenAt, selectedNode.ageSec)}
-                  </dd>
-                </div>
-                <div className="min-w-0">
-                  <dt className="text-[12px] text-[var(--ink-subtle)]">运行时长</dt>
-                  <dd className="mt-0.5 font-mono text-[var(--ink)] tabular-nums truncate">
-                    {formatUptime(selectedNode.uptimeSec)}
-                  </dd>
-                </div>
-                <div className="min-w-0">
-                  <dt className="text-[12px] text-[var(--ink-subtle)]">网络延迟 / 路径</dt>
-                  <dd className="mt-0.5 font-mono text-[var(--ink)] tabular-nums truncate">
-                    {selectedNode.network?.rttMs != null ? `${Math.round(selectedNode.network.rttMs)}ms` : '-'}
-                    {selectedNode.network?.relay ? ` (${selectedNode.network.relay})` : selectedNode.network?.direct ? ' (直连)' : ''}
-                  </dd>
-                </div>
-                <div className="min-w-0">
-                  <dt className="text-[12px] text-[var(--ink-subtle)]">采集模式</dt>
-                  <dd className="mt-0.5 font-mono text-[var(--ink)] truncate">
-                    {selectedNode.probeMode || 'tailscale'}
-                  </dd>
-                </div>
-              </dl>
-
-              <div className="space-y-3 pb-3 border-b border-[var(--border-subtle)]">
-                {selectedNode.cpu?.usagePct != null && (
-                  <ResourceMeter
-                    label="CPU 使用率"
-                    value={selectedNode.cpu.usagePct}
-                    valueText={`${Math.round(selectedNode.cpu.usagePct)}%`}
-                  />
-                )}
-                {selectedNode.memory?.usedPct != null && (
-                  <ResourceMeter
-                    label="内存占用"
-                    value={selectedNode.memory.usedPct}
-                    valueText={
-                      selectedNode.memory.usedBytes && selectedNode.memory.totalBytes
-                        ? `${formatBytes(selectedNode.memory.usedBytes)} / ${formatBytes(selectedNode.memory.totalBytes)}`
-                        : `${Math.round(selectedNode.memory.usedPct)}%`
-                    }
-                  />
-                )}
-                {selectedNode.disk?.usedPct != null && (
-                  <ResourceMeter
-                    label={`磁盘 (${selectedNode.disk.mount || '/'})`}
-                    value={selectedNode.disk.usedPct}
-                    valueText={`${Math.round(selectedNode.disk.usedPct)}%`}
-                  />
-                )}
-                {selectedNode.battery?.percent != null && (
-                  <ResourceMeter
-                    label="电池电量"
-                    value={selectedNode.battery.percent}
-                    valueText={`${Math.round(selectedNode.battery.percent)}%${selectedNode.battery.charging ? ' · 充电中' : ''}`}
-                    tone={selectedNode.battery.percent < 20 ? 'err' : 'ok'}
-                  />
-                )}
-              </div>
-
-              <div className="divide-y divide-[var(--border-subtle)]">
-                <SparklineChart label="CPU 趋势" values={cpuSeries} unit="%" min={0} max={100} />
-                <SparklineChart label="内存趋势" values={memSeries} unit="%" tone="ok" min={0} max={100} />
-                {rttSeries.length > 0 && (
-                  <SparklineChart label="RTT 延迟" values={rttSeries} unit="ms" tone="warn" min={0} />
-                )}
-              </div>
-
-              <div className="pt-3 border-t border-[var(--border-subtle)] space-y-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <span className="text-[12px] font-semibold text-[var(--ink)]">
-                    零入站端口指令队列 (Pull-only)
-                  </span>
-                  <span className="font-mono text-[11px] text-[var(--ink-subtle)] tabular-nums">
-                    {nodeCommands.filter((c) => c.status === 'queued').length} 待拉取
-                  </span>
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {([
-                    { id: 'health-check', label: '健康自检' },
-                    { id: 'collect-diag', label: '采集诊断' },
-                    { id: 'rotate-heartbeat', label: '立即心跳' },
-                  ] as const).map((item) => (
-                    <Button
-                      key={item.id}
-                      variant="secondary"
-                      size="sm"
-                      disabled={readOnly || cmdBusy !== null}
-                      onClick={() => void handleEnqueueCommand(item.id)}
-                    >
-                      <Send className="size-3 text-[var(--accent)]" strokeWidth={1.75} />
-                      {cmdBusy === item.id ? '入队中...' : item.label}
-                    </Button>
-                  ))}
-                </div>
-                {nodeCommands.length > 0 && (
-                  <ul className="divide-y divide-[var(--border-subtle)] text-[12px] pt-1">
-                    {nodeCommands.slice(0, 3).map((cmd) => (
-                      <li key={cmd.id} className="py-1.5 flex items-center justify-between gap-2">
-                        <span className="font-mono text-[var(--ink)] truncate">{cmd.command}</span>
-                        <span
-                          className={cn(
-                            'font-mono text-[11px] shrink-0',
-                            cmd.status === 'delivered' ? 'text-[var(--ok)]' : 'text-[var(--warn)]',
-                          )}
-                        >
-                          {cmd.status === 'delivered' ? '已下发' : '等待心跳'}
-                        </span>
-                      </li>
+                    {selectedNode.memory?.usedPct != null && (
+                      <ResourceMeter
+                        label="内存占用"
+                        value={selectedNode.memory.usedPct}
+                        valueText={
+                          selectedNode.memory.usedBytes && selectedNode.memory.totalBytes
+                            ? `${formatBytes(selectedNode.memory.usedBytes)} / ${formatBytes(selectedNode.memory.totalBytes)}`
+                            : `${Math.round(selectedNode.memory.usedPct)}%`
+                        }
+                      />
+                    )}
+                    {nodeDisks.map((disk) => (
+                      <ResourceMeter
+                        key={disk.mount}
+                        label={`磁盘 (${disk.mount})`}
+                        value={disk.usedPct ?? 0}
+                        valueText={
+                          disk.usedBytes && disk.totalBytes
+                            ? `${formatBytes(disk.usedBytes)} / ${formatBytes(disk.totalBytes)} (${Math.round(disk.usedPct ?? 0)}%)`
+                            : `${Math.round(disk.usedPct ?? 0)}%`
+                        }
+                      />
                     ))}
-                  </ul>
-                )}
-              </div>
-            </div>
-          )}
+                    {selectedNode.battery?.percent != null && (
+                      <ResourceMeter
+                        label="电池电量"
+                        value={selectedNode.battery.percent}
+                        valueText={`${Math.round(selectedNode.battery.percent)}%${selectedNode.battery.charging ? ' · 充电中' : ''}`}
+                        tone={selectedNode.battery.percent < 20 ? 'err' : 'ok'}
+                      />
+                    )}
+                  </div>
+
+                  <div className="divide-y divide-[var(--border-subtle)]">
+                    <SparklineChart label="CPU 趋势" values={cpuSeries} unit="%" min={0} max={100} />
+                    <SparklineChart label="内存趋势" values={memSeries} unit="%" tone="ok" min={0} max={100} />
+                    {rttSeries.length > 0 && (
+                      <SparklineChart label="RTT 延迟" values={rttSeries} unit="ms" tone="warn" min={0} />
+                    )}
+                  </div>
+
+                  <div className="pt-3 border-t border-[var(--border-subtle)] space-y-2.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-[12px] font-semibold text-[var(--ink)]">
+                        零入站端口指令队列 (Pull-only)
+                      </span>
+                      <span className="font-mono text-[11px] text-[var(--ink-subtle)] tabular-nums">
+                        {nodeCommands.filter((c) => c.status === 'queued').length} 待拉取
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {([
+                        { id: 'health-check', label: '健康自检' },
+                        { id: 'collect-diag', label: '采集诊断' },
+                        { id: 'mcp-sync', label: '同步 MCP' },
+                        { id: 'rotate-heartbeat', label: '立即心跳' },
+                      ] as const).map((item) => (
+                        <Button
+                          key={item.id}
+                          variant="secondary"
+                          size="sm"
+                          disabled={readOnly || cmdBusy !== null}
+                          onClick={() => void handleEnqueueCommand(item.id)}
+                        >
+                          <Send className="size-3 text-[var(--accent)]" strokeWidth={1.75} />
+                          {cmdBusy === item.id ? '入队中...' : item.label}
+                        </Button>
+                      ))}
+                    </div>
+                    {nodeCommands.length > 0 && (
+                      <ul className="divide-y divide-[var(--border-subtle)] text-[12px] pt-1">
+                        {nodeCommands.slice(0, 3).map((cmd) => (
+                          <li key={cmd.id} className="py-1.5 flex items-center justify-between gap-2">
+                            <span className="font-mono text-[var(--ink)] truncate">{cmd.command}</span>
+                            <span
+                              className={cn(
+                                'font-mono text-[11px] shrink-0',
+                                cmd.status === 'delivered' ? 'text-[var(--ok)]' : 'text-[var(--warn)]',
+                              )}
+                            >
+                              {cmd.status === 'delivered' ? '已下发' : '等待心跳'}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </TabsPanel>
+
+                <TabsPanel value="services" className="space-y-3">
+                  {nodeServices.length === 0 ? (
+                    <EmptyState message="该节点尚未上报受管服务列表。" />
+                  ) : (
+                    <ul className="divide-y divide-[var(--border-subtle)] text-[13px]">
+                      {nodeServices.map((svc, idx) => (
+                        <li key={`${svc.name}-${idx}`} className="py-2.5 first:pt-0 flex items-center justify-between gap-3">
+                          <div className="min-w-0 flex-1">
+                            <div className="font-mono text-[12.5px] font-medium text-[var(--ink)] truncate">
+                              {svc.name}
+                            </div>
+                            {(svc.role || svc.memoryMb != null) && (
+                              <div className="font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums truncate">
+                                {[svc.role, svc.memoryMb != null ? `${svc.memoryMb} MB` : ''].filter(Boolean).join(' · ')}
+                              </div>
+                            )}
+                          </div>
+                          <StatusIndicator status={svc.status === 'active' ? 'healthy' : svc.status} />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </TabsPanel>
+
+                <TabsPanel value="mcps" className="space-y-3">
+                  {nodeMcps.length === 0 ? (
+                    <EmptyState
+                      message="该节点暂未部署 MCP Server。"
+                      action={
+                        onOpenNodeMcps
+                          ? { label: '部署 MCP 到此节点', onClick: () => onOpenNodeMcps(selectedNode.id) }
+                          : undefined
+                      }
+                    />
+                  ) : (
+                    <>
+                      <ul className="divide-y divide-[var(--border-subtle)] text-[13px]">
+                        {nodeMcps.map((mcp) => (
+                          <li key={mcp.id} className="py-2.5 first:pt-0 flex items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1">
+                              <div className="font-medium text-[var(--ink)] truncate">{mcp.name}</div>
+                              <div className="font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums truncate">
+                                {mcp.transport} · {mcp.toolsCount ?? 0} tools
+                                {mcp.latencyMs != null ? ` · ${mcp.latencyMs}ms` : ''}
+                              </div>
+                            </div>
+                            <StatusIndicator status={mcp.enabled ? mcp.status : 'standby'} />
+                          </li>
+                        ))}
+                      </ul>
+                      {onOpenNodeMcps && (
+                        <div className="pt-2 border-t border-[var(--border-subtle)]">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => onOpenNodeMcps(selectedNode.id)}
+                          >
+                            <ExternalLink className="size-3.5" strokeWidth={1.75} />
+                            在全节点 MCP 控制台管理
+                          </Button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </TabsPanel>
+
+                <TabsPanel value="harnesses" className="space-y-3">
+                  {nodeHarnesses.length === 0 ? (
+                    <EmptyState
+                      message="该节点尚未注册外部 A2A Agent Harness。"
+                      action={
+                        onOpenA2A
+                          ? { label: '前往接入外部 Harness', onClick: onOpenA2A }
+                          : undefined
+                      }
+                    />
+                  ) : (
+                    <>
+                      <ul className="divide-y divide-[var(--border-subtle)] text-[13px]">
+                        {nodeHarnesses.map((h) => {
+                          const isLead = h.role === 'lead';
+                          return (
+                            <li key={h.id} className="py-2.5 first:pt-0 space-y-1.5">
+                              <div className="flex items-center justify-between gap-2">
+                                <div className="min-w-0 flex items-center gap-1.5">
+                                  {isLead && <Crown className="size-3.5 text-[var(--accent)] shrink-0" />}
+                                  <span className="font-medium text-[var(--ink)] truncate">{h.name}</span>
+                                </div>
+                                <StatusIndicator status={h.status} />
+                              </div>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums truncate">
+                                  {h.harness} · {isLead ? '主 Agent' : 'Worker'} · {h.skillsCount ?? 0} skills · {(h.boundMcpIds || []).length} MCP
+                                </span>
+                                {!isLead && !readOnly && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleElectNodeHarnessAsLead(h.id, h.name)}
+                                    className="font-mono text-[11.5px] text-[var(--accent)] hover:underline cursor-pointer shrink-0"
+                                  >
+                                    设为主 Agent
+                                  </button>
+                                )}
+                              </div>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                      {onOpenA2A && (
+                        <div className="pt-2 border-t border-[var(--border-subtle)]">
+                          <Button variant="secondary" size="sm" onClick={onOpenA2A}>
+                            <ExternalLink className="size-3.5" strokeWidth={1.75} />
+                            打开 A2A 主从调度中心
+                          </Button>
+                        </div>
+                      )}
+                    </>
+                  )}
+                </TabsPanel>
+              </Tabs>
+            );
+          })()}
         </Panel>
       </div>
 
@@ -688,6 +882,7 @@ export function FleetView({
                       )}
                     </button>
                   </th>
+                  <th className="py-2.5 px-3 text-right">服务 / MCP / A2A</th>
                   <th className="py-2.5 pl-3 pr-5 sm:pr-6 text-right">最近上报</th>
                 </tr>
               </thead>
@@ -780,8 +975,11 @@ export function FleetView({
                           <span className="text-[var(--ink-subtle)]">-</span>
                         )}
                       </td>
+                      <td className="py-3 px-3 text-right font-mono text-[12px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
+                        {(n.watchedServices || n.services || []).length} svc · {(n.mcps || []).length} MCP · {(n.harnesses || []).length} A2A
+                      </td>
                       <td className="py-3 pl-3 pr-5 sm:pr-6 text-right font-mono text-[12.5px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap">
-                        {formatRelativeAge(n.lastHeartbeatAt || n.lastSeenAt, n.ageSec)}
+                        {formatRelativeAge(n.lastHeartbeatAt || n.lastSeenAt, n.ageSec ?? n.probeAgeSec)}
                       </td>
                     </tr>
                   );

@@ -10,12 +10,12 @@ import {
   parseViewFromHash,
 } from './registry.ts';
 
-test('CONSOLE_MODULES registers all 10 codified modules with unique IDs and keyboard chords', () => {
-  assert.equal(CONSOLE_MODULES.length, 10);
+test('CONSOLE_MODULES registers all 11 codified modules with unique IDs and keyboard chords', () => {
+  assert.equal(CONSOLE_MODULES.length, 11);
   const ids = new Set(CONSOLE_MODULES.map((m) => m.id));
   const chords = new Set(CONSOLE_MODULES.map((m) => m.chord));
-  assert.equal(ids.size, 10);
-  assert.equal(chords.size, 10);
+  assert.equal(ids.size, 11);
+  assert.equal(chords.size, 11);
 
   for (const mod of CONSOLE_MODULES) {
     assert.ok(mod.label.length > 0);
@@ -26,19 +26,23 @@ test('CONSOLE_MODULES registers all 10 codified modules with unique IDs and keyb
   }
 });
 
-test('getModulesGroupedByDomain covers all 3 domains and all 10 modules cleanly', () => {
+test('getModulesGroupedByDomain covers all 3 domains and prioritizes agents at top core group', () => {
   const grouped = getModulesGroupedByDomain();
   assert.equal(grouped.length, MODULE_DOMAINS.length);
   const total = grouped.reduce((sum, g) => sum + g.modules.length, 0);
-  assert.equal(total, 10);
+  assert.equal(total, 11);
+  assert.equal(grouped[0].modules[0].id, 'overview');
+  assert.equal(grouped[0].modules[1].id, 'agents');
 });
 
 test('parseViewFromHash and isValidViewId handle hash deep-links safely', () => {
   assert.equal(parseViewFromHash('#services'), 'services');
+  assert.equal(parseViewFromHash('#mcp'), 'mcp');
   assert.equal(parseViewFromHash('#/logs?unit=magpie'), 'logs');
   assert.equal(parseViewFromHash('#NETWORK'), 'network');
   assert.equal(parseViewFromHash('#unknown-view'), null);
   assert.equal(parseViewFromHash(''), null);
   assert.equal(isValidViewId('overview'), true);
+  assert.equal(isValidViewId('mcp'), true);
   assert.equal(isValidViewId('bogus'), false);
 });

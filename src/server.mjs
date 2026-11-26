@@ -4,6 +4,7 @@ import http from 'node:http';
 import path from 'node:path';
 import zlib from 'node:zlib';
 import { ActionController } from './actions.mjs';
+import { A2AOrchestrator } from './a2a-orchestrator.mjs';
 import { AlertEngine } from './alerts.mjs';
 import { SingleFlightCache } from './cache.mjs';
 import { APP_VERSION, PACKAGE_ROOT, validateConfig } from './config.mjs';
@@ -12,6 +13,7 @@ import { ConnectorHub } from './connectors/index.mjs';
 import { ControlPlaneEventBus } from './events.mjs';
 import { StructuredLogger } from './logger.mjs';
 import { LogService } from './logs.mjs';
+import { McpFleetManager } from './mcp-fleet.mjs';
 import { isTailscaleOrLoopbackIp, ProbeRegistry, validateNodeId } from './probes.mjs';
 import { PluginManager } from './plugins/manager.mjs';
 import { maskClientIp } from './redact.mjs';
@@ -239,6 +241,11 @@ export function createOpsConsole(options = {}) {
   const logs = options.logs || new LogService({ config, logger, demoProvider });
   const actions = options.actions || new ActionController({ config, logger, cache, demoProvider });
   const alertEngine = options.alertEngine || new AlertEngine({ eventBus, logger, demo: config.demo });
+  const mcpFleet = options.mcpFleet || new McpFleetManager(config, logger);
+  const a2aOrchestrator = options.a2aOrchestrator || new A2AOrchestrator(config, logger);
+  a2aOrchestrator.setLogListener((entry) => {
+    eventBus.emit('a2a_log', entry);
+  });
   const runbookEngine = options.runbookEngine || new RunbookEngine({
     config,
     connectors: hub,
@@ -1180,12 +1187,698 @@ export function createOpsConsole(options = {}) {
         return;
       }
 
+      // ─── Fleet-Wide MCP Control Plane (/api/mcps/*) ────────────────────────
+      if (method === 'GET' && pathname === '/api/mcps') {
+        const snapshot = await hub.collectSnapshot(false);
+        const fleetNodes = snapshot?.fleet?.nodes || [];
+        const nodeId = url.searchParams.get('nodeId') || '';
+        const result = mcpFleet.list(fleetNodes, nodeId);
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/mcps') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables MCP modifications' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const snapshot = await hub.collectSnapshot(false);
+        const fleetNodes = snapshot?.fleet?.nodes || [];
+        const result = await mcpFleet.register(data, { probeRegistry, fleetNodes, actor: 'web' });
+        await logger.appendAudit({
+          action: 'mcp:register',
+          target: result.created.map((c) => `${c.nodeId}/${c.name}`).join(', '),
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `Registered ${result.created.length} MCP instance(s)`,
+        });
+        eventBus.emit('mcps_updated', { action: 'register', count: result.created.length });
+        sendJson(res, 201, { ok: true, ...result }, {}, req);
+        return;
+      }
+
+      const mcpActionMatch = pathname.match(/^\/api\/mcps\/([A-Za-z0-9._:-]+)\/(toggle|test|sync)$/);
+      if (method === 'POST' && mcpActionMatch) {
+        const mcpId = mcpActionMatch[1];
+        const verb = mcpActionMatch[2];
+        if (verb !== 'test' && config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables MCP modifications' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        if (verb === 'toggle') {
+          const result = await mcpFleet.toggle(mcpId, Boolean(data.enabled), { probeRegistry, actor: 'web' });
+          await logger.appendAudit({
+            action: 'mcp:toggle',
+            target: mcpId,
+            actor: 'web',
+            ip: auditIp(clientIp),
+            ok: true,
+            detail: `enabled=${Boolean(data.enabled)}`,
+          });
+          eventBus.emit('mcps_updated', { action: 'toggle', id: mcpId, enabled: Boolean(data.enabled) });
+          sendJson(res, 200, { ok: true, ...result }, {}, req);
+          return;
+        }
+        if (verb === 'test') {
+          const result = await mcpFleet.test(mcpId);
+          sendJson(res, 200, result, {}, req);
+          return;
+        }
+        if (verb === 'sync') {
+          const snapshot = await hub.collectSnapshot(false);
+          const fleetNodes = snapshot?.fleet?.nodes || [];
+          const result = await mcpFleet.syncToNodes(mcpId, data.targetNodeIds || [], {
+            probeRegistry,
+            fleetNodes,
+            actor: 'web',
+          });
+          await logger.appendAudit({
+            action: 'mcp:sync',
+            target: mcpId,
+            actor: 'web',
+            ip: auditIp(clientIp),
+            ok: true,
+            detail: `Synced to ${(data.targetNodeIds || []).join(', ')}`,
+          });
+          eventBus.emit('mcps_updated', { action: 'sync', id: mcpId, count: result.synced.length });
+          sendJson(res, 200, { ok: true, ...result }, {}, req);
+          return;
+        }
+      }
+
+      const mcpDeleteMatch = pathname.match(/^\/api\/mcps\/([A-Za-z0-9._:-]+)$/);
+      if (method === 'DELETE' && mcpDeleteMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables MCP deletion' }, {}, req);
+          return;
+        }
+        const mcpId = mcpDeleteMatch[1];
+        const result = await mcpFleet.remove(mcpId);
+        await logger.appendAudit({
+          action: 'mcp:delete',
+          target: mcpId,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: 'Removed MCP registration',
+        });
+        eventBus.emit('mcps_updated', { action: 'delete', id: mcpId });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      // ─── Harness-Free A2A Lead/Worker Orchestrator (/api/a2a/*) ────────────
+      if (method === 'GET' && pathname === '/api/a2a/state') {
+        const snapshot = await hub.collectSnapshot(false);
+        const fleetNodes = snapshot?.fleet?.nodes || [];
+        const state = a2aOrchestrator.getState(fleetNodes);
+        sendJson(res, 200, state, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/a2a/lead') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables Lead Agent changes' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.setLeadAgent(String(data.agentId || ''));
+        await logger.appendAudit({
+          action: 'a2a:set-lead',
+          target: result.leadAgentId,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `Elected Lead Harness: ${result.leadAgent?.name || result.leadAgentId}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'set_lead', leadAgentId: result.leadAgentId });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/a2a/agents') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables registering A2A agents' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const snapshot = await hub.collectSnapshot(false);
+        const fleetNodes = snapshot?.fleet?.nodes || [];
+        const agent = await a2aOrchestrator.registerAgent(data, { fleetNodes });
+        await logger.appendAudit({
+          action: 'a2a:register-agent',
+          target: `${agent.nodeId}/${agent.id}`,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `Registered ${agent.harness} (${agent.role})`,
+        });
+        eventBus.emit('a2a_updated', { action: 'register_agent', id: agent.id });
+        sendJson(res, 201, { ok: true, agent }, {}, req);
+        return;
+      }
+
+      const a2aAgentMatch = pathname.match(/^\/api\/a2a\/agents\/([A-Za-z0-9._:-]+)$/);
+      if (method === 'PATCH' && a2aAgentMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables updating A2A agents' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const agent = await a2aOrchestrator.updateAgent(a2aAgentMatch[1], data);
+        await logger.appendAudit({
+          action: 'a2a:update-agent',
+          target: agent.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `delegatable=${agent.delegatable}, mcps=${agent.boundMcpIds.length}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'update_agent', id: agent.id });
+        sendJson(res, 200, { ok: true, agent }, {}, req);
+        return;
+      }
+
+      if (method === 'DELETE' && a2aAgentMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables deleting A2A agents' }, {}, req);
+          return;
+        }
+        const result = await a2aOrchestrator.removeAgent(a2aAgentMatch[1]);
+        await logger.appendAudit({
+          action: 'a2a:delete-agent',
+          target: a2aAgentMatch[1],
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: 'Removed A2A peer',
+        });
+        eventBus.emit('a2a_updated', { action: 'delete_agent', id: a2aAgentMatch[1] });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      const a2aDiscoverMatch = pathname.match(/^\/api\/a2a\/agents\/([A-Za-z0-9._:-]+)\/discover$/);
+      if (method === 'POST' && a2aDiscoverMatch) {
+        const result = await a2aOrchestrator.discoverAgentCard(a2aDiscoverMatch[1]);
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/a2a/tasks') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables dispatching A2A tasks' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const task = await a2aOrchestrator.dispatchTask(data, { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:dispatch-task',
+          target: `${task.leadAgentId}->${task.workerAgentId}`,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: task.state !== 'failed',
+          detail: `taskId=${task.id}, state=${task.state}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'dispatch_task', taskId: task.id, state: task.state });
+        sendJson(res, 201, { ok: true, task }, {}, req);
+        return;
+      }
+
+      const a2aCancelMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/cancel$/);
+      if (method === 'POST' && a2aCancelMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables canceling A2A tasks' }, {}, req);
+          return;
+        }
+        const task = await a2aOrchestrator.cancelTask(a2aCancelMatch[1]);
+        await logger.appendAudit({
+          action: 'a2a:cancel-task',
+          target: task.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: 'Canceled A2A task',
+        });
+        eventBus.emit('a2a_updated', { action: 'cancel_task', taskId: task.id });
+        sendJson(res, 200, { ok: true, task }, {}, req);
+        return;
+      }
+
+      if (method === 'PUT' && pathname === '/api/a2a/config') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables orchestration config changes' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.updateOrchestrationConfig(data);
+        await logger.appendAudit({
+          action: 'a2a:update-config',
+          target: result.orchestrationConfig.mode,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `mode=${result.orchestrationConfig.mode}, main=${result.orchestrationConfig.mainModel}/${result.orchestrationConfig.mainEffort}, sub=${result.orchestrationConfig.subModel}/${result.orchestrationConfig.subEffort}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'update_config', mode: result.orchestrationConfig.mode });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'PUT' && pathname === '/api/a2a/topology') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables saving topology layout' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.saveTopologyPositions(data?.positions || data);
+        eventBus.emit('a2a_updated', { action: 'save_topology', updated: result.updated });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/a2a/routes') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables editing routing rules' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.upsertRoutingRule(data);
+        await logger.appendAudit({
+          action: 'a2a:upsert-route',
+          target: result.rule.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `${result.rule.sourceAgentId}->${result.rule.targetAgentId} (${result.rule.targetModel}/${result.rule.reasoningEffort})`,
+        });
+        eventBus.emit('a2a_updated', { action: 'upsert_route', ruleId: result.rule.id });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      const a2aRouteMatch = pathname.match(/^\/api\/a2a\/routes\/([A-Za-z0-9._:-]+)$/);
+      if (method === 'DELETE' && a2aRouteMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables deleting routing rules' }, {}, req);
+          return;
+        }
+        const result = await a2aOrchestrator.deleteRoutingRule(a2aRouteMatch[1]);
+        await logger.appendAudit({
+          action: 'a2a:delete-route',
+          target: a2aRouteMatch[1],
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: 'Deleted visual routing rule',
+        });
+        eventBus.emit('a2a_updated', { action: 'delete_route', ruleId: a2aRouteMatch[1] });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/a2a/discover-local') {
+        const snapshot = await hub.collectSnapshot(false);
+        const fleetNodes = snapshot?.fleet?.nodes || [];
+        const result = await a2aOrchestrator.discoverInstalledAgents(fleetNodes);
+        await logger.appendAudit({
+          action: 'a2a:discover-local',
+          target: 'fleet',
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `discovered=${result.discoveredCount}, newlyRegistered=${result.newlyRegistered}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'discover_local', count: result.discoveredCount });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/a2a/skills') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables managing skills' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.upsertSkill(data);
+        await logger.appendAudit({
+          action: 'a2a:upsert-skill',
+          target: result.skill.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `${result.skill.name} v${result.skill.version}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'upsert_skill', skillId: result.skill.id });
+        sendJson(res, 201, result, {}, req);
+        return;
+      }
+
+      const a2aSkillMatch = pathname.match(/^\/api\/a2a\/skills\/([A-Za-z0-9._:-]+)$/);
+      if (method === 'PATCH' && a2aSkillMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables updating skills' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.updateSkill(a2aSkillMatch[1], data);
+        eventBus.emit('a2a_updated', { action: 'update_skill', skillId: a2aSkillMatch[1] });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'DELETE' && a2aSkillMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables deleting skills' }, {}, req);
+          return;
+        }
+        const result = await a2aOrchestrator.deleteSkill(a2aSkillMatch[1]);
+        eventBus.emit('a2a_updated', { action: 'delete_skill', skillId: a2aSkillMatch[1] });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/a2a/sessions') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables creating aligned sessions' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.createSession(data);
+        await logger.appendAudit({
+          action: 'a2a:create-session',
+          target: result.session.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `${result.session.contextId} (${result.session.syncMode})`,
+        });
+        eventBus.emit('a2a_updated', { action: 'create_session', sessionId: result.session.id });
+        sendJson(res, 201, result, {}, req);
+        return;
+      }
+
+      const a2aSessionSyncMatch = pathname.match(/^\/api\/a2a\/sessions\/([A-Za-z0-9._:-]+)\/sync$/);
+      if (method === 'POST' && a2aSessionSyncMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables syncing sessions' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.syncSession(a2aSessionSyncMatch[1], data?.extraNodes);
+        await logger.appendAudit({
+          action: 'a2a:sync-session',
+          target: result.session.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `rev=${result.session.revision}, nodes=${result.session.syncedNodes.length}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'sync_session', sessionId: result.session.id });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      const a2aSessionHandoffMatch = pathname.match(/^\/api\/a2a\/sessions\/([A-Za-z0-9._:-]+)\/handoff$/);
+      if (method === 'POST' && a2aSessionHandoffMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables session handoff' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.handoffSession(a2aSessionHandoffMatch[1], String(data?.targetAgentId || ''));
+        await logger.appendAudit({
+          action: 'a2a:handoff-session',
+          target: result.session.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `handoff->${result.session.primaryAgentId}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'handoff_session', sessionId: result.session.id });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/a2a/logs') {
+        const result = a2aOrchestrator.getCollaborationLogs({
+          agentId: url.searchParams.get('agentId') || '',
+          eventType: url.searchParams.get('eventType') || '',
+          level: url.searchParams.get('level') || '',
+          q: url.searchParams.get('q') || '',
+          limit: Number(url.searchParams.get('limit') || 80),
+        });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/a2a/logs/stream') {
+        const agentIdFilter = String(url.searchParams.get('agentId') || '').trim();
+        const eventTypeFilter = String(url.searchParams.get('eventType') || '').trim();
+        const levelFilter = String(url.searchParams.get('level') || '').trim().toLowerCase();
+        const queryFilter = String(url.searchParams.get('q') || '').trim().toLowerCase();
+
+        if (eventBus.activeStreams.size >= eventBus.maxStreams) {
+          sendJson(res, 429, { ok: false, error: 'Too many concurrent SSE event streams' }, {}, req);
+          return;
+        }
+
+        req.socket?.setTimeout?.(0);
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream; charset=utf-8',
+          'Cache-Control': 'no-cache, no-transform',
+          Connection: 'keep-alive',
+          'X-Accel-Buffering': 'no',
+          ...secHeaders(false),
+        });
+
+        let cleaned = false;
+        const sendFrame = (eventName, data, id) => {
+          if (res.writableEnded || res.destroyed) return;
+          try {
+            if (id != null) res.write(`id: ${id}\n`);
+            res.write(`event: ${eventName}\n`);
+            res.write(`data: ${JSON.stringify(data)}\n\n`);
+          } catch {
+            cleanup();
+          }
+        };
+
+        const matchesFilters = (entry) => {
+          if (!entry) return false;
+          if (agentIdFilter && agentIdFilter !== 'all') {
+            if (entry.sourceAgentId !== agentIdFilter && entry.targetAgentId !== agentIdFilter) return false;
+          }
+          if (eventTypeFilter && eventTypeFilter !== 'all') {
+            if (entry.eventType !== eventTypeFilter && !String(entry.eventType || '').startsWith(`${eventTypeFilter}.`)) {
+              return false;
+            }
+          }
+          if (levelFilter && levelFilter !== 'all' && entry.level !== levelFilter) return false;
+          if (queryFilter) {
+            const hay = `${entry.sourceAgentName} ${entry.targetAgentName} ${entry.eventType} ${entry.summary} ${entry.detail} ${entry.contextId || ''} ${entry.spillRefId || ''}`.toLowerCase();
+            if (!hay.includes(queryFilter)) return false;
+          }
+          return true;
+        };
+
+        const onBusEvent = (evt) => {
+          if (evt?.type !== 'a2a_log' || !matchesFilters(evt.payload)) return;
+          sendFrame('a2a_log', evt.payload, evt.id);
+        };
+
+        const heartbeat = setInterval(() => {
+          if (res.writableEnded || res.destroyed) {
+            cleanup();
+            return;
+          }
+          try {
+            res.write(`: keepalive ${Date.now()}\n\n`);
+          } catch {
+            cleanup();
+          }
+        }, eventBus.heartbeatMs);
+        heartbeat.unref?.();
+
+        const streamHandle = {
+          close: () => {
+            cleanup();
+            if (!res.writableEnded) {
+              try {
+                res.end();
+              } catch {
+                // ignore
+              }
+            }
+          },
+        };
+
+        const cleanup = () => {
+          if (cleaned) return;
+          cleaned = true;
+          clearInterval(heartbeat);
+          eventBus.emitter.off('event', onBusEvent);
+          eventBus.activeStreams.delete(streamHandle);
+        };
+
+        eventBus.activeStreams.add(streamHandle);
+        eventBus.emitter.on('event', onBusEvent);
+        req.on('close', cleanup);
+        res.on('close', cleanup);
+        res.on('error', cleanup);
+
+        const initial = a2aOrchestrator.getCollaborationLogs({
+          agentId: agentIdFilter,
+          eventType: eventTypeFilter,
+          level: levelFilter,
+          q: queryFilter,
+          limit: 60,
+        });
+        sendFrame('init', {
+          agentId: agentIdFilter || 'all',
+          total: initial.total,
+          items: initial.items,
+          ts: new Date().toISOString(),
+        });
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/a2a/swarm/metrics') {
+        const snapshot = await hub.collectSnapshot(false);
+        const state = a2aOrchestrator.getState(snapshot?.fleet?.nodes || []);
+        sendJson(res, 200, {
+          ok: true,
+          swarmMetrics: state.swarmMetrics,
+          superAgentConfig: state.superAgentConfig,
+          superAgentTickets: state.superAgentTickets,
+          contextSpillNodes: state.contextSpillNodes,
+          triggerEvents: state.triggerEvents,
+        }, {}, req);
+        return;
+      }
+
+      if (method === 'PUT' && pathname === '/api/a2a/superagent/config') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables modifying SuperAgent config' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.updateSuperAgentConfig(data);
+        await logger.appendAudit({
+          action: 'a2a:superagent-config',
+          target: 'superagent',
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `fastPath=${result.superAgentConfig.fastPathEnabled}, inlineKb=${result.superAgentConfig.inlineBudgetKb}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'superagent_config' });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/a2a/superagent/triggers') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables ingesting SuperAgent triggers' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.ingestTriggerEvent(data, { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:superagent-trigger',
+          target: result.trigger.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `decision=${result.trigger.decision}, thread=${result.trigger.threadKey}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'superagent_trigger', triggerId: result.trigger.id });
+        sendJson(res, 201, result, {}, req);
+        return;
+      }
+
+      const superAgentSpillMatch = pathname.match(/^\/api\/a2a\/superagent\/context\/([A-Za-z0-9._:-]+)\/toggle$/);
+      if (method === 'POST' && superAgentSpillMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables toggling context spill nodes' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.toggleContextSpillNode(superAgentSpillMatch[1], data?.state || '');
+        await logger.appendAudit({
+          action: 'a2a:superagent-context-toggle',
+          target: result.node.spillId,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `state=${result.node.state}, recalls=${result.node.recallCount}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'superagent_context_toggle', spillId: result.node.spillId });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/a2a/superagent/watchdog/sweep') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables Watchdog recovery sweeps' }, {}, req);
+          return;
+        }
+        const result = await a2aOrchestrator.runWatchdogSweep();
+        await logger.appendAudit({
+          action: 'a2a:superagent-watchdog',
+          target: 'watchdog',
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `checked=${result.checkedCount}, recovered=${result.recoveredCount}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'superagent_watchdog', recovered: result.recoveredCount });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/a2a/dsh-team/run') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables DSH team collaboration runs' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.runDshTeamCollaboration(data, { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:dsh-team-run',
+          target: result.task.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `policy=${result.policy}, approved=${result.approved}, ticket=${result.ticket.id}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'dsh_team_run', taskId: result.task.id });
+        sendJson(res, 201, result, {}, req);
+        return;
+      }
+
       if (method === 'GET' && pathname === '/api/snapshot') {
         const force = url.searchParams.get('refresh') === '1' || url.searchParams.get('force') === '1';
         const snapshot = await hub.collectSnapshot(force);
         alertEngine.evaluateSnapshot(snapshot);
+        const rawFleetNodes = snapshot?.fleet?.nodes || [];
+        const enrichedFleet = snapshot?.fleet
+          ? {
+              ...snapshot.fleet,
+              nodes: rawFleetNodes.map((node) => ({
+                ...node,
+                disk: node.disk || (Array.isArray(node.disks) && node.disks[0] ? { mount: node.disks[0].mount, usedPct: node.disks[0].usedPct } : undefined),
+                mcps: mcpFleet.getForNode(node.id, rawFleetNodes),
+                harnesses: a2aOrchestrator.getForNode(node.id, rawFleetNodes),
+              })),
+            }
+          : snapshot?.fleet;
         sendJson(res, 200, {
           ...snapshot,
+          fleet: enrichedFleet,
           runningJobs: actions.getRunningJobs(),
           activeAlertsCount: alertEngine.alerts.filter((a) => a.status === 'active').length,
           sseConnectedClients: eventBus.getActiveCount(),
@@ -1402,6 +2095,8 @@ export function createOpsConsole(options = {}) {
     const port = config.console.port;
     try {
       await store.init();
+      await mcpFleet.init();
+      await a2aOrchestrator.init();
       await pluginManager.loadExternalPlugins();
       await store.hydrateTimeSeries(timeseries, { limitPerSeries: config.fleet?.historyPoints || 60 });
       for (const host of hosts) {
@@ -1472,6 +2167,8 @@ export function createOpsConsole(options = {}) {
     pluginManager,
     eventBus,
     alertEngine,
+    mcpFleet,
+    a2aOrchestrator,
     runbookEngine,
     hub,
     logs,

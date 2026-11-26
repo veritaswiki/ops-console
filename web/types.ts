@@ -4,6 +4,7 @@ export type ViewId =
   | 'fleet'
   | 'services'
   | 'plugins'
+  | 'mcp'
   | 'memory'
   | 'agents'
   | 'network'
@@ -380,17 +381,24 @@ export interface FleetNode {
   status?: string;
   os?: string;
   arch?: string;
+  kernel?: string;
+  provider?: string;
   tailscaleIp?: string;
+  tailscaleDns?: string;
   probeMode?: string;
   probeVersion?: string;
   lastSeenAt?: string;
   lastHeartbeatAt?: string;
   ageSec?: number | null;
+  probeAgeSec?: number | null;
   uptimeSec?: number | null;
+  rttMs?: number | null;
   cpu?: {
     usagePct?: number | null;
     cores?: number | null;
     load1?: number | null;
+    load5?: number | null;
+    load15?: number | null;
   };
   memory?: {
     usedPct?: number | null;
@@ -401,20 +409,59 @@ export interface FleetNode {
     usedPct?: number | null;
     mount?: string;
   };
+  disks?: Array<{
+    mount: string;
+    totalBytes?: number | null;
+    usedBytes?: number | null;
+    usedPct?: number | null;
+    summary?: string;
+  }>;
   battery?: {
     percent?: number | null;
     charging?: boolean;
     state?: string;
+    source?: string;
   };
   network?: {
     rttMs?: number | null;
     relay?: string;
     direct?: boolean;
+    rxBytesPerSec?: number | null;
+    txBytesPerSec?: number | null;
+    type?: string;
     ssid?: string;
     carrier?: string;
   };
   tags?: string[];
-  services?: Array<{ name: string; status: string }>;
+  services?: Array<{ name: string; status: string; unit?: string; role?: string; memoryMb?: number | null }>;
+  watchedServices?: Array<{ name: string; status: string; unit?: string; role?: string; memoryMb?: number | null }>;
+  mcps?: Array<{
+    id: string;
+    name: string;
+    transport: string;
+    endpoint?: string | null;
+    command?: string | null;
+    enabled: boolean;
+    status: string;
+    toolsCount?: number;
+    latencyMs?: number | null;
+    syncState?: string;
+    scope?: string;
+  }>;
+  harnesses?: Array<{
+    id: string;
+    name: string;
+    harness: string;
+    role: 'lead' | 'worker' | string;
+    status: string;
+    delegatable?: boolean;
+    protocolVersion?: string;
+    modelHint?: string | null;
+    skillsCount?: number;
+    boundMcpIds?: string[];
+    latencyMs?: number | null;
+  }>;
+  agentsCount?: number;
   note?: string;
   history?: Array<{
     ts?: number | string;
@@ -927,4 +974,362 @@ export interface SnapshotPluginItem {
   summary: string;
   details?: Record<string, unknown>;
 }
+
+export interface FleetMcpTool {
+  name: string;
+  description?: string;
+}
+
+export interface FleetMcpServer {
+  id: string;
+  templateId?: string | null;
+  name: string;
+  nodeId: string;
+  nodeName: string;
+  transport: 'streamable-http' | 'stdio' | 'sse' | string;
+  endpoint?: string | null;
+  command?: string | null;
+  args?: string[];
+  envRefs?: string[];
+  scope?: string;
+  enabled: boolean;
+  status: string;
+  protocolVersion?: string;
+  latencyMs?: number | null;
+  toolsCount: number;
+  resourcesCount?: number;
+  tools?: FleetMcpTool[];
+  lastCheckedAt?: string;
+  syncState?: string;
+  description?: string;
+}
+
+export interface McpFleetResponse {
+  ok?: boolean;
+  summary: {
+    total: number;
+    enabled: number;
+    online: number;
+    degraded: number;
+    nodesCovered: number;
+    totalTools: number;
+    byTransport: Record<string, number>;
+  };
+  byNode: Array<{
+    nodeId: string;
+    nodeName: string;
+    total: number;
+    online: number;
+    toolsCount: number;
+  }>;
+  items: FleetMcpServer[];
+}
+
+export interface McpTestResult {
+  ok: boolean;
+  id: string;
+  nodeId: string;
+  transport: string;
+  reachable: boolean;
+  status: string;
+  latencyMs: number | null;
+  protocolVersion?: string;
+  toolsCount?: number;
+  summary?: string;
+  error?: string;
+  testedAt: string;
+}
+
+export type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh';
+export type OrchestrationMode = 'lead-router' | 'swarm' | 'main-sub';
+
+export interface A2AAgentSkill {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface A2AAgentPeer {
+  id: string;
+  name: string;
+  harness: string;
+  nodeId: string;
+  nodeName: string;
+  role: 'lead' | 'worker' | string;
+  delegatable: boolean;
+  status: string;
+  protocolVersion: string;
+  version?: string;
+  latestVersion?: string;
+  updateAvailable?: boolean;
+  installPath?: string | null;
+  autoDetected?: boolean;
+  pluginKind?: 'harness' | 'dsh-review-plugin' | string;
+  agentCardUrl?: string | null;
+  rpcUrl?: string | null;
+  modelHint?: string | null;
+  reasoningEffort?: ReasoningEffort;
+  position?: { x: number; y: number };
+  capabilities?: {
+    streaming?: boolean;
+    pushNotifications?: boolean;
+    stateTransitionHistory?: boolean;
+  };
+  skills: A2AAgentSkill[];
+  boundMcpIds: string[];
+  latencyMs?: number | null;
+  lastVerifiedAt?: string;
+  description?: string;
+}
+
+export interface A2ARoutingRule {
+  id: string;
+  name: string;
+  sourceAgentId: string;
+  targetAgentId: string;
+  taskCategory: string;
+  matchKeywords: string[];
+  targetModel: string;
+  reasoningEffort: ReasoningEffort;
+  priority: number;
+  enabled: boolean;
+  requireDshReview: boolean;
+}
+
+export interface A2AOrchestrationConfig {
+  mode: OrchestrationMode;
+  mainModel: string;
+  mainEffort: ReasoningEffort;
+  subModel: string;
+  subEffort: ReasoningEffort;
+  worktreeIsolation: boolean;
+  dshReviewGate: {
+    enabled: boolean;
+    minScore: number;
+    autoGateHighRisk: boolean;
+    dimensions: string[];
+  };
+}
+
+export interface A2ASkillCatalogItem {
+  id: string;
+  name: string;
+  version: string;
+  latestVersion: string;
+  provider: 'dsh-plugin' | 'pi-skill' | 'claude-skill' | 'codex-skill' | 'a2a-card' | string;
+  description?: string;
+  enabled: boolean;
+  assignedAgentIds: string[];
+}
+
+export interface A2ASessionRecord {
+  id: string;
+  contextId: string;
+  title: string;
+  primaryAgentId: string;
+  participatingAgentIds: string[];
+  syncedNodes: string[];
+  syncMode: 'a2a-context-bus' | 'nmem-shared' | 'git-worktree' | string;
+  gitBranch: string;
+  worktreePath?: string;
+  revision: number;
+  state: 'synced' | 'syncing' | 'drift' | string;
+  lastSyncedAt: string;
+  messageCount: number;
+  summary?: string;
+}
+
+export interface A2ATaskSubtask {
+  id: string;
+  agentId: string;
+  agentName: string;
+  role: string;
+  model: string;
+  effort: ReasoningEffort | string;
+  state: string;
+  worktree?: string | null;
+  summary: string;
+}
+
+export interface A2ADshReviewVerdict {
+  reviewerId: string;
+  reviewerName: string;
+  model: string;
+  effort: ReasoningEffort | string;
+  score: number;
+  verdict: 'approve' | 'changes_requested' | 'block' | string;
+  dimensions: Array<{ name: string; score: number }>;
+  findings: string[];
+}
+
+export interface A2ATaskStep {
+  ts: string;
+  state: string;
+  detail: string;
+}
+
+export interface A2ATaskRecord {
+  id: string;
+  contextId?: string;
+  protocolMethod: string;
+  executionMode?: OrchestrationMode | string;
+  state: 'submitted' | 'working' | 'completed' | 'failed' | 'canceled' | string;
+  prompt: string;
+  leadAgentId: string;
+  leadAgentName: string;
+  leadNodeId: string;
+  workerAgentId: string;
+  workerAgentName: string;
+  workerNodeId: string;
+  matchedRuleId?: string | null;
+  matchedRuleName?: string | null;
+  matchedSkill?: string;
+  appliedModel?: string;
+  appliedEffort?: ReasoningEffort | string;
+  worktreeBranch?: string | null;
+  mcpScope?: string[];
+  createdAt: string;
+  updatedAt: string;
+  durationMs: number;
+  actor?: string;
+  subtasks?: A2ATaskSubtask[];
+  dshReview?: A2ADshReviewVerdict | null;
+  steps: A2ATaskStep[];
+  artifact?: string;
+}
+
+export interface A2ACollaborationLog {
+  id: string;
+  ts: string;
+  level: 'info' | 'warn' | 'error' | string;
+  eventType:
+    | 'a2a.delegate'
+    | 'swarm.fanout'
+    | 'dsh.review_vote'
+    | 'dsh.gate_verdict'
+    | 'memory.engram_hit'
+    | 'memory.sm_consolidate'
+    | 'session.sync'
+    | 'session.handoff'
+    | string;
+  sourceAgentId: string;
+  sourceAgentName: string;
+  targetAgentId: string;
+  targetAgentName: string;
+  taskId?: string | null;
+  contextId?: string | null;
+  worktreeBranch?: string | null;
+  model?: string | null;
+  effort?: ReasoningEffort | string | null;
+  latencyMs?: number | null;
+  engramHitKey?: string | null;
+  summary: string;
+  detail: string;
+}
+
+export interface A2AEngramEntry {
+  id: string;
+  keyPattern: string[];
+  title: string;
+  content: string;
+  category: string;
+  sourceAgentId: string;
+  easeFactor: number;
+  intervalHours: number;
+  repetitions: number;
+  stabilityHours: number;
+  hitCount: number;
+  lastReviewedAt: string;
+  nextReviewAt: string;
+  dshVerified: boolean;
+  retrievabilityPct: number;
+  dueForReview: boolean;
+}
+
+export interface A2ADshTeamRole {
+  id: string;
+  title: string;
+  agentId: string;
+  weight: number;
+}
+
+export interface A2ADshTeamConfig {
+  consensusPolicy: 'weighted' | 'unanimous' | 'lead-override' | string;
+  maxReworkRounds: number;
+  engramMemoryRatioPct: number;
+  autoConsolidateOnPass: boolean;
+  roles: A2ADshTeamRole[];
+}
+
+export interface A2ASwarmPerAgentStat {
+  agentId: string;
+  name: string;
+  harness: string;
+  role: 'lead' | 'worker' | string;
+  handledUnits: number;
+  subtasks: number;
+  collabEvents: number;
+  latencyMs: number;
+}
+
+export interface A2ASwarmMetrics {
+  activeAgents: number;
+  totalTasks: number;
+  completedTasks: number;
+  totalSubtasks: number;
+  totalWorkUnits: number;
+  taskToAgentThroughputRatio: number;
+  parallelSpeedup: number;
+  avgDurationMs: number;
+  engramMemoryRatioPct: number;
+  computeRatioPct: number;
+  uCurveEfficiencyPct: number;
+  engramOffloadPct: number;
+  totalEngramHits: number;
+  avgRetentionPct: number;
+  dueReviewCount: number;
+  dshConsensusRate: number;
+  perAgentStats: A2ASwarmPerAgentStat[];
+}
+
+export interface A2AStateResponse {
+  ok?: boolean;
+  architecture: {
+    harnessFree: boolean;
+    protocol: string;
+    protocolVersion: string;
+    license: string;
+    governance: string;
+    summary: string;
+  };
+  leadAgentId: string | null;
+  leadAgent: A2AAgentPeer | null;
+  orchestrationConfig: A2AOrchestrationConfig;
+  summary: {
+    totalAgents: number;
+    onlineAgents: number;
+    delegatableWorkers: number;
+    nodesWithAgents: number;
+    activeTasks: number;
+    completedTasks: number;
+    totalTasks: number;
+    enabledRules?: number;
+    totalRules?: number;
+    totalSkills?: number;
+    syncedSessions?: number;
+    totalSessions?: number;
+    outdatedAgents?: number;
+  };
+  agents: A2AAgentPeer[];
+  routingRules: A2ARoutingRule[];
+  skillCatalog: A2ASkillCatalogItem[];
+  sessions: A2ASessionRecord[];
+  tasks: A2ATaskRecord[];
+  engramMemory?: A2AEngramEntry[];
+  dshTeamConfig?: A2ADshTeamConfig;
+  swarmMetrics?: A2ASwarmMetrics;
+  recentLogsCount?: number;
+}
+
+
 

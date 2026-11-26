@@ -308,7 +308,7 @@ export function Panel({
   return (
     <section
       className={cn(
-        'rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-card)] overflow-hidden',
+        'min-w-0 rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-card)] overflow-hidden',
         className,
       )}
     >

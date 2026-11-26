@@ -8,6 +8,7 @@ import {
   Layers,
   LayoutGrid,
   Network,
+  Plug,
   Terminal,
   Wrench,
 } from 'lucide-react';
@@ -44,8 +45,8 @@ export interface ConsoleModule {
 }
 
 export const MODULE_DOMAINS: readonly ModuleDomainConfig[] = [
-  { id: 'observe', title: '观测', description: '全栈态势、告警事件与全球节点分布' },
-  { id: 'infra', title: '基础设施', description: '受管服务、插件接入、记忆引擎、网关与网络' },
+  { id: 'observe', title: '核心与观测', description: '全栈态势、核心 Agent 编排调度、告警事件与全球节点' },
+  { id: 'infra', title: '基础设施', description: '受管服务、插件接入、全节点 MCP、记忆引擎与网络' },
   { id: 'operate', title: '运维', description: '结构化日志追踪、定时任务、Runbook 与审计' },
 ] as const;
 
@@ -53,6 +54,7 @@ export const loadAlertsView = () => import('../views/AlertsView');
 export const loadFleetView = () => import('../views/FleetView');
 export const loadServicesView = () => import('../views/ServicesView');
 export const loadPluginsView = () => import('../views/PluginsView');
+export const loadMcpView = () => import('../views/McpView');
 export const loadMemoryView = () => import('../views/MemoryView');
 export const loadAgentsView = () => import('../views/AgentsView');
 export const loadNetworkView = () => import('../views/NetworkView');
@@ -73,6 +75,21 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     benchmarks: {
       references: ['Grafana', 'Datadog', 'Netdata'],
       migratedCapabilities: ['非对称 KPI 比例条', '跨尺度 SQLite WAL 趋势图', '上下游依赖拓扑下钻', '持久化工作台面板自定义'],
+    },
+  },
+  {
+    id: 'agents',
+    domain: 'observe',
+    label: 'Agent 调度',
+    shortDesc: '核心可视化拖拽编排画布、Codex/Pi/Claude/DSH 协同、自动蜂群与多端会话同步',
+    chord: 'g',
+    keywords: ['agents', 'a2a', 'harness', 'lead', 'codex', 'pi', 'claude', 'dsh', 'swarm', '蜂群', '调度', '主agent', '网关'],
+    icon: Bot,
+    dataDeps: ['snapshot'],
+    prefetch: loadAgentsView,
+    benchmarks: {
+      references: ['Google A2A Protocol', 'Codex Multi-Agent', 'Pi / Antigravity Swarm'],
+      migratedCapabilities: ['无内置 Harness 拖拽路由画布与思考强度编排', 'DSH 专家评审插件门禁与自动蜂群', '本机/节点自动发现、Skill 版本管理与多端会话对齐'],
     },
   },
   {
@@ -138,6 +155,21 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     },
   },
   {
+    id: 'mcp',
+    domain: 'infra',
+    label: '全节点 MCP',
+    shortDesc: '跨 VPS、开发机与主节点的 MCP 统一纳管、协议握手拨测与一键同步下发',
+    chord: 'c',
+    keywords: ['mcp', 'tools', 'stdio', 'streamable-http', 'sse', '全节点', '工具'],
+    icon: Plug,
+    dataDeps: ['snapshot'],
+    prefetch: loadMcpView,
+    benchmarks: {
+      references: ['MCP Inspector', 'Smithery', 'Docker MCP Toolkit'],
+      migratedCapabilities: ['按设备节点分面管理全部 MCP', 'Streamable HTTP / SSE / stdio 协议握手拨测', '跨设备一键同步与 Pull-only 下发'],
+    },
+  },
+  {
     id: 'memory',
     domain: 'infra',
     label: '记忆引擎',
@@ -150,21 +182,6 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     benchmarks: {
       references: ['Qdrant Dashboard', 'Milvus Attu', 'LangSmith Eval'],
       migratedCapabilities: ['跨引擎 Rerank 增益对照表', '快捷评测 Query 预设', '评测结果 JSON 一键导出'],
-    },
-  },
-  {
-    id: 'agents',
-    domain: 'infra',
-    label: '网关与 Agent',
-    shortDesc: '模型网关成本占比、熔断状态、会话水位与可排序进程表',
-    chord: 'g',
-    keywords: ['agents', 'magpie', 'gateway', 'mcp', '模型', '网关'],
-    icon: Bot,
-    dataDeps: ['snapshot'],
-    prefetch: loadAgentsView,
-    benchmarks: {
-      references: ['Langfuse', 'LiteLLM Proxy', 'Helicone'],
-      migratedCapabilities: ['Provider 成本占比与熔断观测', 'Token/TTFT 24h 趋势', '进程 CPU/内存排序与过滤'],
     },
   },
   {
