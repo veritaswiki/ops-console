@@ -1,4 +1,4 @@
-FROM node:22-alpine
+FROM node:26-alpine
 
 LABEL org.opencontainers.image.title="Ops Console" \
       org.opencontainers.image.description="Self-Hostable Architecture, Service, Memory & Log Control Plane" \
