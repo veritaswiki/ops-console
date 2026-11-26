@@ -57,7 +57,7 @@ test('demo server serves UI, security headers, APIs, actions, export, and live S
     assert.equal(pingRes.status, 200);
     const ping = await pingRes.json();
     assert.equal(ping.ok, true);
-    assert.equal(ping.version, '0.3.0');
+    assert.equal(ping.version, '0.4.0');
     assert.equal(ping.demo, true);
 
     const indexRes = await fetch(`${baseUrl}/`);

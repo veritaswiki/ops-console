@@ -5,6 +5,24 @@ All notable changes to **Ops Console** will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-11-26
+
+### Added
+- **AI Ops Governance & Preflight Dry-Run Gate (`src/ai-ops-governance.mjs`)**:
+  - `GET /api/ai/context`: Token-compact, machine-readable control plane manifest exposing live health summary, Logic / Data / Config / UI 4-layer architecture boundaries, coupled-file sync rules, hard security invariants, worktree policies, and 17 built-in pitfall mitigations for external AI agents (Codex, Claude Code, T3 Code, Orca, Alma).
+  - `POST /api/ai/preflight`: Deterministic dry-run safety gate for `code-patch`, `worktree-dispatch`, `service-action`, `config-edit`, and `mcp-sync`. Evaluates read-only posture, secret/PII leakage, `.claude/worktrees` gitlink risk, path traversal/absolute-path escape, protected branch & active worktree collisions, critical service `confirmToken` requirements, JSON config schema validity, MCP `>40` tool overload & unpinned `npx` supply-chain risk, and coupled-file sync reminders.
+- **Root AI Contributor Contract (`AGENTS.md`) & Industry Pitfalls Playbook (`docs/AI_SCHEDULING_PITFALLS.md`)**:
+  - Concise 4-layer Logic / Data / Config / UI ownership boundaries and coupled-file matrix so AI tools can assist ops and safely modify code without regressions.
+  - Structured post-mortem of real 2025–2026 pitfalls from **T3 Code**, **Orca**, **Alma (MCP Providers)**, **Claude Code**, and **OpenAI Codex**, each mapped to concrete Ops Console v0.4.0 guardrails.
+- **UI Workspace Tab (`#agents` → `AI 契约与护栏`)**: Interactive Preflight Dry-Run simulator with 4 realistic presets, one-click copy of compact AI Context JSON, filterable Logic/Data/Config/UI architecture boundaries, and searchable 5-project pitfall mitigation table.
+- **DeepSeek SuperAgent & Swarm Architecture (Wave 6)**: Thin Router Fast/Slow Path code filtering, Inline/Spill Chain of Recall context offloading, external Watchdog stalled-ticket sweep, DSH multi-role consensus team runner, React Flow cluster topology, and live SSE Agent Collaboration Logs.
+
+### Changed
+- **Worktree Gitlink Protection**: Added `.worktrees/` and `.claude/worktrees/` to `.gitignore` to prevent accidental nested gitlink commits.
+- **SemVer Synchronized Release**: Upgraded Ops Console, `@ops-console/probe`, Docker labels, Compose tags, and installers cleanly to `v0.4.0`.
+
+---
+
 ## [0.3.0] - 2026-11-25
 
 ### Added

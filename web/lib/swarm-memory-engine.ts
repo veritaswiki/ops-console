@@ -1,19 +1,46 @@
-import type { A2ACollaborationLog, A2AEngramEntry } from '../types';
+import type {
+  A2ACollaborationLog,
+  A2AContextSpillNode,
+  A2ASuperAgentTicket,
+  A2ATriggerEvent,
+} from '../types';
 
-export interface EngramUCurvePoint {
-  memoryPct: number;
-  computePct: number;
-  efficiencyPct: number;
-  tokenSavingsPct: number;
-  isOptimal: boolean;
-  isCurrent: boolean;
+export interface TriggerPathBucket {
+  key: 'fast_drop' | 'fast_passthrough' | 'slow_spawn';
+  label: string;
+  count: number;
+  pct: number;
+  tokensSaved: number;
 }
 
-export interface Sm2ReviewPreview {
-  nextIntervalHours: number;
-  nextEaseFactor: number;
-  nextRepetitions: number;
-  label: string;
+export interface TriggerPathBreakdown {
+  items: TriggerPathBucket[];
+  total: number;
+  offloadPct: number;
+  totalTokensSaved: number;
+}
+
+export interface ContextSpillStats {
+  inlineBytes: number;
+  spilledBytes: number;
+  inlineKb: number;
+  spilledKb: number;
+  totalKb: number;
+  offloadPct: number;
+  overBudget: boolean;
+  totalRecalls: number;
+  spilledCount: number;
+  inlineCount: number;
+}
+
+export interface AttentionBudgetState {
+  active: number;
+  stalled: number;
+  reviewGate: number;
+  needsAttention: number;
+  limit: number;
+  utilizationPct: number;
+  tone: 'ok' | 'warn' | 'err';
 }
 
 export interface CollaborationLogFilters {
@@ -24,62 +51,159 @@ export interface CollaborationLogFilters {
 }
 
 /**
- * Generates DeepSeek Engram's U-shaped scaling efficiency curve across
- * Conditional Memory (10%–50%) vs Dynamic Compute (90%–50%), peaking at 25%/75%.
+ * Aggregates Fast/Slow Path trigger routing outcomes into chart-ready buckets
+ * so operators can track deterministic code offload vs thin-router LLM spawns.
  */
-export function buildEngramUCurveSeries(currentMemoryRatioPct: number): EngramUCurvePoint[] {
-  const clampedCurrent = Math.max(10, Math.min(50, Math.round(currentMemoryRatioPct / 5) * 5));
-  const points: EngramUCurvePoint[] = [];
-  for (let memoryPct = 10; memoryPct <= 50; memoryPct += 5) {
-    const computePct = 100 - memoryPct;
-    const dist = Math.abs(memoryPct - 25);
-    // U-shaped loss -> inverted bell efficiency peaking cleanly at 25% memory / 75% compute
-    const penalty = dist * 0.65 + Math.pow(dist / 10, 2) * 2.2;
-    const efficiencyPct = Math.max(72, Math.min(98, Math.round(97 - penalty)));
-    const tokenSavingsPct = Math.min(40, Math.round(memoryPct * 1.15 - Math.max(0, memoryPct - 30) * 0.7));
-    points.push({
-      memoryPct,
-      computePct,
-      efficiencyPct,
-      tokenSavingsPct,
-      isOptimal: memoryPct === 25,
-      isCurrent: memoryPct === clampedCurrent,
-    });
+export function buildTriggerPathBreakdown(events: A2ATriggerEvent[]): TriggerPathBreakdown {
+  const counts: Record<TriggerPathBucket['key'], { count: number; tokensSaved: number }> = {
+    fast_drop: { count: 0, tokensSaved: 0 },
+    fast_passthrough: { count: 0, tokensSaved: 0 },
+    slow_spawn: { count: 0, tokensSaved: 0 },
+  };
+
+  for (const ev of events || []) {
+    const key: TriggerPathBucket['key'] =
+      ev.decision === 'fast_drop'
+        ? 'fast_drop'
+        : ev.decision === 'fast_passthrough'
+          ? 'fast_passthrough'
+          : 'slow_spawn';
+    counts[key].count += 1;
+    counts[key].tokensSaved += Math.max(0, Number(ev.tokensSaved) || 0);
   }
-  return points;
+
+  const total = counts.fast_drop.count + counts.fast_passthrough.count + counts.slow_spawn.count;
+  const pctOf = (n: number) => (total > 0 ? Math.round((n / total) * 100) : 0);
+
+  const items: TriggerPathBucket[] = [
+    {
+      key: 'fast_drop',
+      label: 'Fast Drop 直滤',
+      count: counts.fast_drop.count,
+      pct: pctOf(counts.fast_drop.count),
+      tokensSaved: counts.fast_drop.tokensSaved,
+    },
+    {
+      key: 'fast_passthrough',
+      label: '订阅直通 Worker',
+      count: counts.fast_passthrough.count,
+      pct: pctOf(counts.fast_passthrough.count),
+      tokensSaved: counts.fast_passthrough.tokensSaved,
+    },
+    {
+      key: 'slow_spawn',
+      label: '薄 Router 派单',
+      count: counts.slow_spawn.count,
+      pct: pctOf(counts.slow_spawn.count),
+      tokensSaved: counts.slow_spawn.tokensSaved,
+    },
+  ];
+
+  const offloadCount = counts.fast_drop.count + counts.fast_passthrough.count;
+  const totalTokensSaved =
+    counts.fast_drop.tokensSaved + counts.fast_passthrough.tokensSaved + counts.slow_spawn.tokensSaved;
+
+  return {
+    items,
+    total,
+    offloadPct: pctOf(offloadCount),
+    totalTokensSaved,
+  };
 }
 
 /**
- * Pure SuperMemo SM-2 preview helper so operators see the projected next
- * review interval and ease factor before clicking Reinforce / Good / Retrain.
+ * Computes Inline vs Spilled context window budget usage across Chain of Recall nodes.
  */
-export function computeSm2Preview(
-  entry: Pick<A2AEngramEntry, 'easeFactor' | 'intervalHours' | 'repetitions'>,
-  quality: number,
-): Sm2ReviewPreview {
-  const q = Math.max(0, Math.min(5, Math.round(quality)));
-  let ef = Number(entry.easeFactor) || 2.5;
-  let reps = Number(entry.repetitions) || 0;
-  let intervalHours = Number(entry.intervalHours) || 24;
+export function computeContextSpillStats(
+  nodes: A2AContextSpillNode[],
+  inlineBudgetKb = 32,
+): ContextSpillStats {
+  let inlineBytes = 0;
+  let spilledBytes = 0;
+  let totalRecalls = 0;
+  let spilledCount = 0;
+  let inlineCount = 0;
 
-  if (q < 3) {
-    reps = 0;
-    intervalHours = 6;
-    ef = Math.max(1.3, Number((ef - 0.2).toFixed(2)));
-  } else {
-    ef = Math.max(1.3, Number((ef + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02))).toFixed(2)));
-    reps += 1;
-    if (reps === 1) intervalHours = 12;
-    else if (reps === 2) intervalHours = 36;
-    else intervalHours = Math.min(24 * 30, Math.round(intervalHours * ef));
+  for (const node of nodes || []) {
+    const bytes = Math.max(0, Number(node.bytes) || 0);
+    totalRecalls += Math.max(0, Number(node.recallCount) || 0);
+    if (node.state === 'inline') {
+      inlineBytes += bytes;
+      inlineCount += 1;
+    } else {
+      spilledBytes += bytes;
+      spilledCount += 1;
+    }
   }
 
+  const totalBytes = inlineBytes + spilledBytes;
+  const inlineKb = Math.round((inlineBytes / 1024) * 10) / 10;
+  const spilledKb = Math.round((spilledBytes / 1024) * 10) / 10;
+  const totalKb = Math.round((totalBytes / 1024) * 10) / 10;
+  const offloadPct = totalBytes > 0 ? Math.round((spilledBytes / totalBytes) * 100) : 0;
+  const safeBudgetKb = Math.max(1, Number(inlineBudgetKb) || 32);
+
   return {
-    nextIntervalHours: intervalHours,
-    nextEaseFactor: ef,
-    nextRepetitions: reps,
-    label: intervalHours >= 24 ? `${Math.round((intervalHours / 24) * 10) / 10}d` : `${intervalHours}h`,
+    inlineBytes,
+    spilledBytes,
+    inlineKb,
+    spilledKb,
+    totalKb,
+    offloadPct,
+    overBudget: inlineKb > safeBudgetKb,
+    totalRecalls,
+    spilledCount,
+    inlineCount,
   };
+}
+
+/**
+ * Summarizes SuperAgent isolated tickets against the operator attention budget limit.
+ */
+export function computeAttentionBudgetState(
+  tickets: A2ASuperAgentTicket[],
+  limit = 4,
+): AttentionBudgetState {
+  const safeLimit = Math.max(1, Math.round(Number(limit) || 4));
+  let active = 0;
+  let stalled = 0;
+  let reviewGate = 0;
+  let needsAttention = 0;
+
+  for (const t of tickets || []) {
+    if (t.status !== 'completed') active += 1;
+    const isStalled = t.status === 'stalled' || t.watchdogState === 'stalled';
+    if (isStalled) stalled += 1;
+    if (t.status === 'review_gate') reviewGate += 1;
+    if (isStalled || t.status === 'needs_attention' || t.status === 'review_gate') {
+      needsAttention += 1;
+    }
+  }
+
+  const utilizationPct = Math.min(100, Math.round((needsAttention / safeLimit) * 100));
+  const tone: 'ok' | 'warn' | 'err' =
+    stalled > 0 || needsAttention > safeLimit
+      ? 'err'
+      : needsAttention >= safeLimit
+        ? 'warn'
+        : 'ok';
+
+  return {
+    active,
+    stalled,
+    reviewGate,
+    needsAttention,
+    limit: safeLimit,
+    utilizationPct,
+    tone,
+  };
+}
+
+export function formatBytesKb(bytes: number): string {
+  const safe = Math.max(0, Number(bytes) || 0);
+  if (safe < 1024) return `${Math.round(safe)} B`;
+  const kb = safe / 1024;
+  return kb >= 100 ? `${Math.round(kb)} KB` : `${Math.round(kb * 10) / 10} KB`;
 }
 
 /**
@@ -104,21 +228,25 @@ export function filterCollaborationLogs(
     }
     if (level && level !== 'all' && entry.level !== level) return false;
     if (q) {
-      const hay = `${entry.sourceAgentName} ${entry.targetAgentName} ${entry.eventType} ${entry.summary} ${entry.detail} ${entry.contextId || ''} ${entry.engramHitKey || ''}`.toLowerCase();
+      const hay = `${entry.sourceAgentName} ${entry.targetAgentName} ${entry.eventType} ${entry.summary} ${entry.detail} ${entry.contextId || ''} ${entry.worktreeBranch || ''} ${entry.spillRefId || ''}`.toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
   });
 }
 
-export function formatIntervalHuman(hours: number): string {
-  const safe = Math.max(1, Math.round(hours || 0));
-  if (safe >= 48) return `${Math.round((safe / 24) * 10) / 10} 天`;
-  return `${safe} 小时`;
-}
-
 export function getLogEventMeta(eventType: string): { label: string; group: string; toneClass: string } {
   switch (eventType) {
+    case 'superagent.fast_path':
+      return { label: 'Fast Path 直滤', group: 'superagent', toneClass: 'text-emerald-600 dark:text-emerald-400' };
+    case 'superagent.route':
+      return { label: '薄 Router 派单', group: 'superagent', toneClass: 'text-indigo-500 dark:text-indigo-400' };
+    case 'context.spill':
+      return { label: '上下文 Spill', group: 'context', toneClass: 'text-amber-600 dark:text-amber-400' };
+    case 'context.recall':
+      return { label: 'Chain of Recall', group: 'context', toneClass: 'text-teal-600 dark:text-teal-400' };
+    case 'watchdog.check':
+      return { label: 'Watchdog 巡检', group: 'watchdog', toneClass: 'text-rose-600 dark:text-rose-400' };
     case 'swarm.fanout':
       return { label: '蜂群扇出', group: 'swarm', toneClass: 'text-indigo-500 dark:text-indigo-400' };
     case 'a2a.delegate':
@@ -127,10 +255,6 @@ export function getLogEventMeta(eventType: string): { label: string; group: stri
       return { label: 'DSH 团队投票', group: 'dsh', toneClass: 'text-violet-600 dark:text-violet-400' };
     case 'dsh.gate_verdict':
       return { label: 'DSH 门禁裁决', group: 'dsh', toneClass: 'text-emerald-600 dark:text-emerald-400' };
-    case 'memory.engram_hit':
-      return { label: 'Engram 命中', group: 'memory', toneClass: 'text-amber-600 dark:text-amber-400' };
-    case 'memory.sm_consolidate':
-      return { label: 'SM-2 巩固', group: 'memory', toneClass: 'text-teal-600 dark:text-teal-400' };
     case 'session.sync':
     case 'session.handoff':
       return { label: '跨端同步', group: 'session', toneClass: 'text-slate-600 dark:text-slate-400' };

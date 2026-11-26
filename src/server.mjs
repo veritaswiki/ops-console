@@ -5,12 +5,15 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { ActionController } from './actions.mjs';
 import { A2AOrchestrator } from './a2a-orchestrator.mjs';
+import { buildAiOpsContext, evaluateAiPreflight } from './ai-ops-governance.mjs';
 import { AlertEngine } from './alerts.mjs';
+import { BotFleetManager } from './bot-fleet.mjs';
 import { SingleFlightCache } from './cache.mjs';
 import { APP_VERSION, PACKAGE_ROOT, validateConfig } from './config.mjs';
 import { createDemoProvider } from './connectors/demo.mjs';
 import { ConnectorHub } from './connectors/index.mjs';
 import { ControlPlaneEventBus } from './events.mjs';
+import { LinearCommanderManager } from './linear-commander.mjs';
 import { StructuredLogger } from './logger.mjs';
 import { LogService } from './logs.mjs';
 import { McpFleetManager } from './mcp-fleet.mjs';
@@ -246,6 +249,8 @@ export function createOpsConsole(options = {}) {
   a2aOrchestrator.setLogListener((entry) => {
     eventBus.emit('a2a_log', entry);
   });
+  const linearCommander = options.linearCommander || new LinearCommanderManager(config, logger);
+  const botFleet = options.botFleet || new BotFleetManager(config, logger);
   const runbookEngine = options.runbookEngine || new RunbookEngine({
     config,
     connectors: hub,
@@ -1860,6 +1865,304 @@ export function createOpsConsole(options = {}) {
         return;
       }
 
+      if (method === 'GET' && pathname === '/api/ai/context') {
+        const snapshot = await hub.collectSnapshot(false);
+        const fleetNodes = snapshot?.fleet?.nodes || [];
+        const a2aState = a2aOrchestrator.getState(fleetNodes);
+        const mcpState = mcpFleet.list(fleetNodes);
+        const context = buildAiOpsContext({
+          version: APP_VERSION,
+          config,
+          snapshot,
+          a2aState,
+          mcpFleetSummary: mcpState.summary,
+          alertsCount: alertEngine.alerts.filter((a) => a.status === 'active').length,
+        });
+        sendJson(res, 200, context, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/ai/preflight') {
+        const { data } = await readBody(req);
+        const snapshot = await hub.collectSnapshot(false);
+        const fleetNodes = snapshot?.fleet?.nodes || [];
+        const a2aState = a2aOrchestrator.getState(fleetNodes);
+        const mcpState = mcpFleet.list(fleetNodes);
+        const result = evaluateAiPreflight(data, {
+          config,
+          snapshot,
+          a2aState,
+          mcpFleetSummary: mcpState.summary,
+        });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      // ─── Linear AI Project Management & Commander-in-Chief Orchestration ─────
+      if (method === 'GET' && pathname === '/api/linear/state') {
+        const snapshot = await hub.collectSnapshot(false);
+        const fleetNodes = snapshot?.fleet?.nodes || [];
+        const a2aState = a2aOrchestrator.getState(fleetNodes);
+        const botsList = botFleet.list().bots;
+        const state = linearCommander.getState(a2aState, botsList);
+        sendJson(res, 200, state, {}, req);
+        return;
+      }
+
+      if (method === 'PUT' && pathname === '/api/linear/commander') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables modifying Commander config' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await linearCommander.updateCommanderConfig(data);
+        await logger.appendAudit({
+          action: 'linear:commander-config',
+          target: result.commander.leadAgentId || 'commander',
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `autoDecompose=${result.commander.autoDecompose}`,
+        });
+        eventBus.emit('linear_updated', { action: 'commander_config' });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/linear/projects') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables creating Linear projects' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await linearCommander.createProject(data);
+        await logger.appendAudit({
+          action: 'linear:project-create',
+          target: result.project.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `${result.project.key} ${result.project.name}`,
+        });
+        eventBus.emit('linear_updated', { action: 'project_create', projectId: result.project.id });
+        sendJson(res, 201, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/linear/issues') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables creating Linear issues' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await linearCommander.createIssue(data);
+        await logger.appendAudit({
+          action: 'linear:issue-create',
+          target: result.issue.identifier,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `${result.issue.status} ${result.issue.title}`,
+        });
+        eventBus.emit('linear_updated', { action: 'issue_create', issueId: result.issue.id });
+        sendJson(res, 201, result, {}, req);
+        return;
+      }
+
+      const linearIssueDispatchMatch = pathname.match(/^\/api\/linear\/issues\/([A-Za-z0-9._:-]+)\/dispatch$/);
+      if (method === 'POST' && linearIssueDispatchMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables Commander dispatch' }, {}, req);
+          return;
+        }
+        const snapshot = await hub.collectSnapshot(false);
+        const fleetNodes = snapshot?.fleet?.nodes || [];
+        const result = await linearCommander.commanderDecomposeAndDispatch(linearIssueDispatchMatch[1], {
+          a2aOrchestrator,
+          fleetNodes,
+          actor: 'web',
+        });
+        await logger.appendAudit({
+          action: 'linear:commander-dispatch',
+          target: result.issue.identifier,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `subIssues=${result.createdSubIssues.length}, branch=${result.issue.worktreeBranch || '-'}`,
+        });
+        eventBus.emit('linear_updated', { action: 'commander_dispatch', issueId: result.issue.id });
+        eventBus.emit('a2a_updated', { action: 'linear_dispatch', issueId: result.issue.id });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      const linearIssueMatch = pathname.match(/^\/api\/linear\/issues\/([A-Za-z0-9._:-]+)$/);
+      if (linearIssueMatch && (method === 'PATCH' || method === 'DELETE')) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables modifying Linear issues' }, {}, req);
+          return;
+        }
+        const issueId = linearIssueMatch[1];
+        if (method === 'PATCH') {
+          const { data } = await readBody(req);
+          const result = await linearCommander.updateIssue(issueId, data);
+          await logger.appendAudit({
+            action: 'linear:issue-update',
+            target: result.issue.identifier,
+            actor: 'web',
+            ip: auditIp(clientIp),
+            ok: true,
+            detail: `status=${result.issue.status}`,
+          });
+          eventBus.emit('linear_updated', { action: 'issue_update', issueId: result.issue.id });
+          sendJson(res, 200, result, {}, req);
+          return;
+        }
+        const result = await linearCommander.deleteIssue(issueId);
+        await logger.appendAudit({
+          action: 'linear:issue-delete',
+          target: issueId,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: 'deleted',
+        });
+        eventBus.emit('linear_updated', { action: 'issue_delete', issueId });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'PUT' && pathname === '/api/linear/github/config') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables modifying GitHub sync config' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await linearCommander.updateGithubConfig(data);
+        await logger.appendAudit({
+          action: 'linear:github-config',
+          target: `${result.githubConfig.owner}/${result.githubConfig.repo}`,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `direction=${result.githubConfig.syncDirection}`,
+        });
+        eventBus.emit('linear_updated', { action: 'github_config' });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/linear/github/sync') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables GitHub sync' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await linearCommander.syncGithub({ direction: data?.direction, actor: 'web' });
+        await logger.appendAudit({
+          action: 'linear:github-sync',
+          target: result.repo,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `mode=${result.mode}, updated=${result.updatedCount}, imported=${result.importedCount}`,
+        });
+        eventBus.emit('linear_updated', { action: 'github_sync', repo: result.repo });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      // ─── Bot Fleet & Multi-Channel Automation System ─────────────────────────
+      if (method === 'GET' && pathname === '/api/bots') {
+        sendJson(res, 200, botFleet.list(), {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/bots') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables creating bots' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await botFleet.createBot(data);
+        await logger.appendAudit({
+          action: 'bot:create',
+          target: result.bot.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `${result.bot.channel} ${result.bot.handle}`,
+        });
+        eventBus.emit('bots_updated', { action: 'create', botId: result.bot.id });
+        sendJson(res, 201, result, {}, req);
+        return;
+      }
+
+      const botTriggerMatch = pathname.match(/^\/api\/bots\/([A-Za-z0-9._:-]+)\/trigger$/);
+      if (method === 'POST' && botTriggerMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables triggering bots' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const snapshot = await hub.collectSnapshot(false);
+        const fleetNodes = snapshot?.fleet?.nodes || [];
+        const result = await botFleet.triggerBotEvent(botTriggerMatch[1], data, {
+          linearManager: linearCommander,
+          a2aOrchestrator,
+          fleetNodes,
+          actor: 'web',
+        });
+        await logger.appendAudit({
+          action: 'bot:trigger',
+          target: result.bot.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `issue=${result.createdIssue?.identifier || 'none'}, dispatched=${Boolean(result.dispatchResult?.ok)}`,
+        });
+        eventBus.emit('bots_updated', { action: 'trigger', botId: result.bot.id });
+        if (result.createdIssue) eventBus.emit('linear_updated', { action: 'bot_issue', issueId: result.createdIssue.id });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      const botItemMatch = pathname.match(/^\/api\/bots\/([A-Za-z0-9._:-]+)$/);
+      if (botItemMatch && (method === 'PATCH' || method === 'DELETE')) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables modifying bots' }, {}, req);
+          return;
+        }
+        const botId = botItemMatch[1];
+        if (method === 'PATCH') {
+          const { data } = await readBody(req);
+          const result = await botFleet.updateBot(botId, data);
+          await logger.appendAudit({
+            action: 'bot:update',
+            target: botId,
+            actor: 'web',
+            ip: auditIp(clientIp),
+            ok: true,
+            detail: `enabled=${result.bot.enabled}`,
+          });
+          eventBus.emit('bots_updated', { action: 'update', botId });
+          sendJson(res, 200, result, {}, req);
+          return;
+        }
+        const result = await botFleet.deleteBot(botId);
+        await logger.appendAudit({
+          action: 'bot:delete',
+          target: botId,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: 'deleted',
+        });
+        eventBus.emit('bots_updated', { action: 'delete', botId });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
       if (method === 'GET' && pathname === '/api/snapshot') {
         const force = url.searchParams.get('refresh') === '1' || url.searchParams.get('force') === '1';
         const snapshot = await hub.collectSnapshot(force);
@@ -2097,6 +2400,8 @@ export function createOpsConsole(options = {}) {
       await store.init();
       await mcpFleet.init();
       await a2aOrchestrator.init();
+      await linearCommander.init();
+      await botFleet.init();
       await pluginManager.loadExternalPlugins();
       await store.hydrateTimeSeries(timeseries, { limitPerSeries: config.fleet?.historyPoints || 60 });
       for (const host of hosts) {

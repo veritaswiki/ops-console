@@ -4,17 +4,22 @@ import {
   Blocks,
   Bot,
   Database,
+  GitBranch,
+  GitFork,
   Globe,
+  KanbanSquare,
   Layers,
   LayoutGrid,
+  MessageSquare,
   Network,
   Plug,
+  SlidersHorizontal,
   Terminal,
   Wrench,
 } from 'lucide-react';
 import type { ViewId } from '../types';
 
-export type ModuleDomainId = 'observe' | 'infra' | 'operate';
+export type ModuleDomainId = 'agent' | 'observe' | 'infra' | 'operate';
 
 export type ModuleDataDep = 'snapshot' | 'probes' | 'ops';
 
@@ -22,6 +27,7 @@ export interface ModuleDomainConfig {
   id: ModuleDomainId;
   title: string;
   description: string;
+  primary?: boolean;
 }
 
 export interface ModuleBenchmarkSpec {
@@ -45,7 +51,8 @@ export interface ConsoleModule {
 }
 
 export const MODULE_DOMAINS: readonly ModuleDomainConfig[] = [
-  { id: 'observe', title: '核心与观测', description: '全栈态势、核心 Agent 编排调度、告警事件与全球节点' },
+  { id: 'agent', title: 'Harness', description: '极简 Agent 入口、Linear 任务看板、n8n 分配图谱、Bot、GitHub 与设置', primary: true },
+  { id: 'observe', title: '监控与节点', description: '全栈态势、告警事件与全球节点' },
   { id: 'infra', title: '基础设施', description: '受管服务、插件接入、全节点 MCP、记忆引擎与网络' },
   { id: 'operate', title: '运维', description: '结构化日志追踪、定时任务、Runbook 与审计' },
 ] as const;
@@ -57,11 +64,110 @@ export const loadPluginsView = () => import('../views/PluginsView');
 export const loadMcpView = () => import('../views/McpView');
 export const loadMemoryView = () => import('../views/MemoryView');
 export const loadAgentsView = () => import('../views/AgentsView');
+export const loadProjectsView = () => import('../views/ProjectsView');
+export const loadAgentGraphView = () => import('../views/AgentGraphView');
+export const loadBotsView = () => import('../views/BotsView');
+export const loadGithubView = () => import('../views/GithubView');
+export const loadAgentSettingsView = () => import('../views/AgentSettingsView');
 export const loadNetworkView = () => import('../views/NetworkView');
 export const loadLogsView = () => import('../views/LogsView');
 export const loadOpsView = () => import('../views/OpsView');
 
 export const CONSOLE_MODULES: readonly ConsoleModule[] = [
+  // ─── Harness Workspace (Top Primary Sidebar Group) ─────────────────────────
+  {
+    id: 'agents',
+    domain: 'agent',
+    label: 'Agent',
+    shortDesc: '极简 Agent 对话与执行入口：居中输入框搭配模型/Harness 选择，即刻下发任务',
+    chord: 'g',
+    keywords: ['agent', 'agents', 'harness', 'codex', 'claude', 'pi', 'antigravity', '对话', '执行', '调度'],
+    icon: MessageSquare,
+    dataDeps: ['snapshot'],
+    eager: true,
+    prefetch: loadAgentsView,
+    benchmarks: {
+      references: ['Codex App', 'Antigravity', 'Claude Code'],
+      migratedCapabilities: ['极简居中输入框与行内模型/Harness 选择', '左侧栏可折叠历史任务线程'],
+    },
+  },
+  {
+    id: 'projects',
+    domain: 'agent',
+    label: '任务看板',
+    shortDesc: 'Linear 原生风格任务列表与看板：清爽状态分组、行内详情抽屉与总指挥拆解',
+    chord: 'j',
+    keywords: ['tasks', 'board', 'linear', 'projects', 'issues', 'kanban', '任务', '看板', '项目'],
+    icon: KanbanSquare,
+    dataDeps: ['snapshot'],
+    prefetch: loadProjectsView,
+    benchmarks: {
+      references: ['Linear'],
+      migratedCapabilities: ['Linear 分组列表与极简 4 列看板', '右侧任务详情抽屉与一键总指挥拆解'],
+    },
+  },
+  {
+    id: 'graph',
+    domain: 'agent',
+    label: '分配图谱',
+    shortDesc: 'n8n 风格节点工作流画布：直观查看总指挥、任务拆解与执行 Agent 连接链路',
+    chord: 'd',
+    keywords: ['graph', 'n8n', 'workflow', 'dag', 'map', '图谱', '工作流', '依赖', '分配'],
+    icon: GitFork,
+    dataDeps: ['snapshot'],
+    prefetch: loadAgentGraphView,
+    benchmarks: {
+      references: ['n8n', 'React Flow'],
+      migratedCapabilities: ['全画布点阵工作流视图与端口连线', '点击节点浮出参数检查面板'],
+    },
+  },
+  {
+    id: 'bots',
+    domain: 'agent',
+    label: 'Bot',
+    shortDesc: '创建与管理飞书、Telegram、Discord、Slack 等多渠道自动化 Bot',
+    chord: 'b',
+    keywords: ['bots', 'bot', 'feishu', 'telegram', 'discord', 'slack', 'webhook', '机器人'],
+    icon: Bot,
+    dataDeps: ['snapshot'],
+    prefetch: loadBotsView,
+    benchmarks: {
+      references: ['Linear Agents & Bots', 'Slack Apps'],
+      migratedCapabilities: ['独立多渠道 Bot 编排与事件模拟触发'],
+    },
+  },
+  {
+    id: 'github',
+    domain: 'agent',
+    label: 'GitHub',
+    shortDesc: '配置 GitHub 仓库双向同步，追踪 Agent 自动创建的 Worktree 分支与 Pull Request',
+    chord: 'h',
+    keywords: ['github', 'git', 'pr', 'pull request', 'repo', 'sync', '仓库', '同步'],
+    icon: GitBranch,
+    dataDeps: ['snapshot'],
+    prefetch: loadGithubView,
+    benchmarks: {
+      references: ['GitHub Projects', 'Linear GitHub Sync'],
+      migratedCapabilities: ['独立 GitHub 仓库配置、双向同步与 PR 交付追踪'],
+    },
+  },
+  {
+    id: 'agent-settings',
+    domain: 'agent',
+    label: '设置',
+    shortDesc: 'Harness 高级设置：总指挥分工、迭代路线图、A2A 路由、集群拓扑、蜂群引擎、安全护栏与网关',
+    chord: 'e',
+    keywords: ['settings', 'config', 'a2a', 'swarm', 'governance', 'gateway', '设置', '分工', '高级', '护栏'],
+    icon: SlidersHorizontal,
+    dataDeps: ['snapshot'],
+    prefetch: loadAgentSettingsView,
+    benchmarks: {
+      references: ['Codex Settings', 'Google A2A Protocol'],
+      migratedCapabilities: ['高阶编排、蜂群与网关遥测统一收口于设置页'],
+    },
+  },
+
+  // ─── Monitoring & Nodes ────────────────────────────────────────────────────
   {
     id: 'overview',
     domain: 'observe',
@@ -75,21 +181,6 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     benchmarks: {
       references: ['Grafana', 'Datadog', 'Netdata'],
       migratedCapabilities: ['非对称 KPI 比例条', '跨尺度 SQLite WAL 趋势图', '上下游依赖拓扑下钻', '持久化工作台面板自定义'],
-    },
-  },
-  {
-    id: 'agents',
-    domain: 'observe',
-    label: 'Agent 调度',
-    shortDesc: '核心可视化拖拽编排画布、Codex/Pi/Claude/DSH 协同、自动蜂群与多端会话同步',
-    chord: 'g',
-    keywords: ['agents', 'a2a', 'harness', 'lead', 'codex', 'pi', 'claude', 'dsh', 'swarm', '蜂群', '调度', '主agent', '网关'],
-    icon: Bot,
-    dataDeps: ['snapshot'],
-    prefetch: loadAgentsView,
-    benchmarks: {
-      references: ['Google A2A Protocol', 'Codex Multi-Agent', 'Pi / Antigravity Swarm'],
-      migratedCapabilities: ['无内置 Harness 拖拽路由画布与思考强度编排', 'DSH 专家评审插件门禁与自动蜂群', '本机/节点自动发现、Skill 版本管理与多端会话对齐'],
     },
   },
   {
@@ -123,6 +214,8 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
       migratedCapabilities: ['多节点状态/CPU/内存/RTT 排序对比矩阵', '行内延迟可视化色条与 IP 快复制', '一次性令牌注册与 Pull-only 指令队列'],
     },
   },
+
+  // ─── Infrastructure ────────────────────────────────────────────────────────
   {
     id: 'services',
     domain: 'infra',
@@ -199,6 +292,8 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
       migratedCapabilities: ['点击 IP 一键复制', 'DERP 中继/在线状态筛选', '防火墙非回环端口暴露面快筛'],
     },
   },
+
+  // ─── Operations ────────────────────────────────────────────────────────────
   {
     id: 'logs',
     domain: 'operate',
@@ -265,5 +360,6 @@ export function prefetchModule(id: ViewId): void {
 
 export function parseViewFromHash(hash: string): ViewId | null {
   const cleaned = String(hash || '').replace(/^#\/?/, '').split(/[?&/]/)[0].trim().toLowerCase();
+  if (cleaned === 'tasks') return 'projects';
   return isValidViewId(cleaned) ? cleaned : null;
 }

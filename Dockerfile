@@ -2,7 +2,7 @@ FROM node:22-alpine
 
 LABEL org.opencontainers.image.title="Ops Console" \
       org.opencontainers.image.description="Self-Hostable Architecture, Service, Memory & Log Control Plane" \
-      org.opencontainers.image.version="0.3.0" \
+      org.opencontainers.image.version="0.4.0" \
       org.opencontainers.image.licenses="MIT"
 
 WORKDIR /app

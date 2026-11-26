@@ -1,0 +1,150 @@
+import React from 'react';
+import { RefreshCw } from 'lucide-react';
+import {
+  dispatchLinearCommander,
+  fetchLinearState,
+  updateLinearIssue,
+} from '../api';
+import type {
+  LinearIssuePriority,
+  LinearIssueStatus,
+  LinearStateResponse,
+} from '../types';
+import { shortAgentName } from '../lib/agent-console';
+import { cn } from '../lib/cn';
+import {
+  Button,
+  ErrorState,
+  ViewSkeleton,
+  WidgetSkeleton,
+} from '../components/ui';
+
+const LazyLinearGraphCanvas = React.lazy(() =>
+  import('../components/LinearGraphCanvas').then((m) => ({ default: m.LinearGraphCanvas })),
+);
+
+export function AgentGraphView({
+  readOnly = false,
+  onToast,
+}: {
+  readOnly?: boolean;
+  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+}) {
+  const [linearState, setLinearState] = React.useState<LinearStateResponse | null>(null);
+  const [loading, setLoading] = React.useState(true);
+  const [refreshing, setRefreshing] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [dispatchingId, setDispatchingId] = React.useState<string | null>(null);
+
+  const loadState = React.useCallback(async () => {
+    setRefreshing(true);
+    setError(null);
+    try {
+      const data = await fetchLinearState();
+      setLinearState(data);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : '加载分配图谱失败');
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    void loadState();
+  }, [loadState]);
+
+  const handleUpdateIssue = async (
+    issueId: string,
+    patch: Partial<{
+      status: LinearIssueStatus;
+      priority: LinearIssuePriority;
+      assigneeId: string;
+      assigneeName: string;
+      assigneeType: string;
+    }>,
+  ) => {
+    if (readOnly) return;
+    try {
+      const res = await updateLinearIssue(issueId, patch);
+      onToast?.(`已更新 ${res.issue.identifier}`, 'ok');
+      await loadState();
+    } catch (err) {
+      onToast?.(err instanceof Error ? err.message : '更新任务失败', 'err');
+    }
+  };
+
+  const handleDispatchCommander = async (issueId: string) => {
+    if (readOnly) return;
+    setDispatchingId(issueId);
+    try {
+      const res = await dispatchLinearCommander(issueId);
+      onToast?.(
+        `总指挥 ${shortAgentName(res.commander.name)} 已拆解 ${res.createdSubIssues?.length || 0} 个子任务`,
+        'ok',
+      );
+      await loadState();
+    } catch (err) {
+      onToast?.(err instanceof Error ? err.message : '总指挥派发失败', 'err');
+    } finally {
+      setDispatchingId(null);
+    }
+  };
+
+  if (loading && !linearState) {
+    return <ViewSkeleton />;
+  }
+
+  if (error && !linearState) {
+    return <ErrorState title="分配图谱加载失败" message={error} onRetry={() => void loadState()} />;
+  }
+
+  const availableAgents = linearState?.availableAgents || [];
+  const commanderAgent =
+    availableAgents.find((a) => a.id === linearState?.commander.leadAgentId) ||
+    availableAgents.find((a) => a.role === 'lead') ||
+    availableAgents[0] ||
+    null;
+
+  return (
+    <div className="space-y-4" data-testid="view-agent-graph">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-baseline gap-3 min-w-0">
+          <h1 className="text-[18px] font-semibold tracking-tight text-[var(--ink)] whitespace-nowrap">
+            分配图谱
+          </h1>
+          <span className="hidden sm:inline text-[12.5px] text-[var(--ink-subtle)] truncate">
+            点击任意节点查看参数、改派执行 Agent 或触发总指挥拆解
+          </span>
+        </div>
+
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={refreshing}
+          onClick={() => void loadState()}
+        >
+          <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
+          刷新
+        </Button>
+      </div>
+
+      <React.Suspense fallback={<WidgetSkeleton heightClass="h-[560px]" label="正在加载工作流画布" />}>
+        <LazyLinearGraphCanvas
+          commanderName={commanderAgent?.name || '总指挥 Agent'}
+          commanderId={commanderAgent?.id || linearState?.commander.leadAgentId || 'lead'}
+          issues={linearState?.issues || []}
+          projects={linearState?.projects || []}
+          availableAgents={availableAgents}
+          availableBots={linearState?.availableBots || []}
+          readOnly={readOnly}
+          dispatchingId={dispatchingId}
+          onUpdateIssue={handleUpdateIssue}
+          onDispatchCommander={handleDispatchCommander}
+        />
+      </React.Suspense>
+    </div>
+  );
+}
+
+export default AgentGraphView;

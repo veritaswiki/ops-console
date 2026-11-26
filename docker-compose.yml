@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: ops-console:0.3.0
+    image: ops-console:0.4.0
     container_name: ops-console
     restart: unless-stopped
     ports:

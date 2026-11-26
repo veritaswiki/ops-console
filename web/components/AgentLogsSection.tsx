@@ -17,10 +17,12 @@ import { Button, EmptyState, inputBaseClass, Panel, SegmentedFilter } from './ui
 
 const LOG_CATEGORY_OPTIONS = [
   { value: 'all', label: '全部事件' },
+  { value: 'superagent', label: 'Fast/Slow Path' },
+  { value: 'context', label: 'Inline/Spill' },
+  { value: 'watchdog', label: 'Watchdog' },
   { value: 'swarm', label: '蜂群扇出' },
-  { value: 'a2a', label: 'A2A 委派' },
   { value: 'dsh', label: 'DSH 评审' },
-  { value: 'memory', label: 'Engram / SM-2' },
+  { value: 'a2a', label: 'A2A 委派' },
   { value: 'session', label: '跨端同步' },
 ] as const;
 
@@ -144,12 +146,13 @@ export function AgentLogsSection({
     try {
       const targetHint = selectedAgent ? `（聚焦 ${selectedAgent.name}）` : '';
       const res = await runDshTeamCollaboration({
-        prompt: `实时协作链路演练${targetHint}：检查 auth 安全边界、执行 swarm 并行回归并触发 DSH 团队投票`,
-        useEngramLookup: true,
+        prompt: `实时协作链路演练${targetHint}：检查 auth 安全边界、执行隔离 Worktree 蜂群回归并触发 DSH 团队投票`,
+        channel: 'github',
         consensusPolicy: 'weighted',
+        enableAutoSpill: true,
       });
       onToast?.(
-        `已触发一次 DSH 团队协同演练：命中 ${res.matchedEngrams.length} 条 Engram，协作日志已实时推送`,
+        `已触发一次 DSH 团队协同演练：工单 ${res.ticket.id}${res.spilledNode ? ` · Spill ${res.spilledNode.spillId}` : ''}，协作日志已实时推送`,
         'ok',
       );
       onDataMutated?.();
@@ -164,7 +167,7 @@ export function AgentLogsSection({
     <div className="space-y-4">
       <Panel
         title="实时 Agent 协作日志流 (SSE)"
-        description="按指定 Agent 节点实时订阅主控 Agent 与各子 Agent 之间的 A2A 委派、Swarm 蜂群扇出、DeepSeek Engram 查表、SM-2 记忆巩固与 DSH 评审裁决事件。"
+        description="按指定 Agent 节点实时订阅薄 Router、Fast/Slow Path 触发直滤、Inline/Spill Chain of Recall、Watchdog 巡检、Swarm 蜂群扇出与 DSH 评审裁决事件。"
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <span
@@ -278,7 +281,7 @@ export function AgentLogsSection({
 
             <label className="min-w-0">
               <span className="mb-1 block text-[11px] font-medium text-[var(--ink-subtle)]">
-                关键词 / ContextId / Engram 检索
+                关键词 / ContextId / Spill 句柄检索
               </span>
               <div className="relative">
                 <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-[var(--ink-subtle)]" />
@@ -286,7 +289,7 @@ export function AgentLogsSection({
                   type="search"
                   value={query}
                   onChange={(e) => setQuery(e.target.value)}
-                  placeholder="搜索摘要、ContextId、分支名或 Engram Key…"
+                  placeholder="搜索摘要、ContextId、Worktree 分支或 Spill ID…"
                   className={cn(inputBaseClass, 'w-full h-8 pl-8 pr-2.5 text-xs')}
                   data-testid="agent-logs-search-input"
                 />
@@ -447,11 +450,11 @@ export function AgentLogsSection({
                         )}
                       </dd>
                     </div>
-                    {activeLog.engramHitKey && (
+                    {activeLog.spillRefId && (
                       <div className="col-span-2 min-w-0">
-                        <dt className="text-[11px] text-[var(--ink-subtle)]">命中 Engram 条件记忆 Key</dt>
+                        <dt className="text-[11px] text-[var(--ink-subtle)]">关联 Spill / Chain of Recall 句柄</dt>
                         <dd className="mt-0.5 font-mono text-[var(--warn)] truncate">
-                          {activeLog.engramHitKey}
+                          {activeLog.spillRefId}
                         </dd>
                       </div>
                     )}

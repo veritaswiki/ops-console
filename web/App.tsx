@@ -3,15 +3,21 @@ import { MotionConfig } from 'motion/react';
 import { Toaster, toast } from 'sonner';
 import { Drawer } from 'vaul';
 import {
+  ChevronDown,
+  ChevronRight,
   LogOut,
   Menu,
   Moon,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
   RefreshCw,
   Search,
   Sun,
   X,
 } from 'lucide-react';
 import type {
+  A2ATaskRecord,
   AuditEntry,
   IncidentItem,
   MetaResponse,
@@ -20,6 +26,7 @@ import type {
   ViewId,
 } from './types';
 import {
+  fetchA2AState,
   fetchAudit,
   fetchIncidents,
   fetchMeta,
@@ -44,15 +51,20 @@ import {
   getModuleByChord,
   getModuleById,
   getModulesGroupedByDomain,
+  loadAgentGraphView,
+  loadAgentSettingsView,
   loadAgentsView,
   loadAlertsView,
+  loadBotsView,
   loadFleetView,
+  loadGithubView,
   loadLogsView,
   loadMcpView,
   loadMemoryView,
   loadNetworkView,
   loadOpsView,
   loadPluginsView,
+  loadProjectsView,
   loadServicesView,
   MODULE_DOMAINS,
   parseViewFromHash,
@@ -67,6 +79,11 @@ const PluginsView = React.lazy(() => loadPluginsView().then((m) => ({ default: m
 const McpView = React.lazy(() => loadMcpView().then((m) => ({ default: m.McpView })));
 const MemoryView = React.lazy(() => loadMemoryView().then((m) => ({ default: m.MemoryView })));
 const AgentsView = React.lazy(() => loadAgentsView().then((m) => ({ default: m.AgentsView })));
+const ProjectsView = React.lazy(() => loadProjectsView().then((m) => ({ default: m.ProjectsView })));
+const AgentGraphView = React.lazy(() => loadAgentGraphView().then((m) => ({ default: m.AgentGraphView })));
+const BotsView = React.lazy(() => loadBotsView().then((m) => ({ default: m.BotsView })));
+const GithubView = React.lazy(() => loadGithubView().then((m) => ({ default: m.GithubView })));
+const AgentSettingsView = React.lazy(() => loadAgentSettingsView().then((m) => ({ default: m.AgentSettingsView })));
 const NetworkView = React.lazy(() => loadNetworkView().then((m) => ({ default: m.NetworkView })));
 const LogsView = React.lazy(() => loadLogsView().then((m) => ({ default: m.LogsView })));
 const OpsView = React.lazy(() => loadOpsView().then((m) => ({ default: m.OpsView })));
@@ -75,6 +92,15 @@ const DOMAIN_TITLE_MAP = new Map(MODULE_DOMAINS.map((d) => [d.id, d.title]));
 const GROUPED_MODULES = getModulesGroupedByDomain();
 
 const THEME_STORAGE_KEY = 'ops-console-theme';
+const SIDEBAR_STORAGE_KEY = 'ops-console-sidebar-collapsed';
+
+function readInitialSidebarCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 function readInitialTheme(): 'light' | 'dark' {
   try {
@@ -103,7 +129,13 @@ function applyTheme(theme: 'light' | 'dark') {
 }
 
 export function App() {
-  const [view, setView] = React.useState<ViewId>(() => parseViewFromHash(window.location.hash) || 'overview');
+  const [view, setView] = React.useState<ViewId>(() => parseViewFromHash(window.location.hash) || 'agents');
+  const [sidebarCollapsed, setSidebarCollapsed] = React.useState<boolean>(() => readInitialSidebarCollapsed());
+  const [harnessNavExpanded, setHarnessNavExpanded] = React.useState<boolean>(true);
+  const [opsNavExpanded, setOpsNavExpanded] = React.useState<boolean>(() => {
+    const initial = parseViewFromHash(window.location.hash) || 'agents';
+    return getModuleById(initial).domain !== 'agent';
+  });
   const [theme, setTheme] = React.useState<'light' | 'dark'>(() => readInitialTheme());
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const [commandOpen, setCommandOpen] = React.useState(false);
@@ -113,6 +145,8 @@ export function App() {
   const [probes, setProbes] = React.useState<ProbesResponse | null>(null);
   const [incidents, setIncidents] = React.useState<IncidentItem[]>([]);
   const [audit, setAudit] = React.useState<AuditEntry[]>([]);
+  const [recentAgentTasks, setRecentAgentTasks] = React.useState<A2ATaskRecord[]>([]);
+  const [activeAgentTaskId, setActiveAgentTaskId] = React.useState<string | null>(null);
 
   const [pollMs, setPollMs] = React.useState<number>(10000);
   const [loading, setLoading] = React.useState<boolean>(true);
@@ -175,6 +209,23 @@ export function App() {
     }
   }, []);
 
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem(SIDEBAR_STORAGE_KEY, sidebarCollapsed ? '1' : '0');
+    } catch {
+      // Ignore storage access errors
+    }
+  }, [sidebarCollapsed]);
+
+  const loadRecentAgentTasks = React.useCallback(async () => {
+    try {
+      const res = await fetchA2AState();
+      setRecentAgentTasks((res.tasks || []).slice(0, 6));
+    } catch {
+      // Non-blocking secondary load
+    }
+  }, []);
+
   const loadOpsData = React.useCallback(async () => {
     try {
       const [incRes, audRes] = await Promise.all([fetchIncidents(30), fetchAudit(40)]);
@@ -185,7 +236,7 @@ export function App() {
     }
   }, []);
 
-  // Parallel initial bootstrap: fetchMeta + loadSnapshot concurrently (zero serial waterfall)
+  // Parallel initial bootstrap: fetchMeta + loadSnapshot + loadRecentAgentTasks concurrently
   React.useEffect(() => {
     const controller = new AbortController();
     let active = true;
@@ -200,12 +251,12 @@ export function App() {
       .catch(() => {
         // Proceed even if meta temporarily fails
       });
-    void Promise.all([metaTask, loadSnapshot(false)]);
+    void Promise.all([metaTask, loadSnapshot(false), loadRecentAgentTasks()]);
     return () => {
       active = false;
       controller.abort();
     };
-  }, [loadSnapshot]);
+  }, [loadSnapshot, loadRecentAgentTasks]);
 
   // Refresh secondary views on-demand using module dataDeps manifest
   React.useEffect(() => {
@@ -248,6 +299,7 @@ export function App() {
         timer = null;
         if (document.visibilityState === 'visible') {
           void loadSnapshot(false);
+          void loadRecentAgentTasks();
           const activeMod = getModuleById(viewRef.current);
           if (activeMod.dataDeps.includes('ops')) {
             void loadOpsData();
@@ -287,7 +339,7 @@ export function App() {
       if (timer != null) window.clearTimeout(timer);
       es.close();
     };
-  }, [loadSnapshot, loadOpsData, loadProbes]);
+  }, [loadSnapshot, loadOpsData, loadProbes, loadRecentAgentTasks]);
 
   // Polling interval
   React.useEffect(() => {
@@ -375,14 +427,14 @@ export function App() {
   const handleSelectAgentCategory = React.useCallback((category: string) => {
     setAgentPid(null);
     setAgentCategory(category);
-    setView('agents');
+    setView('agent-settings');
     setMobileNavOpen(false);
   }, []);
 
   const handleSelectAgentPid = React.useCallback((pid: number) => {
     setAgentCategory('');
     setAgentPid(pid);
-    setView('agents');
+    setView('agent-settings');
     setMobileNavOpen(false);
   }, []);
 
@@ -397,6 +449,22 @@ export function App() {
 
   const handleSelectView = (next: ViewId) => {
     setView(next);
+    if (next === 'agents') {
+      setActiveAgentTaskId(null);
+      setHarnessNavExpanded(true);
+    } else if (getModuleById(next).domain === 'agent') {
+      setHarnessNavExpanded(true);
+    } else {
+      setOpsNavExpanded(true);
+    }
+    setMobileNavOpen(false);
+    window.scrollTo({ top: 0 });
+  };
+
+  const handleOpenAgentThread = (taskId: string) => {
+    setActiveAgentTaskId(taskId);
+    setView('agents');
+    setHarnessNavExpanded(true);
     setMobileNavOpen(false);
     window.scrollTo({ top: 0 });
   };
@@ -553,12 +621,122 @@ export function App() {
 
   const activeAlertsCount = snapshot?.activeAlertsCount ?? 0;
 
+  const agentGroup = GROUPED_MODULES.find((g) => g.domain.id === 'agent');
+  const secondaryModules = React.useMemo(
+    () => CONSOLE_MODULES.filter((m) => m.domain !== 'agent'),
+    [],
+  );
+  const secondaryAlertBadge = failedSvcCount + activeAlertsCount;
+  const isHarnessView = activeModule.domain === 'agent';
+
+  const renderNavItem = (mod: (typeof CONSOLE_MODULES)[number]) => {
+    const Icon = mod.icon;
+    const isAgentHome = mod.id === 'agents';
+    const isActive = isAgentHome ? view === 'agents' && !activeAgentTaskId : view === mod.id;
+    return (
+      <div key={mod.id} className="space-y-0.5">
+        <div className="flex items-center gap-0.5">
+          <button
+            type="button"
+            data-view={mod.id}
+            aria-current={isActive ? 'page' : undefined}
+            onClick={() => handleSelectView(mod.id)}
+            onMouseEnter={() => prefetchModule(mod.id)}
+            onFocus={() => prefetchModule(mod.id)}
+            className={cn(
+              'flex-1 min-w-0 flex items-center justify-between gap-2.5 px-2.5 py-2 rounded-lg text-[13.5px] font-medium select-none cursor-pointer whitespace-nowrap',
+              'transition-colors duration-150 ease-out',
+              FOCUS_RING,
+              isActive
+                ? 'bg-[var(--surface-active)] text-[var(--ink)]'
+                : 'text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
+            )}
+          >
+            <span className="flex items-center gap-2.5 min-w-0">
+              <Icon
+                className={cn(
+                  'size-4 shrink-0',
+                  isActive ? 'text-[var(--accent)]' : 'text-[var(--ink-subtle)]',
+                )}
+                strokeWidth={1.75}
+              />
+              <span className="truncate">{mod.label}</span>
+            </span>
+            {mod.badgeKey === 'failedServices' && failedSvcCount > 0 && (
+              <span className="font-mono text-[11.5px] font-semibold text-[var(--err)] tabular-nums shrink-0">
+                {failedSvcCount}
+              </span>
+            )}
+            {mod.badgeKey === 'alerts' && activeAlertsCount > 0 && (
+              <span className="font-mono text-[11.5px] font-semibold text-[var(--warn)] tabular-nums shrink-0">
+                {activeAlertsCount}
+              </span>
+            )}
+          </button>
+          {isAgentHome && (
+            <button
+              type="button"
+              onClick={() => handleSelectView('agents')}
+              title="新建 Agent 对话"
+              aria-label="新建 Agent 对话"
+              data-testid="sidebar-new-agent-btn"
+              className={cn(
+                'h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-lg text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] transition-colors cursor-pointer',
+                FOCUS_RING,
+              )}
+            >
+              <Plus className="size-3.5" strokeWidth={1.75} />
+            </button>
+          )}
+        </div>
+
+        {/* Recent Agent threads live directly under Agent in the left sidebar */}
+        {isAgentHome && recentAgentTasks.length > 0 && (
+          <div
+            className="ml-4 pl-2.5 border-l border-[var(--border-subtle)] py-0.5 space-y-0.5"
+            data-testid="sidebar-agent-threads"
+          >
+            {recentAgentTasks.slice(0, 5).map((task) => {
+              const threadActive = view === 'agents' && activeAgentTaskId === task.id;
+              const dotClass =
+                task.state === 'completed'
+                  ? 'bg-[var(--ok-dot)]'
+                  : task.state === 'working' || task.state === 'submitted'
+                    ? 'bg-[var(--warn-dot)]'
+                    : task.state === 'failed' || task.state === 'canceled'
+                      ? 'bg-[var(--err-dot)]'
+                      : 'bg-[var(--muted-dot)]';
+              return (
+                <button
+                  key={task.id}
+                  type="button"
+                  onClick={() => handleOpenAgentThread(task.id)}
+                  title={task.prompt || task.id}
+                  className={cn(
+                    'w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[12px] text-left cursor-pointer transition-colors min-w-0',
+                    FOCUS_RING,
+                    threadActive
+                      ? 'bg-[var(--surface-active)] text-[var(--ink)] font-medium'
+                      : 'text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
+                  )}
+                >
+                  <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', dotClass)} aria-hidden="true" />
+                  <span className="truncate">{task.prompt || task.id}</span>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderSidebarContent = (isMobile = false) => (
     <div className="flex h-full flex-col">
-      <div className="flex h-14 items-center justify-between px-4 border-b border-[var(--border-subtle)] shrink-0">
+      <div className="flex h-14 items-center justify-between px-3.5 border-b border-[var(--border-subtle)] shrink-0">
         <button
           type="button"
-          onClick={() => handleSelectView('overview')}
+          onClick={() => handleSelectView('agents')}
           className={cn(
             'flex items-center gap-2.5 min-w-0 text-left cursor-pointer rounded-lg py-1 pr-1 select-none',
             FOCUS_RING,
@@ -573,11 +751,11 @@ export function App() {
               className="h-6 w-6 block"
             />
           </span>
-          <span className="text-[15px] font-semibold tracking-tight text-[var(--ink)] truncate">
+          <span className="text-[14.5px] font-semibold tracking-tight text-[var(--ink)] truncate">
             {brandTitle}
           </span>
         </button>
-        {isMobile && (
+        {isMobile ? (
           <button
             type="button"
             onClick={() => setMobileNavOpen(false)}
@@ -589,67 +767,89 @@ export function App() {
           >
             <X className="size-4" strokeWidth={1.75} />
           </button>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setSidebarCollapsed(true)}
+            aria-label="折叠侧边栏"
+            title="折叠侧边栏"
+            data-testid="sidebar-collapse-btn"
+            className={cn(
+              'h-8 w-8 inline-flex items-center justify-center rounded-lg text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] transition-colors duration-150 ease-out cursor-pointer',
+              FOCUS_RING,
+            )}
+          >
+            <PanelLeftClose className="size-4" strokeWidth={1.75} />
+          </button>
         )}
       </div>
 
-      {/* Zero click dead zones: continuous hit area via internal py-2.5 padding */}
-      <nav className="flex-1 overflow-y-auto px-3 py-4 space-y-5" aria-label="主导航">
-        {GROUPED_MODULES.map(({ domain, modules }) => (
-          <div key={domain.id}>
-            <div className="px-2.5 pb-1.5 text-[11.5px] font-medium text-[var(--ink-subtle)] select-none">
-              {domain.title}
-            </div>
-            <div className="flex flex-col">
-              {modules.map((mod) => {
-                const Icon = mod.icon;
-                const isActive = view === mod.id;
-                return (
-                  <button
-                    key={mod.id}
-                    type="button"
-                    data-view={mod.id}
-                    aria-current={isActive ? 'page' : undefined}
-                    onClick={() => handleSelectView(mod.id)}
-                    onMouseEnter={() => prefetchModule(mod.id)}
-                    onFocus={() => prefetchModule(mod.id)}
-                    className={cn(
-                      'w-full flex items-center justify-between gap-2.5 px-2.5 py-2.5 rounded-lg text-[13.5px] font-medium select-none cursor-pointer whitespace-nowrap',
-                      'transition-colors duration-150 ease-out',
-                      FOCUS_RING,
-                      isActive
-                        ? 'bg-[var(--surface-active)] text-[var(--ink)]'
-                        : 'text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
-                    )}
-                  >
-                    <span className="flex items-center gap-2.5 min-w-0">
-                      <Icon
-                        className={cn(
-                          'size-4 shrink-0',
-                          isActive ? 'text-[var(--accent)]' : 'text-[var(--ink-subtle)]',
-                        )}
-                        strokeWidth={1.75}
-                      />
-                      <span className="truncate">{mod.label}</span>
-                    </span>
-                    {mod.badgeKey === 'failedServices' && failedSvcCount > 0 && (
-                      <span className="font-mono text-[11.5px] font-semibold text-[var(--err)] tabular-nums shrink-0">
-                        {failedSvcCount}
-                      </span>
-                    )}
-                    {mod.badgeKey === 'alerts' && activeAlertsCount > 0 && (
-                      <span className="font-mono text-[11.5px] font-semibold text-[var(--warn)] tabular-nums shrink-0">
-                        {activeAlertsCount}
-                      </span>
-                    )}
-                  </button>
-                );
-              })}
-            </div>
+      {/* Flat 2-Group Collapsible Navigation: Harness + 系统与运维 */}
+      <nav className="flex-1 overflow-y-auto px-2.5 py-3.5 space-y-3" aria-label="主导航">
+        {agentGroup && (
+          <div data-testid="sidebar-domain-harness">
+            <button
+              type="button"
+              data-testid="sidebar-harness-toggle"
+              aria-expanded={harnessNavExpanded}
+              onClick={() => setHarnessNavExpanded((prev) => !prev)}
+              className={cn(
+                'w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[11.5px] font-semibold tracking-wide text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer select-none',
+                FOCUS_RING,
+              )}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                {harnessNavExpanded ? (
+                  <ChevronDown className="size-3.5" strokeWidth={1.75} />
+                ) : (
+                  <ChevronRight className="size-3.5" strokeWidth={1.75} />
+                )}
+                <span>{agentGroup.domain.title}</span>
+              </span>
+            </button>
+            {harnessNavExpanded && (
+              <div className="mt-1 flex flex-col gap-0.5">
+                {agentGroup.modules.map((mod) => renderNavItem(mod))}
+              </div>
+            )}
           </div>
-        ))}
+        )}
+
+        <div className="pt-2.5 border-t border-[var(--border-subtle)]" data-testid="sidebar-domain-ops">
+          <button
+            type="button"
+            data-testid="sidebar-ops-toggle"
+            aria-expanded={opsNavExpanded}
+            onClick={() => setOpsNavExpanded((prev) => !prev)}
+            className={cn(
+              'w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[11.5px] font-semibold tracking-wide text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer select-none',
+              FOCUS_RING,
+            )}
+          >
+            <span className="inline-flex items-center gap-1.5">
+              {opsNavExpanded ? (
+                <ChevronDown className="size-3.5" strokeWidth={1.75} />
+              ) : (
+                <ChevronRight className="size-3.5" strokeWidth={1.75} />
+              )}
+              <span>系统与运维</span>
+            </span>
+            {!opsNavExpanded && secondaryAlertBadge > 0 && (
+              <span className="font-mono text-[11px] font-semibold text-[var(--warn)] tabular-nums">
+                {secondaryAlertBadge}
+              </span>
+            )}
+          </button>
+
+          {opsNavExpanded && (
+            <div className="mt-1 flex flex-col gap-0.5">
+              {secondaryModules.map((mod) => renderNavItem(mod))}
+            </div>
+          )}
+        </div>
       </nav>
 
-      <div className="px-4 py-3.5 border-t border-[var(--border-subtle)] text-[12px] text-[var(--ink-subtle)] shrink-0 space-y-1">
+      <div className="px-4 py-3 border-t border-[var(--border-subtle)] text-[11.5px] text-[var(--ink-subtle)] shrink-0 space-y-1">
         <div className="flex items-center justify-between gap-2">
           <span
             className="truncate font-mono text-[var(--ink-muted)]"
@@ -657,10 +857,10 @@ export function App() {
           >
             {snapshot?.host?.hostname || 'control-plane'}
           </span>
-          <span className="font-mono tabular-nums shrink-0">v{meta?.version || '0.3.0'}</span>
+          <span className="font-mono tabular-nums shrink-0">v{meta?.version || '0.4.0'}</span>
         </div>
         {(demoMode || readOnly) && (
-          <div className="text-[11.5px] text-[var(--ink-subtle)] truncate">
+          <div className="text-[11px] text-[var(--ink-subtle)] truncate">
             {demoMode && readOnly
               ? '演示模式 · 只读保护'
               : demoMode
@@ -673,13 +873,27 @@ export function App() {
     </div>
   );
 
+  const mainContainerClass =
+    view === 'graph'
+      ? 'flex-1 w-full px-4 sm:px-6 py-4'
+      : view === 'projects'
+        ? 'flex-1 w-full max-w-[1400px] mx-auto px-4 sm:px-6 py-5'
+        : view === 'agents'
+          ? 'flex-1 w-full max-w-[960px] mx-auto px-4 sm:px-6 py-4 flex flex-col'
+          : 'flex-1 w-full max-w-[1200px] mx-auto px-4 sm:px-8 py-6 sm:py-8';
+
   return (
     <MotionConfig reducedMotion="user">
       <div className="min-h-dvh bg-[var(--bg)] text-[var(--ink)] flex">
-        {/* Desktop Sidebar */}
-        <aside className="hidden lg:flex lg:w-[240px] lg:shrink-0 lg:flex-col lg:fixed lg:inset-y-0 lg:left-0 bg-[var(--surface-elevated)] border-r border-[var(--border)] z-30">
-          {renderSidebarContent(false)}
-        </aside>
+        {/* Collapsible Desktop Sidebar */}
+        {!sidebarCollapsed && (
+          <aside
+            data-testid="desktop-sidebar"
+            className="hidden lg:flex lg:w-[244px] lg:shrink-0 lg:flex-col lg:fixed lg:inset-y-0 lg:left-0 bg-[var(--surface-elevated)] border-r border-[var(--border)] z-30"
+          >
+            {renderSidebarContent(false)}
+          </aside>
+        )}
 
         {/* Native Gesture Mobile Drawer via Vaul */}
         <Drawer.Root
@@ -695,7 +909,7 @@ export function App() {
             >
               <Drawer.Title className="sr-only">{brandTitle} 导航菜单</Drawer.Title>
               <Drawer.Description className="sr-only">
-                在系统总览、全球节点、受管服务、记忆引擎、网关、网络、日志与运维视图间切换
+                在 Harness 与系统运维视图间切换
               </Drawer.Description>
               {renderSidebarContent(true)}
             </Drawer.Content>
@@ -703,13 +917,18 @@ export function App() {
         </Drawer.Root>
 
         {/* Main Content Column */}
-        <div className="flex-1 min-w-0 lg:pl-[240px] flex flex-col min-h-dvh">
-          {/* Sticky Single-Row Topbar */}
+        <div
+          className={cn(
+            'flex-1 min-w-0 flex flex-col min-h-dvh',
+            sidebarCollapsed ? 'lg:pl-0' : 'lg:pl-[244px]',
+          )}
+        >
+          {/* Minimal Sticky Topbar */}
           <header className="sticky top-0 z-20 h-14 bg-[var(--bg)]/85 backdrop-blur-md border-b border-[var(--border-subtle)] shrink-0">
-            <div className="h-full max-w-[1200px] mx-auto px-4 sm:px-8 flex items-center justify-between gap-4">
-              <div className="flex items-center gap-2.5 min-w-0">
+            <div className="h-full px-4 sm:px-6 flex items-center justify-between gap-4">
+              <div className="flex items-center gap-2 min-w-0">
                 <Button
-                  variant="secondary"
+                  variant="ghost"
                   size="icon"
                   onClick={() => setMobileNavOpen(true)}
                   aria-label="打开导航菜单"
@@ -717,9 +936,22 @@ export function App() {
                 >
                   <Menu className="size-4" strokeWidth={1.75} />
                 </Button>
+                {sidebarCollapsed && (
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => setSidebarCollapsed(false)}
+                    aria-label="展开侧边栏"
+                    title="展开侧边栏"
+                    data-testid="sidebar-expand-btn"
+                    className="hidden lg:inline-flex"
+                  >
+                    <PanelLeftOpen className="size-4" strokeWidth={1.75} />
+                  </Button>
+                )}
                 <div className="flex items-center gap-2 min-w-0 text-[13px] select-none">
                   <span className="hidden sm:inline text-[var(--ink-subtle)] whitespace-nowrap">
-                    {activeDomainTitle}
+                    {isHarnessView ? activeDomainTitle : '系统与运维'}
                   </span>
                   <span className="hidden sm:inline text-[var(--ink-subtle)]/50" aria-hidden="true">/</span>
                   <span className="font-medium text-[var(--ink)] truncate whitespace-nowrap">
@@ -739,40 +971,63 @@ export function App() {
                     FOCUS_RING,
                   )}
                 >
-                  <Search className="size-4 text-[var(--ink-subtle)]" strokeWidth={1.75} />
+                  <Search className="size-3.5 text-[var(--ink-subtle)]" strokeWidth={1.75} />
                   <span className="hidden md:inline">搜索或跳转</span>
                   <kbd className="hidden sm:inline-block font-mono text-[11px] text-[var(--ink-subtle)] px-1.5 py-0.5 rounded-md bg-[var(--surface-subtle)] border border-[var(--border-subtle)] leading-none">
                     ⌘K
                   </kbd>
                 </button>
 
-                <span
-                  className={cn(
-                    'hidden xl:inline-block font-mono text-[11.5px] tabular-nums whitespace-nowrap px-1.5 select-none',
-                    syncError ? 'text-[var(--err)]' : 'text-[var(--ink-subtle)]',
-                  )}
-                  title={syncError || lastSyncedAt}
-                >
-                  {syncError
-                    ? '同步异常'
-                    : lastSyncedAt
-                      ? formatClock(lastSyncedAt)
-                      : '同步中...'}
-                </span>
+                {!isHarnessView && (
+                  <>
+                    <span
+                      className={cn(
+                        'hidden xl:inline-block font-mono text-[11.5px] tabular-nums whitespace-nowrap px-1.5 select-none',
+                        syncError ? 'text-[var(--err)]' : 'text-[var(--ink-subtle)]',
+                      )}
+                      title={syncError || lastSyncedAt}
+                    >
+                      {syncError
+                        ? '同步异常'
+                        : lastSyncedAt
+                          ? formatClock(lastSyncedAt)
+                          : '同步中...'}
+                    </span>
 
-                <select
-                  aria-label="自动刷新周期"
-                  value={String(pollMs)}
-                  onChange={(e) => setPollMs(Number(e.target.value))}
-                  className={cn(
-                    'ui-select hidden sm:block h-8 pl-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-[12px] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:border-[var(--border-strong)] transition-colors duration-150 ease-out cursor-pointer',
-                    FOCUS_RING,
-                  )}
-                >
-                  <option value="0">手动</option>
-                  <option value="10000">10s</option>
-                  <option value="30000">30s</option>
-                </select>
+                    <select
+                      aria-label="自动刷新周期"
+                      value={String(pollMs)}
+                      onChange={(e) => setPollMs(Number(e.target.value))}
+                      className={cn(
+                        'ui-select hidden sm:block h-8 pl-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-[12px] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:border-[var(--border-strong)] transition-colors duration-150 ease-out cursor-pointer',
+                        FOCUS_RING,
+                      )}
+                    >
+                      <option value="0">手动</option>
+                      <option value="10000">10s</option>
+                      <option value="30000">30s</option>
+                    </select>
+
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={refreshing}
+                      aria-label="手动刷新数据"
+                      title="立即同步遥测快照"
+                      onClick={() => {
+                        loadSnapshot(true);
+                        if (activeModule.dataDeps.includes('probes')) loadProbes();
+                        if (activeModule.dataDeps.includes('ops')) loadOpsData();
+                      }}
+                    >
+                      <RefreshCw
+                        className={cn('size-4 text-[var(--ink-muted)]', refreshing && 'animate-spin')}
+                        strokeWidth={1.75}
+                      />
+                      <span className="hidden sm:inline">刷新</span>
+                    </Button>
+                  </>
+                )}
 
                 <Button
                   variant="ghost"
@@ -787,25 +1042,6 @@ export function App() {
                   ) : (
                     <Moon className="size-4" strokeWidth={1.75} />
                   )}
-                </Button>
-
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={refreshing}
-                  aria-label="手动刷新数据"
-                  title="立即同步遥测快照"
-                  onClick={() => {
-                    loadSnapshot(true);
-                    if (activeModule.dataDeps.includes('probes')) loadProbes();
-                    if (activeModule.dataDeps.includes('ops')) loadOpsData();
-                  }}
-                >
-                  <RefreshCw
-                    className={cn('size-4 text-[var(--ink-muted)]', refreshing && 'animate-spin')}
-                    strokeWidth={1.75}
-                  />
-                  <span className="hidden sm:inline">刷新</span>
                 </Button>
 
                 {meta?.authEnabled && (
@@ -825,7 +1061,7 @@ export function App() {
           </header>
 
           {/* Inline Error Notice only when sync actually fails */}
-          {syncError && (
+          {syncError && !isHarnessView && (
             <div className="border-b border-[var(--err)]/20 bg-[var(--err)]/5">
               <div className="max-w-[1200px] mx-auto px-4 sm:px-8 py-2 flex items-center justify-between gap-2 text-[12.5px] text-[var(--err)]">
                 <span className="truncate">快照同步异常：{syncError}</span>
@@ -834,8 +1070,8 @@ export function App() {
           )}
 
           {/* Active View Shell with per-module fault boundary */}
-          <main className="flex-1 w-full max-w-[1200px] mx-auto px-4 sm:px-8 py-6 sm:py-9">
-            {loading && !snapshot ? (
+          <main className={mainContainerClass}>
+            {loading && !snapshot && !isHarnessView ? (
               <ViewSkeleton />
             ) : (
               <ModuleBoundary moduleId={activeModule.id} moduleLabel={activeModule.label}>
@@ -907,6 +1143,39 @@ export function App() {
                   )}
                   {view === 'agents' && (
                     <AgentsView
+                      readOnly={readOnly}
+                      activeTaskId={activeAgentTaskId}
+                      onSelectTask={setActiveAgentTaskId}
+                      onTasksUpdated={() => void loadRecentAgentTasks()}
+                      onToast={pushToast}
+                    />
+                  )}
+                  {view === 'projects' && (
+                    <ProjectsView
+                      readOnly={readOnly}
+                      onToast={pushToast}
+                    />
+                  )}
+                  {view === 'graph' && (
+                    <AgentGraphView
+                      readOnly={readOnly}
+                      onToast={pushToast}
+                    />
+                  )}
+                  {view === 'bots' && (
+                    <BotsView
+                      readOnly={readOnly}
+                      onToast={pushToast}
+                    />
+                  )}
+                  {view === 'github' && (
+                    <GithubView
+                      readOnly={readOnly}
+                      onToast={pushToast}
+                    />
+                  )}
+                  {view === 'agent-settings' && (
+                    <AgentSettingsView
                       snapshot={snapshot}
                       readOnly={readOnly}
                       selectedCategory={agentCategory}

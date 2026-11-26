@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Ops Console Probe Installer (v0.3.0)
+# Ops Console Probe Installer (v0.4.0)
 # Transparent, auditable installer for Linux (systemd) and macOS (LaunchAgent).
 # Guarantee: This script NEVER modifies firewall rules, SSH configuration, or Tailscale settings.
 set -euo pipefail
@@ -19,7 +19,7 @@ SOURCE_FILE="${DEFAULT_SOURCE}"
 
 usage() {
   cat <<'EOF'
-Ops Console Probe Installer (v0.3.0)
+Ops Console Probe Installer (v0.4.0)
 
 Installs the zero-dependency, push-only telemetry probe as an unprivileged service:
   - Linux: systemd service running as system user "ops-probe"

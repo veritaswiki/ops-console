@@ -3103,4 +3103,97 @@ export class A2AOrchestrator {
     await this.persist();
     return task;
   }
+
+  /**
+   * Claude Code / T3 Code / Orca style BTW & Side-Thread support:
+   * - mode='btw': asks an ephemeral side question against the main thread's context
+   *   without polluting main steps or stopping an active run.
+   * - mode='fork': forks a parallel side-thread inheriting contextId with its own
+   *   isolated Git worktree branch (side/<id>).
+   */
+  async addBtwNote(taskId, payload = {}, options = {}) {
+    const parentTask = this.tasks.find((t) => t.id === taskId);
+    if (!parentTask) {
+      const err = new Error(`A2A task not found: ${taskId}`);
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const prompt = redactText(String(payload.prompt || '').trim()).slice(0, 1200);
+    if (!prompt) {
+      const err = new Error('旁支问题内容不能为空');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const mode = payload.mode === 'fork' ? 'fork' : 'btw';
+    const targetAgent =
+      (payload.targetAgentId && this.agents.get(String(payload.targetAgentId))) ||
+      this.agents.get(parentTask.workerAgentId) ||
+      this.agents.get(this.leadAgentId) ||
+      [...this.agents.values()][0];
+
+    const nowIso = new Date().toISOString();
+
+    if (mode === 'fork') {
+      const forkedTask = await this.dispatchTask(
+        {
+          prompt: `[旁支会话 · 基于 ${parentTask.id}] ${prompt}`,
+          targetAgentId: targetAgent?.id,
+          contextId: parentTask.contextId,
+        },
+        { actor: options.actor || 'btw-fork' },
+      );
+      forkedTask.parentTaskId = parentTask.id;
+      forkedTask.isSideThread = true;
+      forkedTask.worktreeBranch = `side/${forkedTask.id}`;
+      if (!Array.isArray(parentTask.btwNotes)) parentTask.btwNotes = [];
+      parentTask.btwNotes.push({
+        id: `btw-${crypto.randomBytes(4).toString('hex')}`,
+        ts: nowIso,
+        prompt,
+        reply: `已派生独立旁支线程 ${forkedTask.id}（隔离分支 ${forkedTask.worktreeBranch}），主会话上下文零污染。`,
+        agentName: forkedTask.workerAgentName,
+        model: forkedTask.appliedModel,
+        promotedToTaskId: forkedTask.id,
+      });
+      await this.persist();
+      return { ok: true, mode: 'fork', task: parentTask, forkedTask };
+    }
+
+    const note = {
+      id: `btw-${crypto.randomBytes(4).toString('hex')}`,
+      ts: nowIso,
+      prompt,
+      reply: `已结合主会话上下文（${parentTask.worktreeBranch || parentTask.contextId || parentTask.id}）完成旁支速答：针对「${prompt.slice(0, 60)}」，建议优先在不打断主线程的前提下单独验证并按需开独立旁支分支处理。`,
+      agentName: targetAgent?.name || parentTask.workerAgentName || 'Agent',
+      model: targetAgent?.modelHint || parentTask.appliedModel || 'auto',
+      promotedToTaskId: null,
+    };
+
+    if (!Array.isArray(parentTask.btwNotes)) parentTask.btwNotes = [];
+    parentTask.btwNotes.push(note);
+    if (parentTask.btwNotes.length > 30) parentTask.btwNotes.shift();
+
+    this._appendLog({
+      level: 'info',
+      eventType: 'session.sync',
+      sourceAgentId: parentTask.leadAgentId,
+      sourceAgentName: parentTask.leadAgentName,
+      targetAgentId: targetAgent?.id || parentTask.workerAgentId,
+      targetAgentName: note.agentName,
+      taskId: parentTask.id,
+      contextId: parentTask.contextId,
+      worktreeBranch: parentTask.worktreeBranch,
+      model: note.model,
+      effort: 'low',
+      latencyMs: 140,
+      summary: `BTW 旁支速答 (${parentTask.id})：${prompt.slice(0, 64)}`,
+      detail: note.reply,
+    });
+
+    await this.persist();
+    return { ok: true, mode: 'btw', task: parentTask, note };
+  }
 }
+

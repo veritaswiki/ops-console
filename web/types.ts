@@ -1,4 +1,10 @@
 export type ViewId =
+  | 'agents'
+  | 'projects'
+  | 'graph'
+  | 'bots'
+  | 'github'
+  | 'agent-settings'
   | 'overview'
   | 'alerts'
   | 'fleet'
@@ -6,7 +12,6 @@ export type ViewId =
   | 'plugins'
   | 'mcp'
   | 'memory'
-  | 'agents'
   | 'network'
   | 'logs'
   | 'ops';
@@ -1201,14 +1206,17 @@ export interface A2ATaskRecord {
 export interface A2ACollaborationLog {
   id: string;
   ts: string;
-  level: 'info' | 'warn' | 'error' | string;
+  level: 'info' | 'warn' | 'error' | 'debug' | string;
   eventType:
     | 'a2a.delegate'
     | 'swarm.fanout'
     | 'dsh.review_vote'
     | 'dsh.gate_verdict'
-    | 'memory.engram_hit'
-    | 'memory.sm_consolidate'
+    | 'superagent.fast_path'
+    | 'superagent.route'
+    | 'context.spill'
+    | 'context.recall'
+    | 'watchdog.check'
     | 'session.sync'
     | 'session.handoff'
     | string;
@@ -1222,43 +1230,73 @@ export interface A2ACollaborationLog {
   model?: string | null;
   effort?: ReasoningEffort | string | null;
   latencyMs?: number | null;
-  engramHitKey?: string | null;
+  spillRefId?: string | null;
   summary: string;
   detail: string;
 }
 
-export interface A2AEngramEntry {
-  id: string;
-  keyPattern: string[];
-  title: string;
-  content: string;
-  category: string;
-  sourceAgentId: string;
-  easeFactor: number;
-  intervalHours: number;
-  repetitions: number;
-  stabilityHours: number;
-  hitCount: number;
-  lastReviewedAt: string;
-  nextReviewAt: string;
-  dshVerified: boolean;
-  retrievabilityPct: number;
-  dueForReview: boolean;
-}
-
-export interface A2ADshTeamRole {
+export interface A2ASuperAgentRole {
   id: string;
   title: string;
   agentId: string;
   weight: number;
 }
 
-export interface A2ADshTeamConfig {
+export interface A2ASuperAgentConfig {
+  routerThinMode: boolean;
+  fastPathEnabled: boolean;
+  subscriptionPassthrough: boolean;
+  inlineBudgetKb: number;
+  watchdogStallSec: number;
+  attentionBudgetLimit: number;
   consensusPolicy: 'weighted' | 'unanimous' | 'lead-override' | string;
   maxReworkRounds: number;
-  engramMemoryRatioPct: number;
-  autoConsolidateOnPass: boolean;
-  roles: A2ADshTeamRole[];
+  roles: A2ASuperAgentRole[];
+}
+
+export interface A2ASuperAgentTicket {
+  id: string;
+  threadKey: string;
+  channel: 'github' | 'ci' | 'feishu' | 'alert' | 'webhook' | string;
+  title: string;
+  status: 'running' | 'review_gate' | 'stalled' | 'completed' | 'needs_attention' | string;
+  pathTaken: 'slow_spawn' | 'fast_passthrough' | string;
+  workerAgentId: string;
+  workerAgentName: string;
+  worktreeBranch: string;
+  subscribed: boolean;
+  inlineBytes: number;
+  spilledCount: number;
+  lastProgressAt: string;
+  watchdogState: 'healthy' | 'stalled' | 'recovered' | string;
+  dshScore?: number | null;
+  updatedAt: string;
+}
+
+export interface A2AContextSpillNode {
+  spillId: string;
+  ticketId: string;
+  threadKey: string;
+  parentRef: string;
+  label: string;
+  state: 'spilled' | 'inline' | string;
+  bytes: number;
+  preview: string;
+  recallCount: number;
+  updatedAt: string;
+}
+
+export interface A2ATriggerEvent {
+  id: string;
+  ts: string;
+  channel: 'github' | 'ci' | 'feishu' | 'alert' | 'webhook' | string;
+  actor: string;
+  threadKey: string;
+  summary: string;
+  decision: 'fast_drop' | 'fast_passthrough' | 'slow_spawn' | string;
+  reason: string;
+  ticketId?: string | null;
+  tokensSaved: number;
 }
 
 export interface A2ASwarmPerAgentStat {
@@ -1281,13 +1319,19 @@ export interface A2ASwarmMetrics {
   taskToAgentThroughputRatio: number;
   parallelSpeedup: number;
   avgDurationMs: number;
-  engramMemoryRatioPct: number;
-  computeRatioPct: number;
-  uCurveEfficiencyPct: number;
-  engramOffloadPct: number;
-  totalEngramHits: number;
-  avgRetentionPct: number;
-  dueReviewCount: number;
+  fastPathOffloadPct: number;
+  fastDropCount: number;
+  fastPassthroughCount: number;
+  slowSpawnCount: number;
+  routerTokensSaved: number;
+  contextSavedKb: number;
+  inlineContextKb: number;
+  spilledNodesCount: number;
+  totalSpillNodes: number;
+  activeTickets: number;
+  stalledTickets: number;
+  needsAttentionCount: number;
+  attentionBudgetLimit: number;
   dshConsensusRate: number;
   perAgentStats: A2ASwarmPerAgentStat[];
 }
@@ -1325,10 +1369,323 @@ export interface A2AStateResponse {
   skillCatalog: A2ASkillCatalogItem[];
   sessions: A2ASessionRecord[];
   tasks: A2ATaskRecord[];
-  engramMemory?: A2AEngramEntry[];
-  dshTeamConfig?: A2ADshTeamConfig;
+  superAgentConfig?: A2ASuperAgentConfig;
+  superAgentTickets?: A2ASuperAgentTicket[];
+  contextSpillNodes?: A2AContextSpillNode[];
+  triggerEvents?: A2ATriggerEvent[];
   swarmMetrics?: A2ASwarmMetrics;
   recentLogsCount?: number;
+}
+
+export interface AiPitfallRecord {
+  id: string;
+  project: string;
+  repo: string;
+  category: string;
+  severity: 'high' | 'medium' | 'low' | string;
+  title: string;
+  pitfall: string;
+  mitigation: string;
+  enforcedBy: string;
+}
+
+export interface AiLayerBoundary {
+  id: string;
+  layer: string;
+  label: string;
+  riskLevel: 'high' | 'medium' | 'low' | string;
+  summary: string;
+  paths: string[];
+  rules: string[];
+}
+
+export interface AiCoupledRule {
+  id: string;
+  label: string;
+  triggers: string[];
+  mustSync: string[];
+  verifyCommand: string;
+}
+
+export interface AiOpsContextResponse {
+  ok?: boolean;
+  schemaVersion: string;
+  generatedAt: string;
+  version: string;
+  mode: {
+    demo: boolean;
+    readOnly: boolean;
+    authEnabled: boolean;
+  };
+  liveSummary: {
+    servicesTotal: number;
+    servicesHealthy: number;
+    criticalServices: string[];
+    fleetNodesTotal: number;
+    fleetNodesOnline: number;
+    activeAlerts: number;
+    mcpServersTotal: number;
+    mcpToolsTotal: number;
+    mcpToolCeiling: number;
+    mcpToolCeilingExceeded: boolean;
+    a2aLeadAgentId: string | null;
+    a2aAgentsTotal: number;
+    a2aActiveTasks: number;
+    stalledTickets: number;
+    activeWorktrees: string[];
+  };
+  boundaries: AiLayerBoundary[];
+  coupledRules: AiCoupledRule[];
+  invariants: string[];
+  pitfalls: AiPitfallRecord[];
+  worktreePolicy: {
+    isolatedBranchRequired: boolean;
+    protectedBranches: string[];
+    ignoredWorktreeDirs: string[];
+    pruneCommand: string;
+  };
+  verificationCommands: string[];
+}
+
+export type AiPreflightVerdict = 'allow' | 'confirm_required' | 'block';
+
+export interface AiPreflightCheck {
+  id: string;
+  status: 'pass' | 'warn' | 'confirm_required' | 'block' | string;
+  title: string;
+  detail: string;
+  pitfallRef?: string;
+}
+
+export interface AiPreflightRequest {
+  actionType: 'code-patch' | 'service-action' | 'config-edit' | 'worktree-dispatch' | 'mcp-sync' | string;
+  target?: string;
+  summary?: string;
+  worktreeBranch?: string;
+  files?: string[] | string;
+  command?: string;
+  mcpToolsCount?: number;
+  dirtyMainCheckout?: boolean;
+  confirmToken?: string;
+  rawConfigJson?: string;
+}
+
+export interface AiPreflightResponse {
+  ok?: boolean;
+  checkedAt: string;
+  actionType: string;
+  target: string | null;
+  verdict: AiPreflightVerdict;
+  blastRadius: 'low' | 'medium' | 'high' | string;
+  safetyScore: number;
+  checks: AiPreflightCheck[];
+  coupledFiles: string[];
+  rollbackPlan: string;
+  recommendedCommands: string[];
+}
+
+export type LinearIssueStatus =
+  | 'triage'
+  | 'backlog'
+  | 'todo'
+  | 'in_progress'
+  | 'in_review'
+  | 'done'
+  | 'canceled';
+
+export type LinearIssuePriority = 'urgent' | 'high' | 'medium' | 'low' | 'none';
+
+export interface LinearGithubLink {
+  repo: string;
+  issueNumber?: number | null;
+  prNumber?: number | null;
+  prState?: 'open' | 'merged' | 'closed' | string | null;
+  branch?: string | null;
+  url?: string | null;
+  syncedAt?: string | null;
+}
+
+export interface LinearProjectItem {
+  id: string;
+  key: string;
+  name: string;
+  summary: string;
+  status: 'planned' | 'in_progress' | 'completed' | 'paused' | string;
+  leadAgentId: string;
+  targetDate: string;
+  githubRepo: string;
+  createdAt?: string;
+  issueCount: number;
+  doneCount: number;
+  inProgressCount: number;
+  progressPct: number;
+}
+
+export interface LinearCycleItem {
+  id: string;
+  number: number;
+  name: string;
+  startsAt: string;
+  endsAt: string;
+  status: 'active' | 'upcoming' | 'completed' | string;
+  issueCount: number;
+  doneCount: number;
+  scopePoints: number;
+  completedPoints: number;
+  activePoints: number;
+  progressPct: number;
+}
+
+export interface LinearIssueItem {
+  id: string;
+  identifier: string;
+  title: string;
+  description: string;
+  status: LinearIssueStatus;
+  priority: LinearIssuePriority;
+  projectId: string;
+  cycleId: string | null;
+  parentId: string | null;
+  blockedBy: string[];
+  assigneeType: 'agent' | 'bot' | 'human' | string;
+  assigneeId: string;
+  assigneeName: string;
+  commanderId: string;
+  labels: string[];
+  estimate: number;
+  worktreeBranch: string | null;
+  linkedTaskId: string | null;
+  github: LinearGithubLink | null;
+  sourceBotId: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface LinearCommanderConfig {
+  leadAgentId: string | null;
+  autoDecompose: boolean;
+  autoAssignWorkers: boolean;
+  autoSyncGithub: boolean;
+  requireDshReview: boolean;
+  worktreePrefix: string;
+}
+
+export interface LinearGithubConfig {
+  enabled: boolean;
+  owner: string;
+  repo: string;
+  defaultBranch: string;
+  autoCreatePr: boolean;
+  syncDirection: 'bidirectional' | 'pull' | 'push' | string;
+  tokenEnvVar: string;
+  hasServerToken: boolean;
+  lastSyncedAt?: string | null;
+  lastSyncMode?: string | null;
+  lastSyncSummary?: string | null;
+}
+
+export interface LinearCommanderLogItem {
+  id: string;
+  ts: string;
+  kind: string;
+  issueId: string | null;
+  identifier: string | null;
+  actor: string;
+  summary: string;
+}
+
+export interface LinearStateResponse {
+  ok?: boolean;
+  commander: LinearCommanderConfig;
+  githubConfig: LinearGithubConfig;
+  summary: {
+    totalProjects: number;
+    totalIssues: number;
+    triageCount: number;
+    inProgressCount: number;
+    doneCount: number;
+    blockedCount: number;
+    githubLinkedCount: number;
+    openPrCount: number;
+    activeCycleName: string;
+    activeCycleProgressPct: number;
+  };
+  projects: LinearProjectItem[];
+  cycles: LinearCycleItem[];
+  issues: LinearIssueItem[];
+  commanderLogs: LinearCommanderLogItem[];
+  availableAgents: Array<{
+    id: string;
+    name: string;
+    role: string;
+    harness: string;
+    status: string;
+    modelHint?: string | null;
+  }>;
+  availableBots: Array<{
+    id: string;
+    name: string;
+    handle: string;
+    channel: string;
+    enabled: boolean;
+    status: string;
+  }>;
+}
+
+export type BotChannel = 'github' | 'feishu' | 'telegram' | 'discord' | 'slack' | 'webhook';
+export type BotRole = 'commander-bridge' | 'triage-intake' | 'pr-reviewer' | 'ops-alerter' | 'custom';
+
+export interface BotItem {
+  id: string;
+  name: string;
+  handle: string;
+  channel: BotChannel | string;
+  role: BotRole | string;
+  description: string;
+  enabled: boolean;
+  status: 'online' | 'standby' | 'degraded' | string;
+  boundAgentId: string;
+  defaultProjectId: string;
+  webhookEnvVar: string;
+  hasServerSecret?: boolean;
+  triggerKeywords: string[];
+  commands: string[];
+  autoCreateIssue: boolean;
+  autoDispatchCommander: boolean;
+  stats: {
+    eventsReceived: number;
+    issuesCreated: number;
+    tasksDispatched: number;
+    lastActiveAt: string | null;
+  };
+  createdAt: string;
+}
+
+export interface BotActivityItem {
+  id: string;
+  ts: string;
+  botId: string;
+  botName: string;
+  channel: string;
+  actor: string;
+  message: string;
+  createdIssueIdentifier: string | null;
+  dispatched: boolean;
+}
+
+export interface BotFleetResponse {
+  ok?: boolean;
+  summary: {
+    total: number;
+    enabled: number;
+    online: number;
+    totalEvents: number;
+    totalIssuesCreated: number;
+    totalTasksDispatched: number;
+    byChannel: Record<string, number>;
+  };
+  bots: BotItem[];
+  activities: BotActivityItem[];
 }
 
 

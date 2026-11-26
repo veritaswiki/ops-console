@@ -157,7 +157,7 @@ export function sanitizeProbePayload(raw, expectedNodeId) {
 
   return {
     schemaVersion: clampNum(raw.schemaVersion, 1, 10, 1),
-    probeVersion: cleanStr(raw.probeVersion || '0.3.0', 24),
+    probeVersion: cleanStr(raw.probeVersion || '0.4.0', 24),
     nodeId,
     sentAt: cleanStr(raw.sentAt || new Date().toISOString(), 40),
     deviceType,
@@ -974,7 +974,7 @@ EOF`;
   -H "Authorization: Bearer \${OPS_PROBE_TOKEN}" \\
   -H "X-Ops-Probe-Id: ${nodeId}" \\
   -H "Content-Type: application/json" \\
-  -d '{"schemaVersion":1,"probeVersion":"0.3.0","nodeId":"${nodeId}","deviceType":"mobile","platform":"android","region":"${safeRegion}","battery":{"percent":85,"charging":false},"network":{"type":"5g"}}'`;
+  -d '{"schemaVersion":1,"probeVersion":"0.4.0","nodeId":"${nodeId}","deviceType":"mobile","platform":"android","region":"${safeRegion}","battery":{"percent":85,"charging":false},"network":{"type":"5g"}}'`;
 
   return {
     linuxSystemd: linuxCmd,

@@ -375,19 +375,33 @@ test('Read-only mode blocks mutating MCP and A2A endpoints', async () => {
     });
     assert.equal(a2aTaskRes.status, 403);
 
-    const engramRes = await fetch(`${ctx.baseUrl}/api/a2a/memory/engrams`, {
-      method: 'POST',
+    const saConfigRes = await fetch(`${ctx.baseUrl}/api/a2a/superagent/config`, {
+      method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title: 'Blocked', content: 'Blocked' }),
+      body: JSON.stringify({ inlineBudgetKb: 24 }),
     });
-    assert.equal(engramRes.status, 403);
+    assert.equal(saConfigRes.status, 403);
 
-    const consolidateRes = await fetch(`${ctx.baseUrl}/api/a2a/memory/consolidate`, {
+    const saTriggerRes = await fetch(`${ctx.baseUrl}/api/a2a/superagent/triggers`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ engramMemoryRatioPct: 25 }),
+      body: JSON.stringify({ channel: 'github', actor: 'maintainer', summary: 'Blocked trigger' }),
     });
-    assert.equal(consolidateRes.status, 403);
+    assert.equal(saTriggerRes.status, 403);
+
+    const saSpillRes = await fetch(`${ctx.baseUrl}/api/a2a/superagent/context/spill-901a/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(saSpillRes.status, 403);
+
+    const saWatchdogRes = await fetch(`${ctx.baseUrl}/api/a2a/superagent/watchdog/sweep`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(saWatchdogRes.status, 403);
 
     const dshTeamRes = await fetch(`${ctx.baseUrl}/api/a2a/dsh-team/run`, {
       method: 'POST',
@@ -400,19 +414,24 @@ test('Read-only mode blocks mutating MCP and A2A endpoints', async () => {
   }
 });
 
-test('Wave 6: Agent Logs (REST + SSE), Swarm metrics, DeepSeek Engram x SuperMemo SM-2, and DSH Team Collaboration', async () => {
+test('Wave 6: Agent Logs (REST + SSE), SuperAgent Fast/Slow Path, Inline/Spill Chain of Recall, Watchdog, and DSH Team Collaboration', async () => {
   const ctx = await makeTestServer({ demo: true });
   try {
-    // 1. Swarm coordination metrics
+    // 1. Swarm & SuperAgent coordination metrics
     const metricsRes = await fetch(`${ctx.baseUrl}/api/a2a/swarm/metrics`);
     assert.equal(metricsRes.status, 200);
     const metricsData = await metricsRes.json();
     assert.equal(metricsData.ok, true);
     assert.ok(metricsData.swarmMetrics.taskToAgentThroughputRatio > 0);
     assert.ok(metricsData.swarmMetrics.parallelSpeedup >= 1);
-    assert.equal(metricsData.swarmMetrics.engramMemoryRatioPct, 25);
-    assert.equal(metricsData.swarmMetrics.computeRatioPct, 75);
-    assert.ok(metricsData.engramMemory.length >= 5);
+    assert.ok(metricsData.swarmMetrics.fastPathOffloadPct > 0);
+    assert.ok(metricsData.swarmMetrics.routerTokensSaved > 0);
+    assert.ok(metricsData.swarmMetrics.contextSavedKb > 0);
+    assert.equal(metricsData.swarmMetrics.stalledTickets, 1);
+    assert.equal(metricsData.superAgentConfig.routerThinMode, true);
+    assert.ok(metricsData.superAgentTickets.length >= 3);
+    assert.ok(metricsData.contextSpillNodes.length >= 4);
+    assert.ok(metricsData.triggerEvents.length >= 5);
 
     // 2. Agent-scoped collaboration logs
     const logsRes = await fetch(`${ctx.baseUrl}/api/a2a/logs?agentId=a2a-mac-pi`);
@@ -424,60 +443,105 @@ test('Wave 6: Agent Logs (REST + SSE), Swarm metrics, DeepSeek Engram x SuperMem
       assert.ok(item.sourceAgentId === 'a2a-mac-pi' || item.targetAgentId === 'a2a-mac-pi');
     }
 
-    // 3. Upsert custom Engram memory & verify SuperMemo SM-2 review math
-    const createEngramRes = await fetch(`${ctx.baseUrl}/api/a2a/memory/engrams`, {
-      method: 'POST',
+    // 3. Update SuperAgent config
+    const cfgRes = await fetch(`${ctx.baseUrl}/api/a2a/superagent/config`, {
+      method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        title: '高并发队列必须启用幂等去重键',
-        content: '所有 Swarm 扇出子任务需携带幂等 contextId，避免重试产生重复写入。',
-        keyPattern: ['幂等', '队列', 'swarm'],
-        category: 'swarm-protocol',
-      }),
-    });
-    assert.equal(createEngramRes.status, 201);
-    const createdEngram = await createEngramRes.json();
-    const engramId = createdEngram.engram.id;
-    assert.equal(createdEngram.engram.retrievabilityPct, 100);
-
-    const reinforceRes = await fetch(`${ctx.baseUrl}/api/a2a/memory/engrams/${encodeURIComponent(engramId)}/review`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ quality: 5 }),
-    });
-    assert.equal(reinforceRes.status, 200);
-    const reinforced = await reinforceRes.json();
-    assert.ok(reinforced.engram.intervalHours > createdEngram.engram.intervalHours);
-    assert.ok(reinforced.engram.easeFactor >= 2.5);
-
-    const forgetRes = await fetch(`${ctx.baseUrl}/api/a2a/memory/engrams/${encodeURIComponent(engramId)}/review`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ quality: 1 }),
-    });
-    assert.equal(forgetRes.status, 200);
-    const forgotten = await forgetRes.json();
-    assert.equal(forgotten.engram.repetitions, 0);
-    assert.equal(forgotten.engram.intervalHours, 6);
-
-    // 4. Consolidate due Engram entries and tune U-shaped Memory/Compute split
-    const consolidateRes = await fetch(`${ctx.baseUrl}/api/a2a/memory/consolidate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        engramMemoryRatioPct: 25,
+        inlineBudgetKb: 24,
+        watchdogStallSec: 120,
+        attentionBudgetLimit: 6,
         consensusPolicy: 'unanimous',
         maxReworkRounds: 3,
-        runSweep: true,
       }),
     });
-    assert.equal(consolidateRes.status, 200);
-    const consolidated = await consolidateRes.json();
-    assert.equal(consolidated.dshTeamConfig.consensusPolicy, 'unanimous');
-    assert.equal(consolidated.dshTeamConfig.maxReworkRounds, 3);
-    assert.ok(consolidated.reinforcedCount >= 1);
+    assert.equal(cfgRes.status, 200);
+    const cfgData = await cfgRes.json();
+    assert.equal(cfgData.superAgentConfig.inlineBudgetKb, 24);
+    assert.equal(cfgData.superAgentConfig.watchdogStallSec, 120);
+    assert.equal(cfgData.superAgentConfig.consensusPolicy, 'unanimous');
+    assert.equal(cfgData.superAgentConfig.maxReworkRounds, 3);
 
-    // 5. Open live SSE /api/a2a/logs/stream & trigger DSH Team Collaboration
+    // 4. Test all 3 Fast/Slow Path trigger decisions: fast_drop, fast_passthrough, slow_spawn
+    const dropRes = await fetch(`${ctx.baseUrl}/api/a2a/superagent/triggers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channel: 'github',
+        actor: 'dsh-bot',
+        threadKey: 'gh:ops-console#pr-142',
+        summary: 'Self-origin bot label update',
+      }),
+    });
+    assert.equal(dropRes.status, 201);
+    const dropData = await dropRes.json();
+    assert.equal(dropData.trigger.decision, 'fast_drop');
+    assert.ok(dropData.trigger.tokensSaved > 0);
+    assert.equal(dropData.ticket, null);
+
+    const passRes = await fetch(`${ctx.baseUrl}/api/a2a/superagent/triggers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channel: 'github',
+        actor: 'reviewer',
+        threadKey: 'gh:ops-console#pr-142',
+        summary: 'Follow-up comment on subscribed PR thread',
+      }),
+    });
+    assert.equal(passRes.status, 201);
+    const passData = await passRes.json();
+    assert.equal(passData.trigger.decision, 'fast_passthrough');
+    assert.equal(passData.ticket.id, 'tkt-sa-401');
+
+    const spawnRes = await fetch(`${ctx.baseUrl}/api/a2a/superagent/triggers`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        channel: 'feishu',
+        actor: 'ops-lead',
+        threadKey: 'feishu:ops-console#inc-301',
+        summary: 'Investigate edge TLS handshake latency spike',
+      }),
+    });
+    assert.equal(spawnRes.status, 201);
+    const spawnData = await spawnRes.json();
+    assert.equal(spawnData.trigger.decision, 'slow_spawn');
+    assert.ok(spawnData.ticket?.id?.startsWith('tkt-sa-'));
+
+    // 5. Toggle Inline/Spill Chain of Recall node (spilled -> inline -> spilled)
+    const recallRes = await fetch(`${ctx.baseUrl}/api/a2a/superagent/context/spill-901a/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(recallRes.status, 200);
+    const recalled = await recallRes.json();
+    assert.equal(recalled.node.state, 'inline');
+    assert.equal(recalled.node.recallCount, 3);
+
+    const reSpillRes = await fetch(`${ctx.baseUrl}/api/a2a/superagent/context/spill-901a/toggle`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state: 'spilled' }),
+    });
+    assert.equal(reSpillRes.status, 200);
+    const reSpilled = await reSpillRes.json();
+    assert.equal(reSpilled.node.state, 'spilled');
+
+    // 6. Run external Watchdog sweep to recover stalled ticket tkt-sa-403
+    const watchdogRes = await fetch(`${ctx.baseUrl}/api/a2a/superagent/watchdog/sweep`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    assert.equal(watchdogRes.status, 200);
+    const watchdogData = await watchdogRes.json();
+    assert.equal(watchdogData.ok, true);
+    assert.ok(watchdogData.recoveredCount >= 1);
+    assert.equal(watchdogData.swarmMetrics.stalledTickets, 0);
+
+    // 7. Open live SSE /api/a2a/logs/stream & trigger DSH Team Collaboration
     const sseController = new AbortController();
     const sseRes = await fetch(`${ctx.baseUrl}/api/a2a/logs/stream?agentId=a2a-hub-codex-lead`, {
       signal: sseController.signal,
@@ -495,20 +559,22 @@ test('Wave 6: Agent Logs (REST + SSE), Swarm metrics, DeepSeek Engram x SuperMem
     sseBuffer += decoder.decode(firstChunk.value || new Uint8Array(), { stream: true });
     assert.ok(sseBuffer.includes('event: init'));
 
-    // Trigger DSH Team Collaboration with Engram keyword hit ('auth', 'swarm')
+    // Trigger DSH Team Collaboration with auto-spill
     const teamRunRes = await fetch(`${ctx.baseUrl}/api/a2a/dsh-team/run`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        prompt: '使用 swarm 蜂群重构 auth 认证与 api 路由并经过 DSH 团队评审',
-        useEngramLookup: true,
+        prompt: '使用隔离 Worktree 蜂群重构 auth 认证与 api 路由并经过 DSH 团队评审',
+        channel: 'github',
         consensusPolicy: 'weighted',
+        enableAutoSpill: true,
       }),
     });
     assert.equal(teamRunRes.status, 201);
     const teamRun = await teamRunRes.json();
     assert.equal(teamRun.ok, true);
-    assert.ok(teamRun.matchedEngrams.length >= 1);
+    assert.ok(teamRun.ticket?.id?.startsWith('tkt-sa-'));
+    assert.ok(teamRun.spilledNode?.spillId?.startsWith('spill-'));
     assert.ok(teamRun.task.dshReview);
     assert.ok(teamRun.task.subtasks.length >= 2);
 

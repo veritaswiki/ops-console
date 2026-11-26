@@ -19,7 +19,7 @@ SUDOERS_CONFIG=""
 
 usage() {
   cat <<'EOF'
-Ops Console Installer (v0.3.0)
+Ops Console Installer (v0.4.0)
 
 Usage:
   ./deploy/install.sh [options]

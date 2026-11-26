@@ -1,19 +1,32 @@
 import type {
   A2AAgentPeer,
   A2ACollaborationLog,
-  A2ADshTeamConfig,
-  A2AEngramEntry,
+  A2AContextSpillNode,
   A2AStateResponse,
+  A2ASuperAgentConfig,
+  A2ASuperAgentTicket,
   A2ASwarmMetrics,
   A2ATaskRecord,
+  A2ATriggerEvent,
+  AiOpsContextResponse,
+  AiPreflightRequest,
+  AiPreflightResponse,
   AlertEvent,
   AlertRule,
   AlertsStateResponse,
   AuditEntry,
+  BotActivityItem,
+  BotFleetResponse,
+  BotItem,
   ConfigStudioResponse,
   FleetMcpServer,
   GatewayTelemetryResponse,
   IncidentItem,
+  LinearCommanderConfig,
+  LinearGithubConfig,
+  LinearIssueItem,
+  LinearProjectItem,
+  LinearStateResponse,
   LogsResponse,
   McpFleetResponse,
   McpTestResult,
@@ -776,63 +789,81 @@ export const fetchA2ASwarmMetrics = (signal?: AbortSignal) =>
   apiRequest<{
     ok?: boolean;
     swarmMetrics: A2ASwarmMetrics;
-    dshTeamConfig: A2ADshTeamConfig;
-    engramMemory: A2AEngramEntry[];
+    superAgentConfig: A2ASuperAgentConfig;
+    superAgentTickets: A2ASuperAgentTicket[];
+    contextSpillNodes: A2AContextSpillNode[];
+    triggerEvents: A2ATriggerEvent[];
   }>('/api/a2a/swarm/metrics', { cacheTtlMs: 2000, signal });
 
-export const upsertA2AEngram = (payload: {
-  id?: string;
-  title: string;
-  content: string;
-  keyPattern?: string[] | string;
-  category?: string;
-  sourceAgentId?: string;
-  dshVerified?: boolean;
+export const updateSuperAgentConfig = (payload: Partial<Omit<A2ASuperAgentConfig, 'roles'>>) =>
+  apiRequest<{
+    ok?: boolean;
+    superAgentConfig: A2ASuperAgentConfig;
+    swarmMetrics: A2ASwarmMetrics;
+  }>('/api/a2a/superagent/config', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  });
+
+export const ingestSuperAgentTrigger = (payload: {
+  channel?: string;
+  actor?: string;
+  threadKey?: string;
+  summary: string;
+  isSelfOrigin?: boolean;
+  isNoise?: boolean;
+  targetAgentId?: string;
 }) =>
-  apiRequest<{ ok?: boolean; engram: A2AEngramEntry }>('/api/a2a/memory/engrams', {
+  apiRequest<{
+    ok?: boolean;
+    trigger: A2ATriggerEvent;
+    ticket: A2ASuperAgentTicket | null;
+    swarmMetrics: A2ASwarmMetrics;
+  }>('/api/a2a/superagent/triggers', {
     method: 'POST',
     body: JSON.stringify(payload),
   });
 
-export const reviewA2AEngram = (engramId: string, quality: number) =>
-  apiRequest<{ ok?: boolean; engram: A2AEngramEntry }>(
-    `/api/a2a/memory/engrams/${encodeURIComponent(engramId)}/review`,
-    {
-      method: 'POST',
-      body: JSON.stringify({ quality }),
-    },
-  );
-
-export const consolidateA2AMemory = (payload: {
-  engramMemoryRatioPct?: number;
-  consensusPolicy?: string;
-  maxReworkRounds?: number;
-  autoConsolidateOnPass?: boolean;
-  runSweep?: boolean;
-}) =>
+export const toggleSuperAgentContextSpill = (
+  spillId: string,
+  state?: 'inline' | 'spilled' | '',
+) =>
   apiRequest<{
     ok?: boolean;
-    reinforcedCount: number;
-    dshTeamConfig: A2ADshTeamConfig;
-    engramMemory: A2AEngramEntry[];
+    node: A2AContextSpillNode;
     swarmMetrics: A2ASwarmMetrics;
-  }>('/api/a2a/memory/consolidate', {
+  }>(`/api/a2a/superagent/context/${encodeURIComponent(spillId)}/toggle`, {
     method: 'POST',
-    body: JSON.stringify(payload),
+    body: JSON.stringify(state ? { state } : {}),
+  });
+
+export const runSuperAgentWatchdogSweep = () =>
+  apiRequest<{
+    ok?: boolean;
+    checkedCount: number;
+    recoveredCount: number;
+    recoveredTickets: A2ASuperAgentTicket[];
+    superAgentTickets: A2ASuperAgentTicket[];
+    swarmMetrics: A2ASwarmMetrics;
+  }>('/api/a2a/superagent/watchdog/sweep', {
+    method: 'POST',
+    body: JSON.stringify({}),
   });
 
 export const runDshTeamCollaboration = (payload: {
   prompt: string;
-  useEngramLookup?: boolean;
+  channel?: string;
   consensusPolicy?: string;
+  enableAutoSpill?: boolean;
   sessionId?: string;
 }) =>
   apiRequest<{
     ok?: boolean;
     task: A2ATaskRecord;
+    ticket: A2ASuperAgentTicket;
     policy: string;
     approved: boolean;
-    matchedEngrams: A2AEngramEntry[];
+    spilledNode: A2AContextSpillNode | null;
     swarmMetrics: A2ASwarmMetrics;
   }>('/api/a2a/dsh-team/run', {
     method: 'POST',
@@ -889,6 +920,190 @@ export function openA2ALogStream(
     es.close();
   };
 }
+
+export const fetchAiOpsContext = (signal?: AbortSignal) =>
+  apiRequest<AiOpsContextResponse>('/api/ai/context', { cacheTtlMs: 4000, signal });
+
+export const runAiPreflight = (payload: AiPreflightRequest) =>
+  apiRequest<AiPreflightResponse>('/api/ai/preflight', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+// ─── Linear AI Project Management & Commander-in-Chief ───────────────────────
+export const fetchLinearState = (signal?: AbortSignal) =>
+  apiRequest<LinearStateResponse>('/api/linear/state', { cacheTtlMs: 2500, signal });
+
+export const updateLinearCommander = (patch: Partial<LinearCommanderConfig>) =>
+  apiRequest<{ ok?: boolean; commander: LinearCommanderConfig }>('/api/linear/commander', {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  });
+
+export const createLinearProject = (payload: {
+  name: string;
+  key?: string;
+  summary?: string;
+  leadAgentId?: string;
+  githubRepo?: string;
+  targetDate?: string;
+}) =>
+  apiRequest<{ ok?: boolean; project: LinearProjectItem }>('/api/linear/projects', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const createLinearIssue = (payload: {
+  title: string;
+  description?: string;
+  status?: string;
+  priority?: string;
+  projectId?: string;
+  cycleId?: string;
+  parentId?: string | null;
+  blockedBy?: string[];
+  assigneeType?: string;
+  assigneeId?: string;
+  assigneeName?: string;
+  labels?: string[] | string;
+  estimate?: number;
+}) =>
+  apiRequest<{ ok?: boolean; issue: LinearIssueItem }>('/api/linear/issues', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const updateLinearIssue = (
+  issueId: string,
+  patch: Partial<{
+    title: string;
+    description: string;
+    status: string;
+    priority: string;
+    projectId: string;
+    cycleId: string | null;
+    assigneeType: string;
+    assigneeId: string;
+    assigneeName: string;
+    estimate: number;
+    worktreeBranch: string | null;
+    blockedBy: string[];
+  }>,
+) =>
+  apiRequest<{ ok?: boolean; issue: LinearIssueItem }>(
+    `/api/linear/issues/${encodeURIComponent(issueId)}`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify(patch),
+    },
+  );
+
+export const deleteLinearIssue = (issueId: string) =>
+  apiRequest<{ ok?: boolean; id: string }>(`/api/linear/issues/${encodeURIComponent(issueId)}`, {
+    method: 'DELETE',
+  });
+
+export const dispatchLinearCommander = (issueId: string) =>
+  apiRequest<{
+    ok?: boolean;
+    issue: LinearIssueItem;
+    createdSubIssues: LinearIssueItem[];
+    dispatchedTask: A2ATaskRecord | null;
+    commander: { id: string; name: string };
+  }>(`/api/linear/issues/${encodeURIComponent(issueId)}/dispatch`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+
+export const updateLinearGithubConfig = (patch: Partial<LinearGithubConfig>) =>
+  apiRequest<{ ok?: boolean; githubConfig: LinearGithubConfig }>('/api/linear/github/config', {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  });
+
+export const syncLinearGithub = (direction?: string) =>
+  apiRequest<{
+    ok?: boolean;
+    mode: string;
+    repo: string;
+    importedCount: number;
+    updatedCount: number;
+    syncedAt: string;
+    summary: string;
+    githubConfig: LinearGithubConfig;
+  }>('/api/linear/github/sync', {
+    method: 'POST',
+    body: JSON.stringify(direction ? { direction } : {}),
+  });
+
+// ─── Bot Fleet & Multi-Channel Automation ────────────────────────────────────
+export const fetchBots = (signal?: AbortSignal) =>
+  apiRequest<BotFleetResponse>('/api/bots', { cacheTtlMs: 2500, signal });
+
+export const createBot = (payload: {
+  name: string;
+  handle?: string;
+  channel: string;
+  role: string;
+  description?: string;
+  boundAgentId?: string;
+  defaultProjectId?: string;
+  webhookEnvVar?: string;
+  triggerKeywords?: string[] | string;
+  commands?: string[] | string;
+  autoCreateIssue?: boolean;
+  autoDispatchCommander?: boolean;
+}) =>
+  apiRequest<{ ok?: boolean; bot: BotItem }>('/api/bots', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const updateBot = (
+  botId: string,
+  patch: Partial<{
+    name: string;
+    enabled: boolean;
+    boundAgentId: string;
+    defaultProjectId: string;
+    autoCreateIssue: boolean;
+    autoDispatchCommander: boolean;
+    description: string;
+  }>,
+) =>
+  apiRequest<{ ok?: boolean; bot: BotItem }>(`/api/bots/${encodeURIComponent(botId)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+
+export const deleteBot = (botId: string) =>
+  apiRequest<{ ok?: boolean; id: string }>(`/api/bots/${encodeURIComponent(botId)}`, {
+    method: 'DELETE',
+  });
+
+export const triggerBotEvent = (
+  botId: string,
+  payload: {
+    title?: string;
+    message: string;
+    priority?: string;
+    dispatchCommander?: boolean;
+  },
+) =>
+  apiRequest<{
+    ok?: boolean;
+    bot: BotItem;
+    activity: BotActivityItem;
+    createdIssue: LinearIssueItem | null;
+    dispatchResult: {
+      ok?: boolean;
+      issue: LinearIssueItem;
+      createdSubIssues: LinearIssueItem[];
+    } | null;
+  }>(`/api/bots/${encodeURIComponent(botId)}/trigger`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 
 export const logoutSession = () =>
   apiRequest('/api/auth/logout', { method: 'POST', body: JSON.stringify({}) });
