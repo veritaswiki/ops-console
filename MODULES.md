@@ -22,7 +22,7 @@
 | **Harness** | `agents` | Agent | `G G` | **Claude Code / Codex / T3 Code** | 对话流 + 四列拖拽生命周期看板（Pending/Working/Done/Failed）、14 条 `/` 命令与 `@agent` 路由、折叠执行轨迹、多机 Google A2A v0.3 委派与侧栏任务检索 | **Wave 11 全面升级**：对话流 + 拖拽看板 + A2A v0.3 |
 | **Harness** | `projects` | 任务看板 | `G J` | **Linear** | 还原 Linear 4 列看板 + 分组列表视角，单行顶部工具栏，极简无噪卡片，点击任务右侧滑出 Linear 属性详情抽屉进行状态/优先级/Agent 改派与总指挥派发 | **Wave 10 还原完成**：纯粹 Linear 看板 + 列表 + 右侧详情抽屉 |
 | **Harness** | `graph` | 分配图谱 | `G D` | **n8n Workflow Canvas** | 全画布点阵工作流编排器：圆角方形图标节点 + 左右圆形连线端口 + 角标执行状态 + 平滑贝塞尔连线 + 底部悬浮缩放条 + 点击节点按需滑出右侧参数抽屉 | **Wave 10 还原完成**：n8n 风格全画布分配工作流 |
-| **Harness** | `bots` | Bot | `G B` | **Slack / 飞书 / Telegram Bot** | 独立自动化 Bot 管理视图：创建、启停、一键测试触发 Webhook 建单与自动派发 | **Wave 10 独立解耦**：与 GitHub 彻底拆分 |
+| **Harness** | `bots` | Bot | `G B` | **GitHub / Slack / Telegram Bot** | 独立自动化 Bot 管理视图：创建、启停、一键测试触发 Webhook 建单与自动派发 | **Wave 10 独立解耦**：与 GitHub 彻底拆分 |
 | **Harness** | `github` | GitHub | `G H` | **Orca / T3 Code GitHub** | 聚焦当前仓库的 PR / Issue / Actions CI / 本地分支与 Worktree 一体化视图，支持从任意 PR、Issue 或失败 CI 一键派发 Agent 修复/评审 | **Wave 11 Orca/T3 重构**：仓内 PR/Issue/CI/Worktree 联动 |
 | **底部入口** | `agent-settings` | 设置 | `G E` | **Linear / Codex Settings** | 两栏式清爽设置中心（常规与外观 / 多机 Agent 与 A2A v0.3 互联 / 编排与拓扑 / 蜂群护栏与日志 / 网关与进程），附带 Tailscale/Cloudflare/LAN 一键接入脚本 | **Wave 11 两栏重构**：侧栏底部收纳 + 多机 A2A 互联 |
 | **监控与观测** | `overview` | 系统总览 | `G O` | **Grafana / Datadog / Netdata** | 全局状态一目了然（KPI 比例条 + 聚合趋势 + 依赖拓扑）、工作台面板自定义持久化 | **Wave 2 已迁移** |

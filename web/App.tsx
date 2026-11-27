@@ -190,6 +190,8 @@ export function App() {
   const [recentAgentTasks, setRecentAgentTasks] = React.useState<A2ATaskRecord[]>([]);
   const [activeAgentTaskId, setActiveAgentTaskId] = React.useState<string | null>(null);
   const [agentSearchQuery, setAgentSearchQuery] = React.useState<string>('');
+  const [agentSearchOpen, setAgentSearchOpen] = React.useState<boolean>(false);
+  const sidebarAgentSearchRef = React.useRef<HTMLInputElement>(null);
 
   const [pollMs, setPollMs] = React.useState<number>(10000);
   const [loading, setLoading] = React.useState<boolean>(true);
@@ -746,51 +748,100 @@ export function App() {
             )}
           </button>
           {isAgentHome && (
-            <button
-              type="button"
-              onClick={() => handleSelectView('agents')}
-              title="新建 Agent 对话"
-              aria-label="新建 Agent 对话"
-              data-testid="sidebar-new-agent-btn"
-              className={cn(
-                'h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-lg text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] transition-colors cursor-pointer',
-                FOCUS_RING,
-              )}
-            >
-              <Plus className="size-3.5" strokeWidth={1.75} />
-            </button>
+            <div className="flex items-center gap-0.5 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  setAgentSearchOpen((prev) => {
+                    const next = !prev;
+                    if (next) {
+                      window.requestAnimationFrame(() => sidebarAgentSearchRef.current?.focus());
+                    }
+                    return next;
+                  });
+                }}
+                title={agentSearchOpen ? '收起任务搜索' : '搜索 Agent 任务'}
+                aria-label={agentSearchOpen ? '收起任务搜索' : '搜索 Agent 任务'}
+                aria-expanded={agentSearchOpen}
+                data-testid="sidebar-agent-search-toggle"
+                className={cn(
+                  'relative h-8 w-7 shrink-0 inline-flex items-center justify-center rounded-lg transition-colors cursor-pointer',
+                  agentSearchOpen || agentSearchQuery.trim().length > 0
+                    ? 'bg-[var(--surface-active)] text-[var(--accent)]'
+                    : 'text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
+                  FOCUS_RING,
+                )}
+              >
+                <Search className="size-3.5" strokeWidth={1.75} />
+                {!agentSearchOpen && agentSearchQuery.trim().length > 0 && (
+                  <span
+                    className="absolute top-1.5 right-1 h-1.5 w-1.5 rounded-full bg-[var(--accent)]"
+                    aria-hidden="true"
+                  />
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={() => handleSelectView('agents')}
+                title="新建 Agent 对话"
+                aria-label="新建 Agent 对话"
+                data-testid="sidebar-new-agent-btn"
+                className={cn(
+                  'h-8 w-7 shrink-0 inline-flex items-center justify-center rounded-lg text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] transition-colors cursor-pointer',
+                  FOCUS_RING,
+                )}
+              >
+                <Plus className="size-3.5" strokeWidth={1.75} />
+              </button>
+            </div>
           )}
         </div>
 
-        {/* Agent task search + recent / filtered threads directly under Agent */}
-        {isAgentHome && (
+        {/* Agent task search (hidden behind icon toggle) + recent / filtered threads directly under Agent */}
+        {isAgentHome && (agentSearchOpen || agentSearchQuery.trim().length > 0 || filteredSidebarAgentTasks.length > 0) && (
           <div
             className="ml-3.5 pl-2.5 border-l border-[var(--border-subtle)] py-1 space-y-1.5"
             data-testid="sidebar-agent-threads"
           >
-            <div className="relative">
-              <Search
-                className="size-3.5 text-[var(--ink-subtle)] absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none"
-                strokeWidth={1.75}
-              />
-              <input
-                type="text"
-                value={agentSearchQuery}
-                onChange={(e) => setAgentSearchQuery(e.target.value)}
-                placeholder="搜索任务 ID / 提示词..."
-                aria-label="搜索 Agent 任务 ID 或提示词"
-                data-testid="sidebar-agent-search"
-                className={cn(
-                  'h-7 w-full rounded-md border border-[var(--border)] bg-[var(--bg)] pl-7 pr-6 text-[16px] sm:text-[11.5px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)]',
-                  'transition-[border-color,background-color] duration-150 ease-out hover:border-[var(--border-strong)] focus:border-[var(--accent)]',
-                  FOCUS_RING,
-                )}
-              />
-              {agentSearchQuery.length > 0 && (
+            {(agentSearchOpen || agentSearchQuery.trim().length > 0) && (
+              <div className="relative">
+                <Search
+                  className="size-3.5 text-[var(--ink-subtle)] absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none"
+                  strokeWidth={1.75}
+                />
+                <input
+                  ref={sidebarAgentSearchRef}
+                  type="text"
+                  value={agentSearchQuery}
+                  onChange={(e) => setAgentSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      if (agentSearchQuery.length > 0) {
+                        setAgentSearchQuery('');
+                      } else {
+                        setAgentSearchOpen(false);
+                      }
+                    }
+                  }}
+                  placeholder="搜索任务 ID / 提示词..."
+                  aria-label="搜索 Agent 任务 ID 或提示词"
+                  data-testid="sidebar-agent-search"
+                  className={cn(
+                    'h-7 w-full rounded-md border border-[var(--border)] bg-[var(--bg)] pl-7 pr-6 text-[16px] sm:text-[11.5px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)]',
+                    'transition-[border-color,background-color] duration-150 ease-out hover:border-[var(--border-strong)] focus:border-[var(--accent)]',
+                    FOCUS_RING,
+                  )}
+                />
                 <button
                   type="button"
-                  onClick={() => setAgentSearchQuery('')}
-                  aria-label="清空任务搜索"
+                  onClick={() => {
+                    if (agentSearchQuery.length > 0) {
+                      setAgentSearchQuery('');
+                    } else {
+                      setAgentSearchOpen(false);
+                    }
+                  }}
+                  aria-label={agentSearchQuery.length > 0 ? '清空任务搜索' : '收起任务搜索'}
                   data-testid="sidebar-agent-search-clear"
                   className={cn(
                     'h-5 w-5 absolute right-1 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer',
@@ -799,8 +850,8 @@ export function App() {
                 >
                   <X className="size-3" strokeWidth={1.75} />
                 </button>
-              )}
-            </div>
+              </div>
+            )}
 
             {filteredSidebarAgentTasks.length > 0 ? (
               <div className="space-y-0.5 max-h-[264px] overflow-y-auto pr-0.5">

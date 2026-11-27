@@ -53,7 +53,7 @@ const DEFAULT_RULES = [
     forMinutes: 2,
     cooldownMinutes: 10,
     severity: 'critical',
-    channel: 'feishu',
+    channel: 'webhook',
     channelTarget: '',
     enabled: true,
     builtin: true,
