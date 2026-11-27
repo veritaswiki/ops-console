@@ -1,7 +1,9 @@
 import type {
   A2AAgentPeer,
   A2ACollaborationLog,
+  A2AConnectProfilesResponse,
   A2AContextSpillNode,
+  A2APingResponse,
   A2AStateResponse,
   A2ASuperAgentConfig,
   A2ASuperAgentTicket,
@@ -21,6 +23,7 @@ import type {
   ConfigStudioResponse,
   FleetMcpServer,
   GatewayTelemetryResponse,
+  GithubOverviewResponse,
   IncidentItem,
   LinearCommanderConfig,
   LinearGithubConfig,
@@ -753,8 +756,66 @@ export const dispatchA2ATask = (payload: {
   sessionId?: string;
   requiredSkill?: string;
   mcpIds?: string[];
+  contextId?: string;
+  parentTaskId?: string;
+  worktreeBranch?: string;
+  slashCommand?: string;
 }) =>
   apiRequest<{ ok?: boolean; task: A2ATaskRecord }>('/api/a2a/tasks', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const updateA2ATaskState = (
+  taskId: string,
+  state: 'submitted' | 'working' | 'completed' | 'failed' | 'canceled',
+  reason?: string,
+) =>
+  apiRequest<{ ok?: boolean; task: A2ATaskRecord }>(
+    `/api/a2a/tasks/${encodeURIComponent(taskId)}/state`,
+    {
+      method: 'PATCH',
+      body: JSON.stringify({ state, ...(reason ? { reason } : {}) }),
+    },
+  );
+
+export const pingA2AAgent = (agentId: string) =>
+  apiRequest<A2APingResponse>(
+    `/api/a2a/agents/${encodeURIComponent(agentId)}/ping`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+  );
+
+export const fetchA2AConnectProfiles = (
+  params: { nodeId?: string; deviceType?: string; tailscaleHost?: string } = {},
+  signal?: AbortSignal,
+) => {
+  const sp = new URLSearchParams();
+  if (params.nodeId) sp.set('nodeId', params.nodeId);
+  if (params.deviceType) sp.set('deviceType', params.deviceType);
+  if (params.tailscaleHost) sp.set('tailscaleHost', params.tailscaleHost);
+  const qs = sp.toString();
+  return apiRequest<A2AConnectProfilesResponse>(
+    `/api/a2a/connect-profiles${qs ? `?${qs}` : ''}`,
+    { cacheTtlMs: 5000, signal },
+  );
+};
+
+export const fetchGithubOverview = (signal?: AbortSignal) =>
+  apiRequest<GithubOverviewResponse>('/api/github/overview', { cacheTtlMs: 8000, signal });
+
+export const dispatchGithubAgent = (payload: {
+  kind: 'pr' | 'issue' | 'ci';
+  number?: number;
+  title: string;
+  branch?: string;
+  url?: string;
+  action?: 'review' | 'fix-ci' | 'implement' | 'triage';
+  targetAgentId?: string;
+}) =>
+  apiRequest<{ ok?: boolean; task: A2ATaskRecord }>('/api/github/dispatch-agent', {
     method: 'POST',
     body: JSON.stringify(payload),
   });

@@ -1,10 +1,12 @@
 import React from 'react';
 import {
+  AppWindow,
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
   ChevronDown,
   ChevronRight,
+  ExternalLink,
   FileText,
   RotateCw,
   Search,
@@ -28,6 +30,7 @@ import {
   StatusIndicator,
   type ConfirmModalState,
 } from '../components/ui';
+import { ServiceAdminModal } from '../components/ServiceAdminModal';
 import { ModuleFrame } from '../modules/ModuleFrame';
 
 const LAYER_FILTERS = [
@@ -56,6 +59,17 @@ const STATUS_SEVERITY_RANK: Record<string, number> = {
   ok: 3,
 };
 
+function hasServiceAdminUi(svc: ServiceItem): boolean {
+  return Boolean(svc.hasAdminUi || svc.embedUrl || svc.adminUrl || svc.tailnetUrl);
+}
+
+function safeExternalUrl(raw?: string | null): string | null {
+  if (!raw) return null;
+  const trimmed = String(raw).trim();
+  if (/^https?:\/\/[^\s]+$/i.test(trimmed)) return trimmed;
+  return null;
+}
+
 export function ServicesView({
   snapshot,
   readOnly,
@@ -77,8 +91,13 @@ export function ServicesView({
   const [sortField, setSortField] = React.useState<SortField>('status');
   const [sortDir, setSortDir] = React.useState<SortDir>('asc');
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
+  const [adminService, setAdminService] = React.useState<ServiceItem | null>(null);
 
   const allServices = snapshot?.services?.items || [];
+  const adminServices = React.useMemo(
+    () => allServices.filter(hasServiceAdminUi),
+    [allServices],
+  );
   const filtered = React.useMemo(() => {
     const base = filterServices(allServices, { layer, status: statusFilter, query });
     const dir = sortDir === 'asc' ? 1 : -1;
@@ -178,6 +197,53 @@ export function ServicesView({
       description="systemd 单元状态、监听端口、HTTP 探针延迟与白名单生命周期控制，支持多维排序与单元详情展开。"
       meta={`健康 ${healthyCount}/${allServices.length} · 异常 ${issueCount} · 显示 ${filtered.length} 项`}
     >
+      {adminServices.length > 0 && (
+        <div
+          className="rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] px-5 py-3.5 shadow-[var(--shadow-card)] space-y-2.5"
+          data-testid="services-admin-strip"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-[13px] font-semibold text-[var(--ink)]">
+              <AppWindow className="size-4 text-[var(--accent)] shrink-0" strokeWidth={1.75} />
+              <span>受管服务管理后台快捷窗口</span>
+            </div>
+            <span className="font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums">
+              {adminServices.length} 个服务已接入内置后台
+            </span>
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            {adminServices.map((svc) => {
+              const tone = statusTone(svc.status);
+              const dotClass =
+                tone === 'ok'
+                  ? 'bg-[var(--ok-dot)]'
+                  : tone === 'warn'
+                    ? 'bg-[var(--warn-dot)]'
+                    : tone === 'err'
+                      ? 'bg-[var(--err-dot)]'
+                      : 'bg-[var(--muted-dot)]';
+              return (
+                <button
+                  key={svc.id}
+                  type="button"
+                  data-testid={`quick-admin-${svc.id}`}
+                  onClick={() => setAdminService(svc)}
+                  title={`打开 ${svc.name || svc.id} 管理后台`}
+                  className={cn(
+                    'h-8 px-3 rounded-lg border border-[var(--border)] bg-[var(--bg)] hover:bg-[var(--surface-hover)] hover:border-[var(--border-strong)] inline-flex items-center gap-2 text-[12.5px] font-medium text-[var(--ink)] transition-[color,background-color,border-color,transform] duration-150 ease-out active:scale-[0.97] cursor-pointer select-none',
+                    FOCUS_RING,
+                  )}
+                >
+                  <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', dotClass)} aria-hidden="true" />
+                  <AppWindow className="size-3.5 text-[var(--ink-subtle)] shrink-0" strokeWidth={1.75} />
+                  <span>{svc.adminLabel || svc.name || svc.id}</span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       <Panel bodyClassName="p-0">
         <div className="px-5 sm:px-6 py-4 border-b border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-3">
           <SegmentedFilter
@@ -299,6 +365,8 @@ export function ServicesView({
                   const actions = svc.allowedActions || svc.actions || ['restart', 'start', 'stop'];
                   const secondaryActions = actions.filter((a) => a !== 'restart');
                   const canRestart = actions.includes('restart');
+                  const hasAdmin = hasServiceAdminUi(svc);
+                  const externalAdminUrl = safeExternalUrl(svc.tailnetUrl || svc.adminUrl);
                   const memVal = svc.memoryBytes ?? svc.memoryCurrent;
                   const portText = (svc.ports || []).slice(0, 2).join(', ') || '-';
                   const isExpanded = expandedId === svc.id;
@@ -373,6 +441,18 @@ export function ServicesView({
                         </td>
                         <td className="py-3 pl-2 pr-5 sm:pr-6 text-right whitespace-nowrap">
                           <div className="inline-flex items-center justify-end gap-1.5">
+                            {hasAdmin && (
+                              <Button
+                                variant="secondary"
+                                size="sm"
+                                data-testid={`open-admin-${svc.id}`}
+                                onClick={() => setAdminService(svc)}
+                                title={`内置窗口打开 ${svc.name || svc.id} 管理后台`}
+                              >
+                                <AppWindow className="size-3.5 text-[var(--accent)]" strokeWidth={1.75} />
+                                管理页
+                              </Button>
+                            )}
                             <Button
                               variant="secondary"
                               size="sm"
@@ -450,8 +530,38 @@ export function ServicesView({
                                     {svc.dependsOn && svc.dependsOn.length > 0 ? svc.dependsOn.join(' · ') : '无显式依赖'}
                                   </dd>
                                 </div>
+                                {hasAdmin && (
+                                  <div className="col-span-2 sm:col-span-4 pt-1 border-t border-[var(--border-subtle)]/70">
+                                    <dt className="text-[var(--ink-subtle)]">管理后台</dt>
+                                    <dd className="mt-0.5 flex flex-wrap items-center gap-2 font-mono text-[12px]">
+                                      {externalAdminUrl ? (
+                                        <a
+                                          href={externalAdminUrl}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="inline-flex items-center gap-1 text-[var(--accent)] hover:underline truncate max-w-full"
+                                        >
+                                          <span className="truncate">{externalAdminUrl}</span>
+                                          <ExternalLink className="size-3 shrink-0" strokeWidth={1.75} />
+                                        </a>
+                                      ) : (
+                                        <span className="text-[var(--ink)]">{svc.embedUrl || svc.adminUrl}</span>
+                                      )}
+                                    </dd>
+                                  </div>
+                                )}
                               </dl>
                               <div className="flex items-center gap-2 shrink-0">
+                                {hasAdmin && (
+                                  <Button
+                                    variant="primary"
+                                    size="sm"
+                                    onClick={() => setAdminService(svc)}
+                                  >
+                                    <AppWindow className="size-3.5" strokeWidth={1.75} />
+                                    内置窗口打开
+                                  </Button>
+                                )}
                                 <Button
                                   variant="secondary"
                                   size="sm"
@@ -497,6 +607,8 @@ export function ServicesView({
           </div>
         )}
       </Panel>
+
+      <ServiceAdminModal service={adminService} onClose={() => setAdminService(null)} />
     </ModuleFrame>
   );
 }

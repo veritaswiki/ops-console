@@ -199,6 +199,23 @@ export function validateConfig(raw) {
         if (svc.dependsOn !== undefined && !Array.isArray(svc.dependsOn)) {
           errors.push(`Invalid dependsOn for ${svc.id}: must be an array`);
         }
+        if (svc.adminUrl !== undefined && svc.adminUrl !== null && svc.adminUrl !== '') {
+          if (typeof svc.adminUrl !== 'string') {
+            errors.push(`Invalid adminUrl for ${svc.id}: must be a string`);
+          } else {
+            try {
+              const parsedAdmin = new URL(svc.adminUrl.trim());
+              if (parsedAdmin.protocol !== 'http:' && parsedAdmin.protocol !== 'https:') {
+                errors.push(`Invalid adminUrl protocol for ${svc.id}: only http/https allowed`);
+              }
+            } catch {
+              errors.push(`Invalid adminUrl for ${svc.id}: must be a valid http/https URL`);
+            }
+          }
+        }
+        if (svc.adminLabel !== undefined && svc.adminLabel !== null && typeof svc.adminLabel !== 'string') {
+          errors.push(`Invalid adminLabel for ${svc.id}: must be a string`);
+        }
       }
     }
   }
@@ -329,6 +346,8 @@ export function loadConfig(options = {}) {
       ports: Array.isArray(s.ports) ? s.ports.map(String) : [],
       healthUrl: s.healthUrl ? String(s.healthUrl) : null,
       tailnetUrl: s.tailnetUrl ? String(s.tailnetUrl) : null,
+      adminUrl: s.adminUrl ? String(s.adminUrl).trim() : null,
+      adminLabel: s.adminLabel ? String(s.adminLabel).trim() : null,
       optional: Boolean(s.optional),
       risk: s.risk === 'critical' ? 'critical' : 'standard',
       riskNote: s.riskNote ? String(s.riskNote) : '',

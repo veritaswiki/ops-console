@@ -28,6 +28,24 @@ export function signA2APayload(rawBody, timestampSec, secret) {
   return `sha256=${digest}`;
 }
 
+export function buildSignedA2AHeaders(rawBody, { secret, bearerToken, timestampSec } = {}) {
+  const headers = {
+    'Content-Type': 'application/json',
+    Accept: 'application/json',
+  };
+  if (secret) {
+    const ts = Number.isFinite(Number(timestampSec)) && Number(timestampSec) > 0
+      ? Math.floor(Number(timestampSec))
+      : Math.floor(Date.now() / 1000);
+    headers['X-A2A-Timestamp'] = String(ts);
+    headers['X-A2A-Signature'] = signA2APayload(rawBody, ts, secret);
+  }
+  if (bearerToken && String(bearerToken).trim()) {
+    headers.Authorization = `Bearer ${String(bearerToken).trim()}`;
+  }
+  return headers;
+}
+
 export function verifyA2ASignature({
   rawBody,
   signature,
@@ -219,6 +237,24 @@ export async function handleA2AJsonRpc({
     };
   }
 
+  if (method === 'agent/ping') {
+    return {
+      status: 200,
+      body: {
+        jsonrpc: '2.0',
+        id: reqId,
+        result: {
+          pong: true,
+          protocolVersion: A2A_SPEC_VERSION,
+          appName: card?.name || 'Ops Console Hub',
+          timestamp: new Date().toISOString(),
+          registeredAgents: card?.metadata?.registeredAgents ?? 0,
+          onlineAgents: card?.metadata?.onlineAgents ?? 0,
+        },
+      },
+    };
+  }
+
   if (method === 'tasks/get') {
     const taskId = String(params.id || '').trim();
     const state = orchestrator.getState([]);
@@ -291,18 +327,35 @@ export async function handleA2AJsonRpc({
         },
       };
     }
-    const task = await orchestrator.dispatchTask(
-      {
-        prompt: prompt.slice(0, 2000),
-        targetAgentId: typeof params.metadata?.targetAgentId === 'string' ? params.metadata.targetAgentId : undefined,
-        contextId: typeof params.message?.contextId === 'string' ? params.message.contextId : undefined,
-      },
-      { actor },
-    );
-    return {
-      status: 200,
-      body: { jsonrpc: '2.0', id: reqId, result: mapTaskToA2AResponse(task) },
-    };
+    try {
+      const task = await orchestrator.dispatchTask(
+        {
+          prompt: prompt.slice(0, 2000),
+          targetAgentId: typeof params.metadata?.targetAgentId === 'string' ? params.metadata.targetAgentId : undefined,
+          contextId: typeof params.contextId === 'string'
+            ? params.contextId
+            : (typeof params.message?.contextId === 'string' ? params.message.contextId : undefined),
+          executionMode: typeof params.metadata?.executionMode === 'string' ? params.metadata.executionMode : undefined,
+          parentTaskId: typeof params.metadata?.parentTaskId === 'string' ? params.metadata.parentTaskId : undefined,
+          worktreeBranch: typeof params.metadata?.worktreeBranch === 'string' ? params.metadata.worktreeBranch : undefined,
+          slashCommand: typeof params.metadata?.slashCommand === 'string' ? params.metadata.slashCommand : undefined,
+        },
+        { actor },
+      );
+      return {
+        status: 200,
+        body: { jsonrpc: '2.0', id: reqId, result: mapTaskToA2AResponse(task) },
+      };
+    } catch (err) {
+      return {
+        status: err.statusCode || 400,
+        body: {
+          jsonrpc: '2.0',
+          id: reqId,
+          error: { code: -32002, message: err.message || 'Failed to dispatch A2A task' },
+        },
+      };
+    }
   }
 
   return {
@@ -333,7 +386,7 @@ export function detectLocalLanIp() {
   } catch {
     // ignore
   }
-  return '192.168.1.10';
+  return '10.0.0.10';
 }
 
 function shellQuote(val) {
@@ -381,6 +434,7 @@ export function buildNodeConnectProfiles({
       linuxInstallCmd: `printf '%s' ${shellQuote(token)} | sudo ./deploy/probe/install-probe.sh --hub-url ${shellQuote(tsUrl)} --node-id ${shellQuote(safeNodeId)} --device-type ${shellQuote(safeDeviceType)} --token-file -`,
       macosInstallCmd: `printf '%s' ${shellQuote(token)} | ./deploy/probe/install-probe.sh --hub-url ${shellQuote(tsUrl)} --node-id ${shellQuote(safeNodeId)} --device-type laptop --token-file -`,
       dockerCmd: `docker run -d --name ops-probe --restart unless-stopped -e OPS_PROBE_TOKEN=${shellQuote(token)} ghcr.io/ops-console/ops-probe:latest --hub-url ${shellQuote(tsUrl)} --node-id ${shellQuote(safeNodeId)}`,
+      a2aPeerCmd: `OPS_PROBE_TOKEN=${shellQuote(token)} node probe/ops-probe.mjs --hub-url ${shellQuote(tsUrl)} --node-id ${shellQuote(safeNodeId)} --a2a-host <tailscale-ip> --a2a-port 9104 --a2a-secret "$OPS_A2A_SHARED_SECRET"`,
     },
     {
       id: 'cloudflare',
@@ -394,6 +448,7 @@ export function buildNodeConnectProfiles({
       linuxInstallCmd: `printf '%s' ${shellQuote(token)} | sudo ./deploy/probe/install-probe.sh --hub-url ${shellQuote(cfUrl)} --node-id ${shellQuote(safeNodeId)} --device-type ${shellQuote(safeDeviceType)} --token-file -`,
       macosInstallCmd: `printf '%s' ${shellQuote(token)} | ./deploy/probe/install-probe.sh --hub-url ${shellQuote(cfUrl)} --node-id ${shellQuote(safeNodeId)} --device-type laptop --token-file -`,
       dockerCmd: `docker run -d --name ops-probe --restart unless-stopped -e OPS_PROBE_TOKEN=${shellQuote(token)} ghcr.io/ops-console/ops-probe:latest --hub-url ${shellQuote(cfUrl)} --node-id ${shellQuote(safeNodeId)}`,
+      a2aPeerCmd: `OPS_PROBE_TOKEN=${shellQuote(token)} node probe/ops-probe.mjs --hub-url ${shellQuote(cfUrl)} --node-id ${shellQuote(safeNodeId)} --a2a-host 127.0.0.1 --a2a-port 9104 --a2a-secret "$OPS_A2A_SHARED_SECRET"`,
     },
     {
       id: 'lan',
@@ -407,6 +462,7 @@ export function buildNodeConnectProfiles({
       linuxInstallCmd: `printf '%s' ${shellQuote(token)} | sudo ./deploy/probe/install-probe.sh --hub-url ${shellQuote(lanUrl)} --node-id ${shellQuote(safeNodeId)} --device-type ${shellQuote(safeDeviceType)} --token-file -`,
       macosInstallCmd: `printf '%s' ${shellQuote(token)} | ./deploy/probe/install-probe.sh --hub-url ${shellQuote(lanUrl)} --node-id ${shellQuote(safeNodeId)} --device-type laptop --token-file -`,
       dockerCmd: `docker run -d --name ops-probe --restart unless-stopped -e OPS_PROBE_TOKEN=${shellQuote(token)} ghcr.io/ops-console/ops-probe:latest --hub-url ${shellQuote(lanUrl)} --node-id ${shellQuote(safeNodeId)}`,
+      a2aPeerCmd: `OPS_PROBE_TOKEN=${shellQuote(token)} node probe/ops-probe.mjs --hub-url ${shellQuote(lanUrl)} --node-id ${shellQuote(safeNodeId)} --a2a-host ${shellQuote(lanIp)} --a2a-port 9104 --a2a-secret "$OPS_A2A_SHARED_SECRET"`,
     },
   ];
 }

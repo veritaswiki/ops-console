@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   CONSOLE_MODULES,
+  getFooterModules,
   getModuleByChord,
   getModuleById,
   getModulesGroupedByDomain,
@@ -29,18 +30,30 @@ test('CONSOLE_MODULES registers all 16 codified modules with unique IDs and keyb
   }
 });
 
-test('getModulesGroupedByDomain places Harness section first with Agent, Tasks, Graph, Bot, GitHub, and Settings', () => {
+test('getModulesGroupedByDomain organizes 4 operational domains and places Settings in footer', () => {
   const grouped = getModulesGroupedByDomain();
+  const footer = getFooterModules();
   assert.equal(grouped.length, MODULE_DOMAINS.length);
+  assert.deepEqual(
+    grouped.map((g) => g.domain.title),
+    ['Harness', '监控与观测', '基础设施', '运维与审计'],
+  );
   assert.equal(grouped[0].domain.id, 'agent');
-  assert.equal(grouped[0].domain.title, 'Harness');
   assert.equal(grouped[0].modules[0].label, 'Agent');
   assert.deepEqual(
     grouped[0].modules.map((m) => m.id),
-    ['agents', 'projects', 'graph', 'bots', 'github', 'agent-settings'],
+    ['agents', 'projects', 'graph', 'github', 'bots'],
   );
-  const total = grouped.reduce((sum, g) => sum + g.modules.length, 0);
-  assert.equal(total, CONSOLE_MODULES.length);
+  assert.deepEqual(
+    footer.map((m) => m.id),
+    ['agent-settings'],
+  );
+  const navTotal = grouped.reduce((sum, g) => sum + g.modules.length, 0);
+  assert.equal(navTotal + footer.length, CONSOLE_MODULES.length);
+
+  const allGrouped = getModulesGroupedByDomain({ includeFooter: true });
+  const allTotal = allGrouped.reduce((sum, g) => sum + g.modules.length, 0);
+  assert.equal(allTotal, CONSOLE_MODULES.length);
 });
 
 test('parseViewFromHash and isValidViewId handle hash deep-links and aliases safely', () => {

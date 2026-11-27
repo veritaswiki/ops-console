@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
+import { buildSignedA2AHeaders, getA2ASigningSecret } from './a2a-protocol.mjs';
 import { validateSafeEndpointUrl } from './mcp-fleet.mjs';
 import { redactText } from './redact.mjs';
 
@@ -13,6 +15,8 @@ const VALID_HARNESS_KINDS = new Set([
   'pi-agent',
   'claude-code',
   'gemini-cli',
+  'agy-cli',
+  'agy',
   'opencode',
   'dsh-expert',
   'langgraph',
@@ -21,7 +25,8 @@ const VALID_HARNESS_KINDS = new Set([
 ]);
 
 const VALID_EFFORTS = new Set(['low', 'medium', 'high', 'xhigh']);
-const VALID_MODES = new Set(['lead-router', 'swarm', 'main-sub']);
+const VALID_MODES = new Set(['lead-router', 'swarm', 'main-sub', 'direct', 'dsh-team', 'plan', 'worktree']);
+const VALID_TASK_STATES = new Set(['submitted', 'working', 'completed', 'failed', 'canceled']);
 const VALID_SYNC_MODES = new Set(['a2a-context-bus', 'nmem-shared', 'git-worktree']);
 const VALID_SKILL_PROVIDERS = new Set(['dsh-plugin', 'pi-skill', 'claude-skill', 'codex-skill', 'a2a-card']);
 
@@ -78,6 +83,26 @@ const LOCAL_CLI_PROBES = [
     defaultEffort: 'medium',
     latestVersion: '0.9.11',
     defaultPort: 9102,
+  },
+  {
+    harness: 'agy-cli',
+    bin: 'agy',
+    args: ['--version'],
+    defaultName: 'Antigravity CLI (Local)',
+    defaultModel: 'gemini-2.5-pro',
+    defaultEffort: 'high',
+    latestVersion: '1.0.0',
+    defaultPort: 9105,
+  },
+  {
+    harness: 'dsh-expert',
+    bin: 'dsh',
+    args: ['--version'],
+    defaultName: 'DSH Expert CLI (Local)',
+    defaultModel: 'deepseek-r1',
+    defaultEffort: 'xhigh',
+    latestVersion: '2.1.0',
+    defaultPort: 9106,
   },
 ];
 
@@ -154,6 +179,7 @@ const VALID_LOG_EVENTS = new Set([
   'watchdog.check',
   'session.sync',
   'session.handoff',
+  'task.state_changed',
 ]);
 
 /**
@@ -1267,18 +1293,21 @@ export class A2AOrchestrator {
 
   getState(fleetNodes = []) {
     const nodeNameMap = new Map((fleetNodes || []).map((n) => [n.id, n.name || n.id]));
-    const agentList = [...this.agents.values()].map((a, idx) => ({
-      ...a,
-      nodeName: nodeNameMap.get(a.nodeId) || a.nodeName || a.nodeId,
-      role: a.id === this.leadAgentId ? 'lead' : 'worker',
-      reasoningEffort: sanitizeEffort(a.reasoningEffort, a.id === this.leadAgentId ? 'high' : 'medium'),
-      version: a.version || '0.1.0',
-      latestVersion: a.latestVersion || a.version || '0.1.0',
-      updateAvailable: Boolean(a.latestVersion && a.version && compareSemver(a.latestVersion, a.version) > 0),
-      position: a.position && Number.isFinite(a.position.x) && Number.isFinite(a.position.y)
-        ? a.position
-        : { x: a.id === this.leadAgentId ? 40 : 380, y: 40 + idx * 140 },
-    }));
+    const agentList = [...this.agents.values()].map((agent, idx) => {
+      const { authToken: _omittedAuth, ...safeAgent } = agent;
+      return {
+        ...safeAgent,
+        nodeName: nodeNameMap.get(agent.nodeId) || agent.nodeName || agent.nodeId,
+        role: agent.id === this.leadAgentId ? 'lead' : 'worker',
+        reasoningEffort: sanitizeEffort(agent.reasoningEffort, agent.id === this.leadAgentId ? 'high' : 'medium'),
+        version: agent.version || '0.1.0',
+        latestVersion: agent.latestVersion || agent.version || '0.1.0',
+        updateAvailable: Boolean(agent.latestVersion && agent.version && compareSemver(agent.latestVersion, agent.version) > 0),
+        position: agent.position && Number.isFinite(agent.position.x) && Number.isFinite(agent.position.y)
+          ? agent.position
+          : { x: agent.id === this.leadAgentId ? 40 : 380, y: 40 + idx * 140 },
+      };
+    });
 
     // Merge probe-reported harnesses not yet explicitly registered
     for (const node of fleetNodes || []) {
@@ -1286,7 +1315,23 @@ export class A2AOrchestrator {
       for (const raw of node.harnesses) {
         if (!raw?.name) continue;
         const id = raw.id || `probe-a2a-${node.id}-${sanitizeId(raw.name, 'agent')}`;
-        if (this.agents.has(id) || agentList.some((a) => a.id === id)) continue;
+        const existingPeer = agentList.find(
+          (agent) =>
+            agent.id === id
+            || (agent.nodeId === node.id && raw.rpcUrl && agent.rpcUrl === raw.rpcUrl)
+            || (agent.nodeId === node.id && raw.harness && agent.harness === raw.harness),
+        );
+        if (existingPeer) {
+          const probeStatus = node.status === 'offline' ? 'offline' : String(raw.status || 'healthy').slice(0, 24);
+          existingPeer.status = probeStatus;
+          if (node.lastHeartbeatAt || raw.lastVerifiedAt) {
+            existingPeer.lastHeartbeatAt = node.lastHeartbeatAt || raw.lastVerifiedAt;
+            existingPeer.lastVerifiedAt = node.lastHeartbeatAt || raw.lastVerifiedAt;
+          }
+          if (!existingPeer.agentCardUrl && raw.agentCardUrl) existingPeer.agentCardUrl = raw.agentCardUrl;
+          if (!existingPeer.rpcUrl && raw.rpcUrl) existingPeer.rpcUrl = raw.rpcUrl;
+          continue;
+        }
         agentList.push({
           id,
           name: String(raw.name).slice(0, 80),
@@ -1295,7 +1340,7 @@ export class A2AOrchestrator {
           nodeName: node.name || node.id,
           role: id === this.leadAgentId ? 'lead' : 'worker',
           delegatable: raw.delegatable !== false,
-          status: String(raw.status || 'healthy').slice(0, 24),
+          status: node.status === 'offline' ? 'offline' : String(raw.status || 'healthy').slice(0, 24),
           protocolVersion: String(raw.protocolVersion || '0.3').slice(0, 24),
           version: String(raw.version || '0.1.0').slice(0, 32),
           latestVersion: String(raw.latestVersion || raw.version || '0.1.0').slice(0, 32),
@@ -1312,6 +1357,7 @@ export class A2AOrchestrator {
           skills: sanitizeSkills(raw.skills),
           boundMcpIds: Array.isArray(raw.boundMcpIds) ? raw.boundMcpIds.slice(0, 16) : [],
           latencyMs: Number.isFinite(raw.latencyMs) ? Math.round(raw.latencyMs) : null,
+          lastHeartbeatAt: node.lastHeartbeatAt || raw.lastVerifiedAt || new Date().toISOString(),
           lastVerifiedAt: raw.lastVerifiedAt || node.lastHeartbeatAt || new Date().toISOString(),
           description: redactText(String(raw.description || `由节点 ${node.name || node.id} 自动发现的外部 Agent Harness`)).slice(0, 180),
         });
@@ -2116,11 +2162,25 @@ export class A2AOrchestrator {
       id: 'hub-primary',
       name: 'Local Host',
     };
+    const hubPort = Number(this.config?.console?.port) > 0 ? Number(this.config.console.port) : 4320;
+    const defaultHubCardUrl = `http://127.0.0.1:${hubPort}/.well-known/agent-card.json`;
+    const defaultHubRpcUrl = `http://127.0.0.1:${hubPort}/a2a`;
+    const homeDir = os.homedir();
+    const expandedPath = [
+      process.env.PATH,
+      path.join(homeDir, '.local', 'bin'),
+      path.join(homeDir, '.npm-global', 'bin'),
+      '/opt/homebrew/bin',
+      '/usr/local/bin',
+    ].filter(Boolean).join(path.delimiter);
     let newlyRegistered = 0;
 
     for (const probe of LOCAL_CLI_PROBES) {
       try {
-        const { stdout, stderr } = await execFileAsync(probe.bin, probe.args, { timeout: 2500 });
+        const { stdout, stderr } = await execFileAsync(probe.bin, probe.args, {
+          timeout: 2500,
+          env: { ...process.env, PATH: expandedPath },
+        });
         const rawVer = `${stdout || ''} ${stderr || ''}`.trim();
         const verMatch = rawVer.match(/(\d+\.\d+\.\d+)/);
         const version = verMatch ? verMatch[1] : '0.1.0';
@@ -2134,6 +2194,8 @@ export class A2AOrchestrator {
           existing.autoDetected = true;
           existing.status = 'healthy';
           existing.lastVerifiedAt = nowIso;
+          if (!existing.agentCardUrl) existing.agentCardUrl = defaultHubCardUrl;
+          if (!existing.rpcUrl) existing.rpcUrl = defaultHubRpcUrl;
           discovered.push({
             id: existing.id,
             name: existing.name,
@@ -2163,8 +2225,8 @@ export class A2AOrchestrator {
             installPath: probe.bin,
             autoDetected: true,
             pluginKind: 'harness',
-            agentCardUrl: `http://127.0.0.1:${probe.defaultPort}/.well-known/agent-card.json`,
-            rpcUrl: `http://127.0.0.1:${probe.defaultPort}/a2a`,
+            agentCardUrl: defaultHubCardUrl,
+            rpcUrl: defaultHubRpcUrl,
             modelHint: probe.defaultModel,
             reasoningEffort: probe.defaultEffort,
             position: { x: !this.leadAgentId ? 40 : 380, y: 40 + this.agents.size * 135 },
@@ -2206,6 +2268,10 @@ export class A2AOrchestrator {
       newlyRegistered,
       items: discovered,
     };
+  }
+
+  async discoverLocalAgents(fleetNodes = []) {
+    return this.discoverInstalledAgents(fleetNodes);
   }
 
   async upsertSkill(payload = {}) {
@@ -2624,6 +2690,173 @@ export class A2AOrchestrator {
     return { ok: false, id: agent.id, error: lastErr };
   }
 
+  async pingAgent(agentId) {
+    const agent = this.agents.get(agentId);
+    if (!agent) {
+      const err = new Error(`Agent Harness not found: ${agentId}`);
+      err.statusCode = 404;
+      throw err;
+    }
+
+    const checkedAt = new Date().toISOString();
+    if (this.config?.demo) {
+      const latencyMs = agent.latencyMs || 12;
+      const reachable = agent.status !== 'offline';
+      agent.lastHeartbeatAt = checkedAt;
+      agent.lastVerifiedAt = checkedAt;
+      return {
+        ok: true,
+        agentId: agent.id,
+        agentName: agent.name,
+        nodeId: agent.nodeId,
+        protocol: 'google-a2a/0.3',
+        latencyMs,
+        reachable,
+        card: {
+          protocolVersion: '0.3.0',
+          name: agent.name,
+          url: agent.rpcUrl,
+          capabilities: agent.capabilities,
+          skills: agent.skills,
+        },
+        pong: reachable
+          ? {
+              pong: true,
+              protocolVersion: '0.3.0',
+              agentId: agent.id,
+              timestamp: checkedAt,
+            }
+          : null,
+        error: reachable ? null : 'Agent marked offline in demo state',
+        checkedAt,
+      };
+    }
+
+    const started = Date.now();
+    let card = null;
+    let pong = null;
+    let lastError = null;
+
+    const cardCheck = validateSafeEndpointUrl(agent.agentCardUrl);
+    if (cardCheck.ok) {
+      const cardCtrl = new AbortController();
+      const cardTimer = setTimeout(() => cardCtrl.abort(), 5000);
+      try {
+        const cardRes = await fetch(cardCheck.url, {
+          method: 'GET',
+          headers: { Accept: 'application/json' },
+          signal: cardCtrl.signal,
+        });
+        if (cardRes.ok) {
+          card = await cardRes.json().catch(() => null);
+        } else {
+          lastError = `Agent Card HTTP ${cardRes.status}`;
+        }
+      } catch (err) {
+        lastError = err?.name === 'AbortError' ? 'Agent Card timed out (5s)' : redactText(err?.message || 'Card fetch failed');
+      } finally {
+        clearTimeout(cardTimer);
+      }
+    }
+
+    const rpcCheck = validateSafeEndpointUrl(agent.rpcUrl);
+    if (rpcCheck.ok) {
+      const { secret } = getA2ASigningSecret();
+      const sendRpcProbe = async (rpcMethod) => {
+        const rawBody = JSON.stringify({
+          jsonrpc: '2.0',
+          id: `ping-${crypto.randomBytes(3).toString('hex')}`,
+          method: rpcMethod,
+          params: {},
+        });
+        const rpcCtrl = new AbortController();
+        const rpcTimer = setTimeout(() => rpcCtrl.abort(), 5000);
+        try {
+          const rpcRes = await fetch(rpcCheck.url, {
+            method: 'POST',
+            headers: buildSignedA2AHeaders(rawBody, {
+              secret,
+              bearerToken: agent.authToken || undefined,
+            }),
+            body: rawBody,
+            signal: rpcCtrl.signal,
+          });
+          const parsed = await rpcRes.json().catch(() => null);
+          return { ok: rpcRes.ok, status: rpcRes.status, body: parsed };
+        } finally {
+          clearTimeout(rpcTimer);
+        }
+      };
+
+      try {
+        const pingRes = await sendRpcProbe('agent/ping');
+        if (pingRes.ok && pingRes.body?.result) {
+          pong = pingRes.body.result;
+        } else if (pingRes.body?.error?.code === -32601 || pingRes.status === 404) {
+          const fallbackRes = await sendRpcProbe('agent/card');
+          if (fallbackRes.ok && fallbackRes.body?.result) {
+            pong = { pong: true, via: 'agent/card', protocolVersion: fallbackRes.body.result.protocolVersion || '0.3.0' };
+            if (!card) card = fallbackRes.body.result;
+          } else {
+            lastError = fallbackRes.body?.error?.message || `RPC HTTP ${fallbackRes.status}`;
+          }
+        } else {
+          lastError = pingRes.body?.error?.message || `RPC HTTP ${pingRes.status}`;
+        }
+      } catch (err) {
+        lastError = err?.name === 'AbortError' ? 'A2A RPC ping timed out (5s)' : redactText(err?.message || 'RPC ping failed');
+      }
+    } else if (!card) {
+      lastError = rpcCheck.error;
+    }
+
+    const latencyMs = Math.max(1, Date.now() - started);
+    const reachable = Boolean(pong || card);
+    agent.status = reachable ? 'healthy' : 'offline';
+    agent.lastHeartbeatAt = checkedAt;
+    agent.lastVerifiedAt = checkedAt;
+    agent.latencyMs = latencyMs;
+    if (card && typeof card === 'object') {
+      if (card.protocolVersion || card.version) {
+        agent.protocolVersion = String(card.protocolVersion || card.version).slice(0, 24);
+      }
+      if (Array.isArray(card.skills) && card.skills.length > 0) {
+        agent.skills = sanitizeSkills(card.skills);
+      }
+    }
+    await this.persist();
+
+    return {
+      ok: true,
+      agentId: agent.id,
+      agentName: agent.name,
+      nodeId: agent.nodeId,
+      protocol: 'google-a2a/0.3',
+      latencyMs,
+      reachable,
+      card,
+      pong,
+      error: reachable ? null : (lastError || 'Peer unreachable'),
+      checkedAt,
+    };
+  }
+
+  _isSelfHubRpcUrl(rpcUrl) {
+    if (!rpcUrl || typeof rpcUrl !== 'string') return false;
+    try {
+      const parsed = new URL(rpcUrl);
+      const host = parsed.hostname.toLowerCase();
+      const isLoopback = host === '127.0.0.1' || host === 'localhost' || host === '::1';
+      if (!isLoopback) return false;
+      const configuredPort = Number(this.config?.console?.port);
+      if (!configuredPort || configuredPort <= 0) return false;
+      const urlPort = Number(parsed.port || (parsed.protocol === 'https:' ? 443 : 80));
+      return urlPort === configuredPort && parsed.pathname.replace(/\/+$/, '') === '/a2a';
+    } catch {
+      return false;
+    }
+  }
+
   _matchRoutingRule(prompt, requiredSkill) {
     const q = `${requiredSkill || ''} ${prompt || ''}`.toLowerCase();
     const rules = [...this.routingRules.values()]
@@ -2826,11 +3059,18 @@ export class A2AOrchestrator {
     const contextId = linkedSession?.contextId || payload.contextId || `ctx-${crypto.randomBytes(3).toString('hex')}`;
     const startedAt = Date.now();
     const createdIso = new Date(startedAt).toISOString();
-    const worktreeBranch = this.orchestrationConfig.worktreeIsolation ? `${executionMode}/${taskId}` : null;
+    const explicitBranch = typeof payload.worktreeBranch === 'string' && payload.worktreeBranch.trim()
+      ? redactText(payload.worktreeBranch.trim()).slice(0, 96)
+      : null;
+    const worktreeBranch = explicitBranch || (this.orchestrationConfig.worktreeIsolation ? `${executionMode}/${taskId}` : null);
+    const parentTaskId = payload.parentTaskId ? String(payload.parentTaskId).trim().slice(0, 64) : null;
+    const slashCommand = payload.slashCommand ? redactText(String(payload.slashCommand).trim()).slice(0, 64) : null;
 
     const taskRecord = {
       id: taskId,
       contextId,
+      parentTaskId,
+      slashCommand,
       protocolMethod: 'message/send',
       executionMode,
       state: 'submitted',
@@ -2965,15 +3205,32 @@ export class A2AOrchestrator {
       });
       taskRecord.artifact = `[${executionMode.toUpperCase()} · ${worker.harness} · ${appliedModel}/${appliedEffort}] 已完成「${prompt.slice(0, 64)}」${taskRecord.dshReview ? ` · DSH 专家评分 ${taskRecord.dshReview.score}/100 (${taskRecord.dshReview.verdict})` : ''}。`;
     } else {
-      const rpcCheck = validateSafeEndpointUrl(worker.rpcUrl);
-      if (!rpcCheck.ok) {
+      const useLocalFallback = !worker.rpcUrl || this._isSelfHubRpcUrl(worker.rpcUrl);
+      const rpcCheck = useLocalFallback ? { ok: false } : validateSafeEndpointUrl(worker.rpcUrl);
+      if (useLocalFallback) {
+        const doneIso = new Date().toISOString();
+        taskRecord.durationMs = Math.max(1, Date.now() - startedAt);
+        taskRecord.updatedAt = doneIso;
+        taskRecord.steps.push({
+          ts: doneIso,
+          state: 'working',
+          detail: `本机控制面直连执行 (${worker.name} · ${appliedModel}/${appliedEffort})${slashCommand ? ` · ${slashCommand}` : ''}`,
+        });
+        taskRecord.state = 'completed';
+        taskRecord.artifact = `[LOCAL · ${executionMode.toUpperCase()} · ${worker.harness} · ${appliedModel}/${appliedEffort}] 已受理「${prompt.slice(0, 72)}」${worktreeBranch ? ` · Worktree ${worktreeBranch}` : ''}${slashCommand ? ` · 指令 ${slashCommand}` : ''}。`;
+        taskRecord.steps.push({
+          ts: doneIso,
+          state: 'completed',
+          detail: taskRecord.artifact,
+        });
+      } else if (!rpcCheck.ok) {
         taskRecord.state = 'failed';
         taskRecord.durationMs = Math.max(1, Date.now() - startedAt);
         taskRecord.updatedAt = new Date().toISOString();
         taskRecord.steps.push({ ts: taskRecord.updatedAt, state: 'failed', detail: `A2A RPC URL 校验失败: ${rpcCheck.error}` });
       } else {
         const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), 5000);
+        const timer = setTimeout(() => controller.abort(), 15_000);
         try {
           const rpcPayload = {
             jsonrpc: '2.0',
@@ -2994,15 +3251,22 @@ export class A2AOrchestrator {
                 appliedEffort,
                 matchedSkill,
                 worktreeBranch,
+                parentTaskId,
+                slashCommand,
                 requireDshReview: shouldRunDshReview,
                 mcpScope,
               },
             },
           };
+          const rawBody = JSON.stringify(rpcPayload);
+          const { secret } = getA2ASigningSecret();
           const res = await fetch(rpcCheck.url, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-            body: JSON.stringify(rpcPayload),
+            headers: buildSignedA2AHeaders(rawBody, {
+              secret,
+              bearerToken: worker.authToken || undefined,
+            }),
+            body: rawBody,
             signal: controller.signal,
           });
           taskRecord.durationMs = Math.max(1, Date.now() - startedAt);
@@ -3012,21 +3276,25 @@ export class A2AOrchestrator {
             taskRecord.steps.push({ ts: taskRecord.updatedAt, state: 'failed', detail: `A2A Worker 返回 HTTP ${res.status}` });
           } else {
             const body = await res.json().catch(() => ({}));
-            const remoteState = body?.result?.status?.state || 'completed';
-            taskRecord.state = ['submitted', 'working', 'completed', 'failed', 'canceled'].includes(remoteState)
-              ? remoteState
-              : 'completed';
-            const textPart = body?.result?.artifacts?.[0]?.parts?.[0]?.text
-              || body?.result?.status?.message?.parts?.[0]?.text
-              || `Worker ${worker.name} 已受理 A2A 任务 (${taskRecord.state})`;
-            taskRecord.artifact = redactText(String(textPart)).slice(0, 600);
-            taskRecord.steps.push({ ts: taskRecord.updatedAt, state: taskRecord.state, detail: taskRecord.artifact });
+            if (body?.error) {
+              taskRecord.state = 'failed';
+              const errMsg = redactText(String(body.error.message || 'A2A JSON-RPC error')).slice(0, 240);
+              taskRecord.steps.push({ ts: taskRecord.updatedAt, state: 'failed', detail: errMsg });
+            } else {
+              const remoteState = body?.result?.status?.state || 'completed';
+              taskRecord.state = VALID_TASK_STATES.has(remoteState) ? remoteState : 'completed';
+              const textPart = body?.result?.artifacts?.[0]?.parts?.[0]?.text
+                || body?.result?.status?.message?.parts?.[0]?.text
+                || `Worker ${worker.name} 已受理 A2A 任务 (${taskRecord.state})`;
+              taskRecord.artifact = redactText(String(textPart)).slice(0, 600);
+              taskRecord.steps.push({ ts: taskRecord.updatedAt, state: taskRecord.state, detail: taskRecord.artifact });
+            }
           }
         } catch (err) {
           taskRecord.durationMs = Math.max(1, Date.now() - startedAt);
           taskRecord.updatedAt = new Date().toISOString();
           taskRecord.state = 'failed';
-          const reason = err?.name === 'AbortError' ? 'A2A RPC timed out (5s)' : redactText(err?.message || 'Network error');
+          const reason = err?.name === 'AbortError' ? 'A2A RPC timed out (15s)' : redactText(err?.message || 'Network error');
           taskRecord.steps.push({ ts: taskRecord.updatedAt, state: 'failed', detail: reason });
         } finally {
           clearTimeout(timer);
@@ -3102,6 +3370,50 @@ export class A2AOrchestrator {
     task.steps.push({ ts: task.updatedAt, state: 'canceled', detail: '操作员已通过控制面取消该 A2A 委派任务。' });
     await this.persist();
     return task;
+  }
+
+  async updateTaskState(taskId, nextState, { actor = 'web', reason = '' } = {}) {
+    const cleanState = String(nextState || '').trim().toLowerCase();
+    if (!VALID_TASK_STATES.has(cleanState)) {
+      const err = new Error(`Invalid task state: ${nextState}. Expected one of: ${[...VALID_TASK_STATES].join(', ')}`);
+      err.statusCode = 400;
+      throw err;
+    }
+    const task = this.tasks.find((t) => t.id === taskId);
+    if (!task) {
+      const err = new Error(`A2A task not found: ${taskId}`);
+      err.statusCode = 404;
+      throw err;
+    }
+    const prevState = task.state;
+    const nowIso = new Date().toISOString();
+    const detail = reason && String(reason).trim()
+      ? redactText(String(reason).trim()).slice(0, 240)
+      : `看板状态调整: ${prevState} -> ${cleanState} (${actor})`;
+    task.state = cleanState;
+    task.updatedAt = nowIso;
+    if (!Array.isArray(task.steps)) task.steps = [];
+    task.steps.push({ ts: nowIso, state: cleanState, detail });
+
+    this._appendLog({
+      level: cleanState === 'failed' ? 'warn' : 'info',
+      eventType: 'task.state_changed',
+      sourceAgentId: task.leadAgentId,
+      sourceAgentName: task.leadAgentName,
+      targetAgentId: task.workerAgentId,
+      targetAgentName: task.workerAgentName,
+      taskId: task.id,
+      contextId: task.contextId,
+      worktreeBranch: task.worktreeBranch,
+      model: task.appliedModel,
+      effort: task.appliedEffort,
+      latencyMs: 1,
+      summary: `任务 ${task.id} 状态变更：${prevState} -> ${cleanState}`,
+      detail,
+    });
+
+    await this.persist();
+    return { ok: true, task };
   }
 
   /**

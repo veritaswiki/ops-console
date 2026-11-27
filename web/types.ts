@@ -122,6 +122,12 @@ export interface ServiceItem {
   actions?: string[];
   allowedActions?: string[];
   probe?: ServiceProbe | null;
+  healthUrl?: string | null;
+  tailnetUrl?: string | null;
+  adminUrl?: string | null;
+  adminLabel?: string | null;
+  embedUrl?: string | null;
+  hasAdminUi?: boolean;
 }
 
 export interface TimerItem {
@@ -1176,6 +1182,8 @@ export interface A2ATaskStep {
 export interface A2ATaskRecord {
   id: string;
   contextId?: string;
+  parentTaskId?: string | null;
+  slashCommand?: string | null;
   protocolMethod: string;
   executionMode?: OrchestrationMode | string;
   state: 'submitted' | 'working' | 'completed' | 'failed' | 'canceled' | string;
@@ -1686,6 +1694,126 @@ export interface BotFleetResponse {
   };
   bots: BotItem[];
   activities: BotActivityItem[];
+}
+
+export interface A2AConnectProfile {
+  id: 'tailscale' | 'cloudflare' | 'lan' | string;
+  name: string;
+  recommended: boolean;
+  badge: string;
+  hubUrl: string;
+  securitySummary: string;
+  whenToUse: string;
+  hubPrepCmd: string;
+  linuxInstallCmd: string;
+  macosInstallCmd: string;
+  dockerCmd: string;
+  a2aPeerCmd?: string;
+}
+
+export interface A2AConnectProfilesResponse {
+  ok?: boolean;
+  protocol: string;
+  specVersion: string;
+  hubAgentCardUrl: string;
+  hubRpcUrl: string;
+  signingConfigured: boolean;
+  profiles: A2AConnectProfile[];
+}
+
+export interface A2APingResponse {
+  ok: boolean;
+  agentId: string;
+  agentName?: string;
+  nodeId?: string;
+  protocol?: string;
+  latencyMs?: number;
+  reachable: boolean;
+  card?: Record<string, unknown> | null;
+  pong?: Record<string, unknown> | null;
+  error?: string | null;
+  checkedAt: string;
+}
+
+export interface GithubPullRequestItem {
+  number: number;
+  title: string;
+  state: 'OPEN' | 'CLOSED' | 'MERGED' | string;
+  isDraft?: boolean;
+  headRefName: string;
+  baseRefName: string;
+  author: string;
+  updatedAt: string;
+  url: string;
+  additions?: number;
+  deletions?: number;
+  changedFiles?: number;
+  reviewDecision?: string | null;
+  checksStatus?: 'SUCCESS' | 'FAILURE' | 'PENDING' | 'UNKNOWN' | string;
+  checksSummary?: string;
+  labels?: string[];
+}
+
+export interface GithubIssueItem {
+  number: number;
+  title: string;
+  state: 'OPEN' | 'CLOSED' | string;
+  author: string;
+  updatedAt: string;
+  url: string;
+  labels?: string[];
+  assignees?: string[];
+  commentsCount?: number;
+}
+
+export interface GithubWorkflowRunItem {
+  id: number | string;
+  name: string;
+  displayTitle?: string;
+  status: string;
+  conclusion?: string | null;
+  headBranch: string;
+  event?: string;
+  createdAt: string;
+  url: string;
+}
+
+export interface GithubWorktreeItem {
+  path: string;
+  branch: string;
+  head: string;
+  isMain?: boolean;
+  bare?: boolean;
+}
+
+export interface GithubOverviewResponse {
+  ok?: boolean;
+  mode: 'gh-cli' | 'token-api' | 'demo' | 'offline' | string;
+  ghAvailable: boolean;
+  ghAuthenticated: boolean;
+  ghAccount?: string | null;
+  repo: {
+    owner: string;
+    name: string;
+    fullName: string;
+    defaultBranch: string;
+    currentBranch: string;
+    remoteUrl?: string | null;
+    webUrl?: string | null;
+  };
+  summary: {
+    openPrs: number;
+    draftPrs: number;
+    openIssues: number;
+    failingChecks: number;
+    worktreeCount: number;
+  };
+  pullRequests: GithubPullRequestItem[];
+  issues: GithubIssueItem[];
+  workflowRuns: GithubWorkflowRunItem[];
+  worktrees: GithubWorktreeItem[];
+  fetchedAt: string;
+  warning?: string | null;
 }
 
 
