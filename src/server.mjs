@@ -1562,6 +1562,8 @@ export function createOpsConsole(options = {}) {
           sendJson(res, 403, { ok: false, error: 'Read-only mode disables Lead Agent changes' }, {}, req);
           return;
         }
+        const snapshot = await hub.collectSnapshot(false);
+        a2aOrchestrator.syncProbeHarnesses(snapshot?.fleet?.nodes || []);
         const { data } = await readBody(req);
         const result = await a2aOrchestrator.setLeadAgent(String(data.agentId || ''));
         await logger.appendAudit({
@@ -1605,6 +1607,8 @@ export function createOpsConsole(options = {}) {
           sendJson(res, 403, { ok: false, error: 'Read-only mode disables updating A2A agents' }, {}, req);
           return;
         }
+        const snapshot = await hub.collectSnapshot(false);
+        a2aOrchestrator.syncProbeHarnesses(snapshot?.fleet?.nodes || []);
         const { data } = await readBody(req);
         const agent = await a2aOrchestrator.updateAgent(a2aAgentMatch[1], data);
         await logger.appendAudit({
@@ -1641,6 +1645,8 @@ export function createOpsConsole(options = {}) {
 
       const a2aDiscoverMatch = pathname.match(/^\/api\/a2a\/agents\/([A-Za-z0-9._:-]+)\/discover$/);
       if (method === 'POST' && a2aDiscoverMatch) {
+        const snapshot = await hub.collectSnapshot(false);
+        a2aOrchestrator.syncProbeHarnesses(snapshot?.fleet?.nodes || []);
         const result = await a2aOrchestrator.discoverAgentCard(a2aDiscoverMatch[1]);
         sendJson(res, 200, result, {}, req);
         return;
@@ -1648,6 +1654,8 @@ export function createOpsConsole(options = {}) {
 
       const a2aPingMatch = pathname.match(/^\/api\/a2a\/agents\/([A-Za-z0-9._:-]+)\/ping$/);
       if (method === 'POST' && a2aPingMatch) {
+        const snapshot = await hub.collectSnapshot(false);
+        a2aOrchestrator.syncProbeHarnesses(snapshot?.fleet?.nodes || []);
         const result = await a2aOrchestrator.pingAgent(a2aPingMatch[1]);
         eventBus.emit('a2a_updated', { action: 'ping_agent', id: a2aPingMatch[1], reachable: result.reachable });
         sendJson(res, 200, result, {}, req);
@@ -1660,6 +1668,8 @@ export function createOpsConsole(options = {}) {
           return;
         }
         const { data } = await readBody(req);
+        const snapshot = await hub.collectSnapshot(false);
+        a2aOrchestrator.syncProbeHarnesses(snapshot?.fleet?.nodes || []);
         const magpieBindings = config.demo && demoProvider
           ? (demoProvider.getMagpieCatalog().agentBindings || [])
           : getCachedMagpieAgentBindings(config.connectors.magpie);
@@ -1758,6 +1768,8 @@ export function createOpsConsole(options = {}) {
           sendJson(res, 403, { ok: false, error: 'Read-only mode disables editing routing rules' }, {}, req);
           return;
         }
+        const snapshot = await hub.collectSnapshot(false);
+        a2aOrchestrator.syncProbeHarnesses(snapshot?.fleet?.nodes || []);
         const { data } = await readBody(req);
         const result = await a2aOrchestrator.upsertRoutingRule(data);
         await logger.appendAudit({

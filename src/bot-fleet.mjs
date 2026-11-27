@@ -123,7 +123,7 @@ function isLegacyDemoBotSeed(parsed) {
   );
   const onlySeedIds =
     bots.length > 0 &&
-    bots.every((bot) => ['bot-github-commander', 'bot-ops-watchdog', 'bot-feishu-intake'].includes(String(bot?.id || '')));
+    bots.every((bot) => ['bot-github-commander', 'bot-ops-watchdog', 'bot-feishu-intake', 'bot-feishu-triage'].includes(String(bot?.id || '')));
   return hasFakeActivity && onlySeedIds;
 }
 
