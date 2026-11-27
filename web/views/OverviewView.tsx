@@ -273,7 +273,7 @@ export function OverviewView({
   return (
     <ModuleFrame
       title="系统总览"
-      description="全栈服务健康度、主机负载、记忆引擎与组网连接状态。"
+      description="跨机 AI Agent 控制平面总览：实时汇总在线节点、受管服务、记忆引擎与组网连接状态。"
       meta={hostMeta}
       actions={
         <Button
@@ -304,12 +304,13 @@ export function OverviewView({
                   type="button"
                   onClick={() => updatePanelPref(item.key)}
                   data-testid={`overview-toggle-${item.key}`}
+                  aria-pressed={active}
                   className={cn(
-                    'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[12px] font-medium border transition-colors duration-150 cursor-pointer select-none',
+                    'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[12px] font-medium transition-colors duration-150 ease-out cursor-pointer select-none',
                     FOCUS_RING,
                     active
-                      ? 'border-[var(--border-strong)] bg-[var(--surface)] text-[var(--ink)]'
-                      : 'border-transparent text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)]',
+                      ? 'bg-[var(--surface)] text-[var(--ink)] shadow-[var(--shadow-card)]'
+                      : 'text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)]',
                   )}
                 >
                   <Check
@@ -453,23 +454,23 @@ export function OverviewView({
                     <th className="py-2.5 pl-3 pr-5 sm:pr-6">核心指标</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-[var(--border-subtle)] text-[13.5px]">
+                <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
                   {connectors.map((c) => (
                     <tr
                       key={c.id || c.name}
                       className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out"
                     >
-                      <td className="py-3 pl-5 sm:pl-6 pr-3 font-medium text-[var(--ink)] max-w-[180px] truncate" title={c.name}>
+                      <td className="py-2.5 pl-5 sm:pl-6 pr-3 font-medium text-[var(--ink)] max-w-[180px] truncate" title={c.name}>
                         {c.name}
                       </td>
-                      <td className="py-3 px-3 whitespace-nowrap">
+                      <td className="py-2.5 px-3 whitespace-nowrap">
                         <StatusIndicator status={c.status} />
                       </td>
-                      <td className="py-3 px-3 text-right font-mono text-[12.5px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
+                      <td className="py-2.5 px-3 text-right font-mono text-[12px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
                         {c.latencyMs != null ? `${c.latencyMs}ms` : '-'}
                       </td>
                       <td
-                        className="py-3 pl-3 pr-5 sm:pr-6 font-mono text-[12.5px] text-[var(--ink-muted)] tabular-nums max-w-[260px] truncate"
+                        className="py-2.5 pl-3 pr-5 sm:pr-6 font-mono text-[12px] text-[var(--ink-muted)] tabular-nums max-w-[260px] truncate"
                         title={c.metric}
                       >
                         {c.metric}

@@ -6,6 +6,7 @@ export function ModuleFrame({
   meta,
   actions,
   testId,
+  spacing = 'default',
   children,
 }: {
   title: string;
@@ -13,10 +14,12 @@ export function ModuleFrame({
   meta?: React.ReactNode;
   actions?: React.ReactNode;
   testId?: string;
+  spacing?: 'default' | 'compact';
   children: React.ReactNode;
 }) {
+  const spacingClass = spacing === 'compact' ? 'space-y-6' : 'space-y-8';
   return (
-    <div className="space-y-8 min-w-0" data-testid={testId}>
+    <div className={`${spacingClass} min-w-0`} data-testid={testId}>
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div className="min-w-0">
           <h1 className="text-[24px] font-semibold tracking-tight text-[var(--ink)] leading-tight text-balance">

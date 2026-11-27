@@ -44,6 +44,7 @@ import {
   Button,
   CommandPalette,
   ConfirmAlertDialog,
+  NativeSelect,
   ViewSkeleton,
   type CommandEntry,
   type ConfirmModalState,
@@ -56,6 +57,8 @@ import {
   getModuleByChord,
   getModuleById,
   getModulesGroupedByDomain,
+  getRailPanelSlots,
+  groupWorkspaceActionSlots,
   loadAgentGraphView,
   loadAgentSettingsView,
   loadAgentsView,
@@ -76,6 +79,7 @@ import {
   parseSubTabFromHash,
   parseViewFromHash,
   prefetchModule,
+  type WorkspaceActionSlot,
 } from './modules/registry';
 import { ModuleBoundary } from './modules/ModuleBoundary';
 
@@ -968,10 +972,11 @@ export function App() {
         </div>
 
         {/* Agent task search (hidden behind icon toggle) + recent / filtered threads directly under Agent */}
-        {isAgentHome && (agentSearchOpen || agentSearchQuery.trim().length > 0 || filteredSidebarAgentTasks.length > 0) && (
+        {isAgentHome && sidebarThreadsSlot && (agentSearchOpen || agentSearchQuery.trim().length > 0 || filteredSidebarAgentTasks.length > 0) && (
           <div
             className="ml-3.5 pl-2.5 border-l border-[var(--border-subtle)] py-1 space-y-1.5"
             data-testid="sidebar-agent-threads"
+            data-slot-id={sidebarThreadsSlot.id}
           >
             {(agentSearchOpen || agentSearchQuery.trim().length > 0) && (
               <div className="relative">
@@ -1024,7 +1029,7 @@ export function App() {
             )}
 
             {filteredSidebarAgentTasks.length > 0 ? (
-              <div className="space-y-0.5 max-h-[264px] overflow-y-auto pr-0.5">
+              <div className="space-y-0.5">
                 {filteredSidebarAgentTasks.map((task) => {
                   const threadActive = view === 'agents' && activeAgentTaskId === task.id;
                   const dotClass =
@@ -1087,10 +1092,10 @@ export function App() {
                   onMouseEnter={() => prefetchModule(mod.id)}
                   onFocus={() => prefetchModule(mod.id)}
                   className={cn(
-                    'w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-md text-[12.5px] text-left cursor-pointer select-none whitespace-nowrap transition-colors duration-150 ease-out',
+                    'w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-md text-[12.5px] font-medium text-left cursor-pointer select-none whitespace-nowrap transition-colors duration-150 ease-out',
                     FOCUS_RING,
                     childActive
-                      ? 'bg-[var(--surface-active)] text-[var(--ink)] font-medium'
+                      ? 'bg-[var(--surface-active)] text-[var(--ink)]'
                       : 'text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
                   )}
                 >
@@ -1158,7 +1163,11 @@ export function App() {
       </div>
 
       {/* Categorized Collapsible Navigation across 4 operational domains */}
-      <nav className="flex-1 overflow-y-auto px-2.5 py-3 space-y-2.5" aria-label="主导航">
+      <nav
+        className="flex-1 overflow-y-auto px-2.5 py-3 space-y-2.5"
+        aria-label="主导航"
+        data-slot-id={sidebarNavSlot?.id}
+      >
         {GROUPED_MODULES.map((group, groupIdx) => {
           const expanded = navGroups[group.domain.id];
           const groupFailedCount = group.modules.some((m) => m.badgeKey === 'failedServices')
@@ -1257,7 +1266,10 @@ export function App() {
         </div>
       )}
 
-      <div className="px-4 py-3 border-t border-[var(--border-subtle)] text-[11.5px] text-[var(--ink-subtle)] shrink-0 space-y-1">
+      <div
+        className="px-4 py-3 border-t border-[var(--border-subtle)] text-[11.5px] text-[var(--ink-subtle)] shrink-0 space-y-1"
+        data-slot-id={sidebarFooterSlot?.id}
+      >
         <div className="flex items-center justify-between gap-2">
           <span
             className="truncate font-mono text-[var(--ink-muted)]"
@@ -1288,7 +1300,151 @@ export function App() {
         ? 'flex-1 w-full max-w-[1400px] mx-auto px-4 sm:px-6 py-5'
         : view === 'agents'
           ? 'flex-1 w-full max-w-[1280px] mx-auto px-4 sm:px-6 py-4 flex flex-col'
-          : 'flex-1 w-full max-w-[1200px] mx-auto px-4 sm:px-8 py-6 sm:py-8';
+          : view === 'agent-settings'
+            ? 'flex-1 w-full max-w-[1240px] mx-auto px-4 sm:px-8 py-6 sm:py-7'
+            : 'flex-1 w-full max-w-[1200px] mx-auto px-4 sm:px-8 py-6 sm:py-8';
+
+  const sidebarNavSlot = React.useMemo(
+    () => getRailPanelSlots({ region: 'sidebar-nav' })[0] ?? null,
+    [],
+  );
+  const sidebarThreadsSlot = React.useMemo(
+    () => getRailPanelSlots({ region: 'sidebar-threads', viewId: 'agents' })[0] ?? null,
+    [],
+  );
+  const sidebarFooterSlot = React.useMemo(
+    () => getRailPanelSlots({ region: 'sidebar-footer' })[0] ?? null,
+    [],
+  );
+  const workspaceActionGroups = React.useMemo(
+    () =>
+      groupWorkspaceActionSlots({
+        isHarnessView,
+        authEnabled: Boolean(meta?.authEnabled),
+      }),
+    [isHarnessView, meta?.authEnabled],
+  );
+
+  const renderWorkspaceActionSlot = (slot: WorkspaceActionSlot) => {
+    switch (slot.id) {
+      case 'command-palette':
+        return (
+          <button
+            key={slot.id}
+            type="button"
+            onClick={() => setCommandOpen(true)}
+            aria-label="打开命令面板"
+            data-testid="command-trigger"
+            data-slot-id={slot.id}
+            className={cn(
+              'h-8 px-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-[12.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:border-[var(--border-strong)] transition-[color,border-color,transform] duration-150 ease-out active:scale-[0.97] inline-flex items-center gap-2 cursor-pointer whitespace-nowrap select-none',
+              FOCUS_RING,
+            )}
+          >
+            <Search className="size-3.5 text-[var(--ink-subtle)]" strokeWidth={1.75} />
+            <span className="hidden md:inline">搜索或跳转</span>
+            {slot.shortcut && (
+              <kbd className="hidden sm:inline-block font-mono text-[11px] text-[var(--ink-subtle)] px-1.5 py-0.5 rounded-md bg-[var(--surface-subtle)] border border-[var(--border-subtle)] leading-none">
+                {slot.shortcut}
+              </kbd>
+            )}
+          </button>
+        );
+      case 'telemetry-sync-clock':
+        return (
+          <span
+            key={slot.id}
+            data-slot-id={slot.id}
+            className={cn(
+              'hidden xl:inline-block font-mono text-[11.5px] tabular-nums whitespace-nowrap px-1.5 select-none',
+              syncError ? 'text-[var(--err)]' : 'text-[var(--ink-subtle)]',
+            )}
+            title={syncError || lastSyncedAt}
+          >
+            {syncError
+              ? '同步异常'
+              : lastSyncedAt
+                ? formatClock(lastSyncedAt)
+                : '同步中...'}
+          </span>
+        );
+      case 'telemetry-poll-interval':
+        return (
+          <NativeSelect
+            key={slot.id}
+            compact
+            aria-label={slot.label}
+            data-slot-id={slot.id}
+            value={String(pollMs)}
+            onChange={(e) => setPollMs(Number(e.target.value))}
+            className="hidden sm:block bg-[var(--surface-elevated)] text-[var(--ink-muted)] hover:text-[var(--ink)] cursor-pointer"
+          >
+            <option value="0">手动</option>
+            <option value="10000">10s</option>
+            <option value="30000">30s</option>
+          </NativeSelect>
+        );
+      case 'telemetry-manual-refresh':
+        return (
+          <Button
+            key={slot.id}
+            variant="secondary"
+            size="sm"
+            disabled={refreshing}
+            aria-label="手动刷新数据"
+            title="立即同步遥测快照"
+            data-slot-id={slot.id}
+            onClick={() => {
+              loadSnapshot(true);
+              if (activeModule.dataDeps.includes('probes')) loadProbes();
+              if (activeModule.dataDeps.includes('ops')) loadOpsData();
+            }}
+          >
+            <RefreshCw
+              className={cn('size-4 text-[var(--ink-muted)]', refreshing && 'animate-spin')}
+              strokeWidth={1.75}
+            />
+            <span className="hidden sm:inline">刷新</span>
+          </Button>
+        );
+      case 'theme-toggle':
+        return (
+          <Button
+            key={slot.id}
+            variant="ghost"
+            size="icon"
+            onClick={toggleTheme}
+            aria-label={theme === 'dark' ? '切换为浅色模式' : '切换为深色模式'}
+            title={theme === 'dark' ? '切换为浅色模式' : '切换为深色模式'}
+            data-testid="theme-toggle"
+            data-slot-id={slot.id}
+          >
+            {theme === 'dark' ? (
+              <Sun className="size-4" strokeWidth={1.75} />
+            ) : (
+              <Moon className="size-4" strokeWidth={1.75} />
+            )}
+          </Button>
+        );
+      case 'session-logout':
+        return (
+          <Button
+            key={slot.id}
+            variant="ghost"
+            size="sm"
+            onClick={handleLogout}
+            aria-label="退出登录"
+            title="退出登录"
+            data-slot-id={slot.id}
+          >
+            <LogOut className="size-4" strokeWidth={1.75} />
+            <span className="hidden md:inline">退出</span>
+          </Button>
+        );
+      default:
+        return null;
+    }
+  };
 
   return (
     <MotionConfig reducedMotion="user">
@@ -1317,7 +1473,7 @@ export function App() {
             >
               <Drawer.Title className="sr-only">{brandTitle} 导航菜单</Drawer.Title>
               <Drawer.Description className="sr-only">
-                在 Harness 与系统运维视图间切换
+                在跨机 Agent 控制平面与系统基础设施视图间切换
               </Drawer.Description>
               {renderSidebarContent(true)}
             </Drawer.Content>
@@ -1368,102 +1524,26 @@ export function App() {
                 </div>
               </div>
 
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={() => setCommandOpen(true)}
-                  aria-label="打开命令面板"
-                  data-testid="command-trigger"
-                  className={cn(
-                    'h-8 px-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-[12.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:border-[var(--border-strong)] transition-[color,border-color,transform] duration-150 ease-out active:scale-[0.97] inline-flex items-center gap-2 cursor-pointer whitespace-nowrap select-none',
-                    FOCUS_RING,
-                  )}
-                >
-                  <Search className="size-3.5 text-[var(--ink-subtle)]" strokeWidth={1.75} />
-                  <span className="hidden md:inline">搜索或跳转</span>
-                  <kbd className="hidden sm:inline-block font-mono text-[11px] text-[var(--ink-subtle)] px-1.5 py-0.5 rounded-md bg-[var(--surface-subtle)] border border-[var(--border-subtle)] leading-none">
-                    ⌘K
-                  </kbd>
-                </button>
-
-                {!isHarnessView && (
-                  <>
-                    <span
-                      className={cn(
-                        'hidden xl:inline-block font-mono text-[11.5px] tabular-nums whitespace-nowrap px-1.5 select-none',
-                        syncError ? 'text-[var(--err)]' : 'text-[var(--ink-subtle)]',
-                      )}
-                      title={syncError || lastSyncedAt}
-                    >
-                      {syncError
-                        ? '同步异常'
-                        : lastSyncedAt
-                          ? formatClock(lastSyncedAt)
-                          : '同步中...'}
-                    </span>
-
-                    <select
-                      aria-label="自动刷新周期"
-                      value={String(pollMs)}
-                      onChange={(e) => setPollMs(Number(e.target.value))}
-                      className={cn(
-                        'ui-select hidden sm:block h-8 pl-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-[12px] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:border-[var(--border-strong)] transition-colors duration-150 ease-out cursor-pointer',
-                        FOCUS_RING,
-                      )}
-                    >
-                      <option value="0">手动</option>
-                      <option value="10000">10s</option>
-                      <option value="30000">30s</option>
-                    </select>
-
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      disabled={refreshing}
-                      aria-label="手动刷新数据"
-                      title="立即同步遥测快照"
-                      onClick={() => {
-                        loadSnapshot(true);
-                        if (activeModule.dataDeps.includes('probes')) loadProbes();
-                        if (activeModule.dataDeps.includes('ops')) loadOpsData();
-                      }}
-                    >
-                      <RefreshCw
-                        className={cn('size-4 text-[var(--ink-muted)]', refreshing && 'animate-spin')}
-                        strokeWidth={1.75}
+              <div
+                className="flex items-center gap-1.5 sm:gap-2 shrink-0"
+                data-testid="workspace-action-bar"
+              >
+                {workspaceActionGroups.map((entry, idx) => (
+                  <React.Fragment key={entry.group}>
+                    {idx > 0 && (
+                      <span
+                        className="hidden sm:block h-4 w-px bg-[var(--border-subtle)] mx-0.5 shrink-0"
+                        aria-hidden="true"
                       />
-                      <span className="hidden sm:inline">刷新</span>
-                    </Button>
-                  </>
-                )}
-
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={toggleTheme}
-                  aria-label={theme === 'dark' ? '切换为浅色模式' : '切换为深色模式'}
-                  title={theme === 'dark' ? '切换为浅色模式' : '切换为深色模式'}
-                  data-testid="theme-toggle"
-                >
-                  {theme === 'dark' ? (
-                    <Sun className="size-4" strokeWidth={1.75} />
-                  ) : (
-                    <Moon className="size-4" strokeWidth={1.75} />
-                  )}
-                </Button>
-
-                {meta?.authEnabled && (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={handleLogout}
-                    aria-label="退出登录"
-                    title="退出登录"
-                  >
-                    <LogOut className="size-4" strokeWidth={1.75} />
-                    <span className="hidden md:inline">退出</span>
-                  </Button>
-                )}
+                    )}
+                    <div
+                      className="flex items-center gap-1.5 sm:gap-2"
+                      data-action-group={entry.group}
+                    >
+                      {entry.slots.map((slot) => renderWorkspaceActionSlot(slot))}
+                    </div>
+                  </React.Fragment>
+                ))}
               </div>
             </div>
           </header>

@@ -426,3 +426,36 @@ export function parseSubTabFromHash(hash: string): string | null {
   }
   return null;
 }
+
+export {
+  RAIL_PANEL_SLOTS,
+  SETTINGS_SECTION_SLOTS,
+  WORKSPACE_ACTION_SLOTS,
+  WORKSPACE_ACTION_GROUP_ORDER,
+  createUiSlotRegistry,
+  getRailPanelSlots,
+  getSettingsSectionById,
+  getSettingsSectionSlots,
+  getSlotsByKind,
+  getWorkspaceActionSlots,
+  groupWorkspaceActionSlots,
+  normalizeUiSlotName,
+  registerUiSlot,
+  uiSlotRegistry,
+  useUiSlots,
+  type AgentSettingsTabId,
+  type AnyUiSlot,
+  type DynamicUiSlotEntry,
+  type DynamicUiSlotFilter,
+  type RailPanelRegion,
+  type RailPanelSlot,
+  type SettingsSectionGroup,
+  type SettingsSectionSlot,
+  type SettingsSubTabSpec,
+  type UiSlotIdentifier,
+  type UiSlotKind,
+  type UiSlotName,
+  type UiSlotRegistry,
+  type WorkspaceActionGroup,
+  type WorkspaceActionSlot,
+} from './slots';
