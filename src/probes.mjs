@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
+import net from 'node:net';
 import path from 'node:path';
 import { maskClientIp } from './redact.mjs';
 import { safeEqualString } from './security.mjs';
@@ -81,6 +82,269 @@ function clampNum(value, min, max, fallback = null) {
 function cleanStr(value, maxLen = 120) {
   if (value === null || value === undefined) return '';
   return String(value).replace(/[\u0000-\u001f\u007f]/g, '').trim().slice(0, maxLen);
+}
+
+export function formatRelativeDurationZh(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return '未知时间';
+  const sec = Math.round(seconds);
+  if (sec < 60) return `${sec} 秒`;
+  if (sec < 3600) return `${Math.round(sec / 60)} 分钟`;
+  if (sec < 86400) return `${(sec / 3600).toFixed(1).replace(/\.0$/, '')} 小时`;
+  return `${Math.round(sec / 86400)} 天`;
+}
+
+function formatLastSeenAgo(isoStr, nowMs) {
+  if (!isoStr) return '';
+  const ts = Date.parse(isoStr);
+  if (!Number.isFinite(ts)) return '';
+  const diffSec = Math.max(0, (nowMs - ts) / 1000);
+  return `${formatRelativeDurationZh(diffSec)}前`;
+}
+
+function mapTcpErrorReason(errCode, port, fallbackMsg = '') {
+  switch (errCode) {
+    case 'ETIMEDOUT':
+      return `TCP 探测超时（:${port}，目标主机无响应或被防火墙丢弃）`;
+    case 'ECONNREFUSED':
+      return `TCP 连接被拒绝（:${port} 端口未监听或服务已停止）`;
+    case 'EHOSTUNREACH':
+    case 'ENETUNREACH':
+      return `网络路由不可达（:${port}）`;
+    case 'ENOTFOUND':
+      return `DNS 解析失败（:${port}）`;
+    case 'ECONNRESET':
+      return `TCP 连接被对端重置（:${port}）`;
+    default:
+      return `TCP 探测失败（:${port}${errCode ? ` · ${errCode}` : fallbackMsg ? ` · ${fallbackMsg}` : ''}）`;
+  }
+}
+
+export function probeTcpEndpoint(host, port, timeoutMs = 2200) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const checkedAt = new Date(started).toISOString();
+    if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
+      resolve({
+        reachable: false,
+        port: port || null,
+        protocol: 'tcp',
+        rttMs: null,
+        errorCode: 'EINVAL',
+        error: '无效的探测地址或端口',
+        checkedAt,
+      });
+      return;
+    }
+
+    let settled = false;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      try {
+        socket.destroy();
+      } catch {
+        // ignore cleanup error
+      }
+      resolve(result);
+    };
+
+    const socket = net.createConnection({ host, port });
+    socket.setTimeout(Math.min(5000, Math.max(300, Number(timeoutMs) || 2200)));
+
+    socket.once('connect', () => {
+      finish({
+        reachable: true,
+        port,
+        protocol: 'tcp',
+        rttMs: Math.max(1, Date.now() - started),
+        errorCode: null,
+        error: null,
+        checkedAt,
+      });
+    });
+
+    socket.once('timeout', () => {
+      finish({
+        reachable: false,
+        port,
+        protocol: 'tcp',
+        rttMs: Date.now() - started,
+        errorCode: 'ETIMEDOUT',
+        error: mapTcpErrorReason('ETIMEDOUT', port),
+        checkedAt,
+      });
+    });
+
+    socket.once('error', (err) => {
+      const code = err?.code || 'ERR_TCP';
+      finish({
+        reachable: false,
+        port,
+        protocol: 'tcp',
+        rttMs: Date.now() - started,
+        errorCode: code,
+        error: mapTcpErrorReason(code, port, cleanStr(err?.message || '', 80)),
+        checkedAt,
+      });
+    });
+  });
+}
+
+export async function probeExternalDeclaredNodes(declaredNodes = []) {
+  const targets = (Array.isArray(declaredNodes) ? declaredNodes : []).filter(
+    (node) => node?.id && node.probeHost && Number.isInteger(Number(node.probePort)),
+  );
+  if (targets.length === 0) return {};
+  const entries = await Promise.all(
+    targets.map(async (node) => {
+      const res = await probeTcpEndpoint(
+        String(node.probeHost).trim(),
+        Number(node.probePort),
+        Number(node.probeTimeoutMs) || 2200,
+      );
+      return [node.id, res];
+    }),
+  );
+  return Object.fromEntries(entries);
+}
+
+export function diagnoseNodeStatus({
+  probeMode,
+  probeEnrolled,
+  probeLive,
+  probeFresh,
+  hasTelemetry,
+  ageMs,
+  staleMs,
+  offlineMs,
+  peer,
+  sshRem,
+  extCheck,
+  isMobile,
+  isExternal,
+  decl = {},
+  nowMs = Date.now(),
+}) {
+  const peerHasDirectAddr = Boolean(peer?.curAddr && peer.curAddr !== 'none');
+  const peerLastSeenAgo = formatLastSeenAgo(peer?.lastSeen, nowMs);
+  const expectedReason = cleanStr(decl?.expectedOfflineReason || '', 240);
+  const knownOffline = decl?.knownStatus === 'offline';
+
+  let status = 'offline';
+  let transport = 'offline';
+  let statusReason = '';
+  let offlineReason = null;
+  let offlineCategory = null;
+
+  if (probeFresh) {
+    status = 'healthy';
+    transport = peer?.online
+      ? (peerHasDirectAddr ? 'direct' : (peer.relay ? 'relay' : 'direct'))
+      : (isMobile ? 'checkin' : 'direct');
+    statusReason = isMobile ? '移动端签到在线' : 'ops-probe 实时遥测正常';
+  } else if (probeLive) {
+    status = 'degraded';
+    transport = peer?.online
+      ? (peerHasDirectAddr ? 'direct' : (peer.relay ? 'relay' : 'direct'))
+      : (isMobile ? 'checkin' : 'direct');
+    const ageLabel = formatRelativeDurationZh(ageMs / 1000);
+    statusReason = `探针心跳延迟（最近上报 ${ageLabel}前，超过 ${Math.round(staleMs / 1000)}s 预期）`;
+    offlineReason = statusReason;
+    offlineCategory = 'probe_stale';
+  } else if (sshRem?.reachable) {
+    status = 'healthy';
+    transport = peer?.online ? (peerHasDirectAddr ? 'direct' : (peer.relay ? 'relay' : 'direct')) : 'ssh';
+    statusReason = 'SSH 主动巡检可达';
+  } else if (isExternal) {
+    transport = 'external';
+    if (knownOffline) {
+      status = 'offline';
+      transport = 'offline';
+      const probeSuffix = extCheck
+        ? (extCheck.reachable ? `（TCP :${extCheck.port} 仅端口可达 ${extCheck.rttMs}ms）` : `（${extCheck.error}）`)
+        : '';
+      offlineReason = `${expectedReason || '外部出口节点已知故障不可用'}${probeSuffix}`;
+      statusReason = offlineReason;
+      offlineCategory = 'external_degraded';
+    } else if (extCheck?.reachable) {
+      status = 'healthy';
+      statusReason = `外部节点 TCP :${extCheck.port} 探测可达（${extCheck.rttMs}ms）`;
+    } else if (extCheck && !extCheck.reachable) {
+      status = 'offline';
+      transport = 'offline';
+      offlineReason = expectedReason ? `${extCheck.error}；${expectedReason}` : extCheck.error;
+      statusReason = offlineReason;
+      offlineCategory = extCheck.errorCode === 'ECONNREFUSED' ? 'tcp_refused' : 'tcp_timeout';
+    } else {
+      status = 'standby';
+      statusReason = expectedReason || '外部代理/出口节点（未配置主动 TCP 或 ops-probe 探测）';
+      offlineCategory = 'standby_no_probe';
+    }
+  } else if (peer?.online) {
+    status = isMobile ? 'healthy' : 'standby';
+    transport = peerHasDirectAddr ? 'direct' : (peer.relay ? 'relay' : 'direct');
+    if (hasTelemetry && Number.isFinite(ageMs)) {
+      const ageLabel = formatRelativeDurationZh(ageMs / 1000);
+      statusReason = `Tailscale 在线（${peerHasDirectAddr ? '直连' : `DERP ${peer.relay}`}），但 ops-probe 已断连 ${ageLabel}（疑似探针进程停止）`;
+      offlineReason = statusReason;
+      offlineCategory = 'probe_timeout';
+    } else if (isMobile) {
+      statusReason = 'Tailscale 在线';
+    } else {
+      statusReason = `Tailscale 在线（${peerHasDirectAddr ? '直连' : `DERP ${peer.relay}`}），尚未部署或上报 ops-probe`;
+      offlineCategory = 'standby_no_probe';
+    }
+  } else if (isMobile) {
+    if (hasTelemetry && Number.isFinite(ageMs)) {
+      status = 'offline';
+      transport = 'offline';
+      const ageLabel = formatRelativeDurationZh(ageMs / 1000);
+      offlineReason = `移动端签到已超时（最后签到 ${ageLabel}前，超过 ${Math.round(offlineMs / 3600000)} 小时窗口）`;
+      statusReason = offlineReason;
+      offlineCategory = 'probe_timeout';
+    } else {
+      status = 'standby';
+      transport = 'checkin';
+      statusReason = expectedReason || '移动端按需签到模式（尚未收到签到上报，未加入固定 Tailnet）';
+      offlineCategory = 'standby_no_probe';
+    }
+  } else {
+    status = 'offline';
+    transport = 'offline';
+    const parts = [];
+    if (expectedReason) parts.push(expectedReason);
+    if (sshRem && !sshRem.reachable && sshRem.error) {
+      parts.push(`SSH 探测失败：${sshRem.error}`);
+      offlineCategory = 'ssh_error';
+    }
+    if (peer) {
+      if (peer.expired) {
+        parts.push('Tailscale 节点密钥已过期');
+        offlineCategory = offlineCategory || 'tailscale_expired';
+      } else {
+        const tsDetail = [
+          peerLastSeenAgo ? `最后在线 ${peerLastSeenAgo}` : '近期未上线',
+          peer.relay ? `relay ${peer.relay}` : '',
+        ].filter(Boolean).join(' · ');
+        parts.push(`Tailscale 对等体离线（${tsDetail}）`);
+        offlineCategory = offlineCategory || 'tailscale_offline';
+      }
+    }
+    if (hasTelemetry && Number.isFinite(ageMs)) {
+      parts.push(`ops-probe 心跳超时（最后上报 ${formatRelativeDurationZh(ageMs / 1000)}前，阈值 ${Math.round(offlineMs / 1000)}s）`);
+      offlineCategory = offlineCategory || 'probe_timeout';
+    } else if (probeMode === 'push' || probeEnrolled) {
+      parts.push(probeEnrolled ? '已注册探针但尚未收到心跳上报' : '未部署 ops-probe 遥测');
+      offlineCategory = offlineCategory || 'probe_never_seen';
+    } else if (!peer && !sshRem) {
+      parts.push('未收到探针心跳，且当前 Tailnet 中未发现该节点');
+      offlineCategory = offlineCategory || 'probe_never_seen';
+    }
+    offlineReason = parts.join('；');
+    statusReason = offlineReason;
+  }
+
+  return { status, transport, statusReason, offlineReason, offlineCategory };
 }
 
 export function sanitizeProbePayload(raw, expectedNodeId) {
@@ -508,7 +772,7 @@ export class ProbeRegistry {
     return { ok: true, nodeId: sanitized.nodeId, receivedAt: nowIso };
   }
 
-  buildFleetView({ snapshot, remotes = [] }) {
+  buildFleetView({ snapshot, remotes = [], externalChecks = {} }) {
     const fleetCfg = this.config.fleet || {};
     const staleMs = (fleetCfg.probeStaleSec || 90) * 1000;
     const offlineMs = (fleetCfg.probeOfflineSec || 180) * 1000;
@@ -638,6 +902,9 @@ export class ProbeRegistry {
       agentsCount: snapshot?.agents?.totalProcesses ?? snapshot?.agents?.total ?? 0,
       rttMs: 0,
       lastSeenAt: snapshot?.collectedAt || new Date(nowMs).toISOString(),
+      statusReason: '主控制面本机在线',
+      offlineReason: null,
+      offlineCategory: null,
       scopes: ['hub:local'],
       history: this.timeseries?.get(`node:${localId}`, 24) || [],
     });
@@ -671,27 +938,27 @@ export class ProbeRegistry {
       const probeLive = Boolean(tele && ageMs <= effectiveOfflineMs);
       const probeFresh = Boolean(tele && ageMs <= effectiveStaleMs);
       const isExternal = (rec?.probeMode || decl.probeMode) === 'external';
-      const peerHasDirectAddr = Boolean(peer?.curAddr && peer.curAddr !== 'none');
+      const extCheck = externalChecks?.[id] || null;
+      const probeMode = rec?.probeMode || decl.probeMode || (tele ? (isMobile ? 'checkin' : 'push') : (sshRem ? 'ssh' : 'tailscale-only'));
 
-      let status = 'offline';
-      if (probeFresh) status = 'healthy';
-      else if (probeLive) status = 'degraded';
-      else if (sshRem?.reachable) status = 'healthy';
-      else if (peer?.online) status = isMobile ? 'healthy' : 'standby';
-      else if (isMobile || isExternal) status = 'standby';
-
-      let transport = 'offline';
-      if (peer?.online) {
-        transport = peerHasDirectAddr ? 'direct' : (peer.relay ? 'relay' : 'direct');
-      } else if (probeLive) {
-        transport = isMobile ? 'checkin' : 'direct';
-      } else if (sshRem?.reachable) {
-        transport = 'ssh';
-      } else if (isMobile) {
-        transport = 'checkin';
-      } else if (isExternal) {
-        transport = 'external';
-      }
+      const diag = diagnoseNodeStatus({
+        probeMode,
+        probeEnrolled: Boolean(rec),
+        probeLive,
+        probeFresh,
+        hasTelemetry: Boolean(tele),
+        ageMs,
+        staleMs: effectiveStaleMs,
+        offlineMs: effectiveOfflineMs,
+        peer,
+        sshRem,
+        extCheck,
+        isMobile,
+        isExternal,
+        decl,
+        nowMs,
+      });
+      const { status, transport, statusReason, offlineReason, offlineCategory } = diag;
 
       const data = tele?.data || null;
       const derpFallback = DERP_COORDS[String(peer?.relay || data?.tailscale?.relay || '').toLowerCase()] || null;
@@ -701,8 +968,6 @@ export class ProbeRegistry {
       const lon = Number.isFinite(Number(decl.lon)) ? Number(decl.lon)
         : Number.isFinite(Number(rec?.lon)) ? Number(rec.lon)
         : (derpFallback?.lon ?? 105.0);
-
-      const probeMode = rec?.probeMode || decl.probeMode || (tele ? (isMobile ? 'checkin' : 'push') : (sshRem ? 'ssh' : 'tailscale-only'));
 
       nodesById.set(id, {
         id,
@@ -738,8 +1003,22 @@ export class ProbeRegistry {
         harnesses: data?.harnesses || [],
         agentsCount: data?.agents?.count ?? 0,
         backupDisk: sshRem?.backupDisk || (sshRem?.backup && sshRem.backup !== 'n/a' ? sshRem.backup : null),
-        rttMs: data?.hubRttMs ?? (sshRem?.reachable ? sshRem.rttMs : null),
-        lastSeenAt: tele?.receivedAt || (sshRem?.reachable ? (sshRem.checkedAt || snapshot?.collectedAt || nowIso) : null) || peer?.lastSeen || null,
+        rttMs: data?.hubRttMs ?? (sshRem?.reachable ? sshRem.rttMs : (extCheck?.reachable ? extCheck.rttMs : null)),
+        lastSeenAt: tele?.receivedAt || (sshRem?.reachable ? (sshRem.checkedAt || snapshot?.collectedAt || nowIso) : null) || (extCheck?.reachable ? extCheck.checkedAt : null) || peer?.lastSeen || null,
+        statusReason,
+        offlineReason,
+        offlineCategory,
+        externalProbe: extCheck
+          ? {
+              port: extCheck.port,
+              protocol: extCheck.protocol,
+              reachable: extCheck.reachable,
+              rttMs: extCheck.rttMs,
+              errorCode: extCheck.errorCode,
+              error: extCheck.error,
+              checkedAt: extCheck.checkedAt,
+            }
+          : null,
         note: data?.note || decl.note || '',
         scopes: rec?.scopes || (isMobile ? ['telemetry:checkin'] : ['readonly']),
         history: this.timeseries?.get(`node:${id}`, 24) || [],
@@ -758,6 +1037,23 @@ export class ProbeRegistry {
         : osLower.includes('mac') || osLower.includes('darwin') || osLower.includes('windows')
           ? 'laptop'
           : 'server';
+      const peerDiag = diagnoseNodeStatus({
+        probeMode: 'tailscale-only',
+        probeEnrolled: false,
+        probeLive: false,
+        probeFresh: false,
+        hasTelemetry: false,
+        ageMs: Infinity,
+        staleMs,
+        offlineMs,
+        peer,
+        sshRem: null,
+        extCheck: null,
+        isMobile: deviceType === 'mobile',
+        isExternal: false,
+        decl: {},
+        nowMs,
+      });
       nodesById.set(autoId, {
         id: autoId,
         name: peer.name || peer.dnsName || peer.ip,
@@ -767,12 +1063,12 @@ export class ProbeRegistry {
         provider: 'Tailscale',
         lat: derp.lat,
         lon: derp.lon,
-        status: peer.online ? 'standby' : 'offline',
+        status: peerDiag.status,
         probeMode: 'tailscale-only',
         probeEnrolled: false,
         probeLive: false,
         probeAgeSec: null,
-        transport: peer.online ? ((peer.curAddr && peer.curAddr !== 'none') ? 'direct' : (peer.relay ? 'relay' : 'direct')) : 'offline',
+        transport: peerDiag.transport,
         tailscaleIp: peer.ip || '',
         tailscaleDns: peer.dnsName || '',
         relay: peer.relay || '',
@@ -789,6 +1085,9 @@ export class ProbeRegistry {
         agentsCount: 0,
         rttMs: null,
         lastSeenAt: peer.lastSeen || null,
+        statusReason: peerDiag.statusReason,
+        offlineReason: peerDiag.offlineReason,
+        offlineCategory: peerDiag.offlineCategory,
         scopes: ['tailscale:peer'],
         history: [],
       });
@@ -840,6 +1139,7 @@ export class ProbeRegistry {
     let servers = 0;
     let laptops = 0;
     let mobiles = 0;
+    let offlineNodes = 0;
     let cpuSum = 0;
     let cpuCount = 0;
     let memSum = 0;
@@ -848,6 +1148,7 @@ export class ProbeRegistry {
     for (const node of nodes) {
       if (node.status === 'healthy' || node.status === 'degraded') onlineNodes += 1;
       else if (node.status === 'standby' && (node.transport === 'direct' || node.transport === 'relay')) meshOnlyNodes += 1;
+      if (node.status === 'offline') offlineNodes += 1;
       if (node.probeMode === 'local' || node.probeLive) probedNodes += 1;
       if (node.deviceType === 'hub' || node.deviceType === 'server' || node.deviceType === 'edge') servers += 1;
       else if (node.deviceType === 'laptop') laptops += 1;
@@ -884,6 +1185,7 @@ export class ProbeRegistry {
         servers,
         laptops,
         mobiles,
+        offline: offlineNodes,
       },
       nodes,
       links,

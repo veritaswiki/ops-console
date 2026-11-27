@@ -404,6 +404,18 @@ export interface FleetNode {
   probeAgeSec?: number | null;
   uptimeSec?: number | null;
   rttMs?: number | null;
+  statusReason?: string | null;
+  offlineReason?: string | null;
+  offlineCategory?: string | null;
+  externalProbe?: {
+    port?: number | null;
+    protocol?: string;
+    reachable?: boolean;
+    rttMs?: number | null;
+    errorCode?: string | null;
+    error?: string | null;
+    checkedAt?: string | null;
+  } | null;
   cpu?: {
     usagePct?: number | null;
     cores?: number | null;
