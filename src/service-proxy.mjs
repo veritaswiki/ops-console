@@ -210,32 +210,76 @@ export function buildEmbedRuntimeShim(prefix) {
     + 'if(u.charAt(0)==="/"&&u.charAt(1)!=="/")return p+u;'
     + 'try{var o=window.location.origin;if(o&&u.indexOf(o+"/")===0){var r=u.slice(o.length);if(r!==p&&r.indexOf(p+"/")!==0&&r.indexOf("/embed/")!==0)return o+p+r;}}catch(_){}'
     + 'return u;}'
+    + 'function rwUrl(u){'
+    + 'if(typeof u==="string")return rw(u);'
+    + 'if(u&&typeof u==="object"&&typeof u.href==="string"&&typeof u.origin==="string"){var nh=rw(u.href);if(nh!==u.href)return nh;}'
+    + 'return u;}'
     + 'if(typeof window.fetch==="function"){'
     + 'var _f=window.fetch.bind(window);'
     + 'window.fetch=function(i,n){'
     + 'if(typeof i==="string")return _f(rw(i),n);'
-    + 'if(i&&typeof i==="object"&&typeof i.url==="string"){var nu=rw(i.url);if(nu!==i.url){try{return _f(new Request(nu,i),n);}catch(_){}}}'
+    + 'if(i&&typeof i==="object"){'
+    + 'if(typeof i.url==="string"){var nu=rw(i.url);if(nu!==i.url){try{return _f(new Request(nu,i),n);}catch(_){}}}'
+    + 'else if(typeof i.href==="string"&&typeof i.origin==="string"){var nh=rw(i.href);if(nh!==i.href)return _f(nh,n);}}'
     + 'return _f(i,n);};}'
     + 'if(window.XMLHttpRequest&&window.XMLHttpRequest.prototype){'
     + 'var _o=window.XMLHttpRequest.prototype.open;'
     + 'window.XMLHttpRequest.prototype.open=function(m,u){'
-    + 'var a=Array.prototype.slice.call(arguments);if(typeof u==="string")a[1]=rw(u);return _o.apply(this,a);};}'
+    + 'var a=Array.prototype.slice.call(arguments);a[1]=rwUrl(u);return _o.apply(this,a);};}'
     + 'if(typeof window.EventSource==="function"){'
     + 'var _E=window.EventSource;'
-    + 'window.EventSource=function(u,c){return new _E(typeof u==="string"?rw(u):u,c);};'
+    + 'window.EventSource=function(u,c){return new _E(rwUrl(u),c);};'
     + 'window.EventSource.prototype=_E.prototype;}'
     + 'function patchProp(C,prop){try{if(!C||!C.prototype)return;var d=Object.getOwnPropertyDescriptor(C.prototype,prop);if(d&&d.set&&d.configurable){Object.defineProperty(C.prototype,prop,{configurable:true,enumerable:d.enumerable,get:d.get,set:function(v){return d.set.call(this,typeof v==="string"?rw(v):v);}});}}catch(_){}}'
     + 'patchProp(window.HTMLLinkElement,"href");'
     + 'patchProp(window.HTMLScriptElement,"src");'
+    + 'patchProp(window.HTMLImageElement,"src");'
     + 'try{if(window.Element&&window.Element.prototype&&typeof window.Element.prototype.setAttribute==="function"){'
     + 'var _sa=window.Element.prototype.setAttribute;'
     + 'window.Element.prototype.setAttribute=function(k,v){'
     + 'if(typeof k==="string"&&typeof v==="string"){'
     + 'var lk=k.toLowerCase();var tn=this&&this.tagName?String(this.tagName).toUpperCase():"";'
-    + 'if((tn==="LINK"&&lk==="href")||(tn==="SCRIPT"&&lk==="src")){v=rw(v);}}'
+    + 'if((tn==="LINK"&&lk==="href")||((tn==="SCRIPT"||tn==="IMG")&&lk==="src")){v=rw(v);}}'
     + 'return _sa.call(this,k,v);};}}catch(_){}'
     + '})();</script>'
   );
+}
+
+export function rewriteEmbeddedCss(css, embedBase, targetOrigin = '') {
+  if (typeof css !== 'string' || !css) return css;
+  const base = normalizeEmbedBase(embedBase);
+  const prefix = base.slice(0, -1);
+  const originNorm = (() => {
+    if (!targetOrigin) return '';
+    try {
+      return new URL(targetOrigin).origin;
+    } catch {
+      return '';
+    }
+  })();
+
+  return css.replace(/url\(\s*(["']?)([^)"']+)\1\s*\)/gi, (full, quote, rawVal) => {
+    const val = rawVal.trim();
+    if (
+      !val ||
+      val.startsWith('#') ||
+      val.startsWith('//') ||
+      val.startsWith('/embed/') ||
+      val === prefix ||
+      val.startsWith(base) ||
+      /^(?:data|blob|about):/i.test(val)
+    ) {
+      return full;
+    }
+    if (val.startsWith('/')) {
+      return `url(${quote}${prefix}${val}${quote})`;
+    }
+    if (originNorm && val.startsWith(`${originNorm}/`)) {
+      const rest = val.slice(originNorm.length);
+      return `url(${quote}${prefix}${rest}${quote})`;
+    }
+    return full;
+  });
 }
 
 export function rewriteEmbeddedHtml(html, embedBase, targetOrigin = '') {
@@ -540,6 +584,7 @@ export async function handleServiceEmbedProxy({ req, res, pathname, search = '',
 
     const contentType = String(upstreamRes.headers.get('content-type') || '');
     const isHtml = /\btext\/html\b/i.test(contentType);
+    const isCss = /\btext\/css\b/i.test(contentType);
 
     if (method === 'HEAD') {
       res.writeHead(upstreamRes.status, respHeaders);
@@ -552,6 +597,10 @@ export async function handleServiceEmbedProxy({ req, res, pathname, search = '',
       const rawHtml = await upstreamRes.text();
       const rewrittenHtml = rewriteEmbeddedHtml(rawHtml, embedBase, baseTarget.origin);
       finalBody = Buffer.from(rewrittenHtml, 'utf8');
+    } else if (isCss) {
+      const rawCss = await upstreamRes.text();
+      const rewrittenCss = rewriteEmbeddedCss(rawCss, embedBase, baseTarget.origin);
+      finalBody = Buffer.from(rewrittenCss, 'utf8');
     } else {
       finalBody = Buffer.from(await upstreamRes.arrayBuffer());
     }

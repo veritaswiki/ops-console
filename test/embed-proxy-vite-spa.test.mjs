@@ -10,6 +10,7 @@ import { SESSION_COOKIE_NAME } from '../src/security.mjs';
 import { createOpsConsole } from '../src/server.mjs';
 import {
   buildEmbedRuntimeShim,
+  rewriteEmbeddedCss,
   rewriteEmbeddedHtml,
   rewriteUpstreamReferer,
 } from '../src/service-proxy.mjs';
@@ -101,7 +102,7 @@ async function startStrictOriginViteUpstream() {
   };
 }
 
-test('rewriteUpstreamReferer and buildEmbedRuntimeShim rewrite dynamic link/script assets cleanly', () => {
+test('rewriteUpstreamReferer, rewriteEmbeddedCss, and buildEmbedRuntimeShim rewrite dynamic assets and URL objects cleanly', async () => {
   assert.equal(
     rewriteUpstreamReferer('http://ops.example.com:4320/embed/nmem/app/?tab=1', '/embed/nmem/', 'http://127.0.0.1:14242'),
     'http://127.0.0.1:14242/app/?tab=1',
@@ -163,12 +164,26 @@ test('rewriteUpstreamReferer and buildEmbedRuntimeShim rewrite dynamic link/scri
     }
   }
 
+  class MockHTMLImageElement extends MockElement {
+    constructor() {
+      super('IMG');
+      this._src = '';
+    }
+    get src() {
+      return this._src;
+    }
+    set src(val) {
+      this._src = val;
+    }
+  }
+
   const sandbox = {
     window: null,
     location: { origin: 'http://ops.example.com:4320' },
     Element: MockElement,
     HTMLLinkElement: MockHTMLLinkElement,
     HTMLScriptElement: MockHTMLScriptElement,
+    HTMLImageElement: MockHTMLImageElement,
     fetch: async (url) => ({ url }),
   };
   sandbox.window = sandbox;
@@ -202,6 +217,33 @@ test('rewriteUpstreamReferer and buildEmbedRuntimeShim rewrite dynamic link/scri
   const script2 = new MockHTMLScriptElement();
   script2.setAttribute('src', 'http://ops.example.com:4320/app/assets/worker.js');
   assert.equal(script2.attrs.src, 'http://ops.example.com:4320/embed/nmem/app/assets/worker.js');
+
+  const img1 = new MockHTMLImageElement();
+  img1.src = '/studio/ov-logo.png';
+  assert.equal(img1.src, '/embed/nmem/studio/ov-logo.png');
+
+  const img2 = new MockHTMLImageElement();
+  img2.setAttribute('src', '/studio/banner.png');
+  assert.equal(img2.attrs.src, '/embed/nmem/studio/banner.png');
+
+  const fetchUrlRes = await sandbox.fetch(new URL('/api/auth/session', 'http://ops.example.com:4320'));
+  assert.equal(fetchUrlRes.url, 'http://ops.example.com:4320/embed/nmem/api/auth/session');
+
+  const fetchExternalUrlRes = await sandbox.fetch(new URL('https://example.com/status'));
+  assert.equal(String(fetchExternalUrlRes.url), 'https://example.com/status');
+
+  const rewrittenCss = rewriteEmbeddedCss(
+    '@font-face{src:url(/assets/inter.woff2) format("woff2"),url(\'/studio/noto.woff2\'),url("http://127.0.0.1:3773/assets/mono.woff2"),url(data:font/woff2;base64,AAA),url(https://fonts.gstatic.com/a.woff2),url(/embed/t3code/assets/done.woff2);}',
+    '/embed/t3code/',
+    'http://127.0.0.1:3773',
+  );
+  assert.ok(rewrittenCss.includes('url(/embed/t3code/assets/inter.woff2)'));
+  assert.ok(rewrittenCss.includes("url('/embed/t3code/studio/noto.woff2')"));
+  assert.ok(rewrittenCss.includes('url("http://127.0.0.1:3773/assets/mono.woff2")') === false);
+  assert.ok(rewrittenCss.includes('url("/embed/t3code/assets/mono.woff2")'));
+  assert.ok(rewrittenCss.includes('url(data:font/woff2;base64,AAA)'));
+  assert.ok(rewrittenCss.includes('url(https://fonts.gstatic.com/a.woff2)'));
+  assert.ok(rewrittenCss.includes('url(/embed/t3code/assets/done.woff2)'));
 });
 
 test('Embed proxy rewrites strict Origin/Referer, strips conflicting CORS headers, and avoids 429 on Vite chunk bursts', async () => {
