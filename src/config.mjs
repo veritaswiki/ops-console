@@ -289,6 +289,53 @@ export function validateConfig(raw) {
     }
   }
 
+  if (raw.cacheMonitor !== undefined) {
+    if (typeof raw.cacheMonitor !== 'object' || Array.isArray(raw.cacheMonitor) || raw.cacheMonitor === null) {
+      errors.push('cacheMonitor must be an object');
+    } else {
+      const cm = raw.cacheMonitor;
+      if (cm.thresholdPct !== undefined) {
+        const v = Number(cm.thresholdPct);
+        if (!Number.isFinite(v) || v < 1 || v > 100) errors.push(`Invalid cacheMonitor.thresholdPct: ${cm.thresholdPct}`);
+      }
+      if (cm.dropDeltaPct !== undefined) {
+        const v = Number(cm.dropDeltaPct);
+        if (!Number.isFinite(v) || v < 1 || v > 100) errors.push(`Invalid cacheMonitor.dropDeltaPct: ${cm.dropDeltaPct}`);
+      }
+      if (cm.windowMinutes !== undefined) {
+        const v = Number(cm.windowMinutes);
+        if (!Number.isFinite(v) || v < 5 || v > 1440) errors.push(`Invalid cacheMonitor.windowMinutes: ${cm.windowMinutes}`);
+      }
+      if (cm.minSamples !== undefined) {
+        const v = Number(cm.minSamples);
+        if (!Number.isFinite(v) || v < 1 || v > 1000) errors.push(`Invalid cacheMonitor.minSamples: ${cm.minSamples}`);
+      }
+      if (cm.pollIntervalSec !== undefined) {
+        const v = Number(cm.pollIntervalSec);
+        if (!Number.isFinite(v) || v < 10 || v > 3600) errors.push(`Invalid cacheMonitor.pollIntervalSec: ${cm.pollIntervalSec}`);
+      }
+      if (cm.analysisIntervalMinutes !== undefined) {
+        const v = Number(cm.analysisIntervalMinutes);
+        if (!Number.isFinite(v) || v < 0 || v > 1440) errors.push(`Invalid cacheMonitor.analysisIntervalMinutes: ${cm.analysisIntervalMinutes}`);
+      }
+      if (cm.cooldownMinutes !== undefined) {
+        const v = Number(cm.cooldownMinutes);
+        if (!Number.isFinite(v) || v < 1 || v > 1440) errors.push(`Invalid cacheMonitor.cooldownMinutes: ${cm.cooldownMinutes}`);
+      }
+      if (cm.maxCallsPerHour !== undefined) {
+        const v = Number(cm.maxCallsPerHour);
+        if (!Number.isFinite(v) || v < 1 || v > 120) errors.push(`Invalid cacheMonitor.maxCallsPerHour: ${cm.maxCallsPerHour}`);
+      }
+      if (cm.dailyTokenBudget !== undefined) {
+        const v = Number(cm.dailyTokenBudget);
+        if (!Number.isFinite(v) || v < 1000 || v > 2_000_000) errors.push(`Invalid cacheMonitor.dailyTokenBudget: ${cm.dailyTokenBudget}`);
+      }
+      if (cm.decisionModel !== undefined && (typeof cm.decisionModel !== 'string' || !cm.decisionModel.trim() || /\s/.test(cm.decisionModel))) {
+        errors.push(`Invalid cacheMonitor.decisionModel: ${cm.decisionModel}`);
+      }
+    }
+  }
+
   return { valid: errors.length === 0, errors };
 }
 
@@ -434,6 +481,7 @@ export function loadConfig(options = {}) {
         webUrl: raw.connectors?.magpie?.webUrl || '',
         cliBin: raw.connectors?.magpie?.cliBin || 'magpie',
         configHome: raw.connectors?.magpie?.configHome || '',
+        usageFile: env.MAGPIE_USAGE_FILE || raw.connectors?.magpie?.usageFile || '',
         addr: raw.connectors?.magpie?.addr || '127.0.0.1:3426',
       },
       nmem: {
@@ -599,6 +647,20 @@ export function loadConfig(options = {}) {
         ? Boolean(raw.updates.allowSelfRestart)
         : true,
     },
+    cacheMonitor: {
+      enabled: raw.cacheMonitor?.enabled !== undefined ? Boolean(raw.cacheMonitor.enabled) : true,
+      advisorEnabled: raw.cacheMonitor?.advisorEnabled !== undefined ? Boolean(raw.cacheMonitor.advisorEnabled) : true,
+      decisionModel: String(raw.cacheMonitor?.decisionModel || 'auto/deepseek-v4.1-flash').trim() || 'auto/deepseek-v4.1-flash',
+      thresholdPct: Math.min(100, Math.max(1, Number(raw.cacheMonitor?.thresholdPct ?? 90))),
+      dropDeltaPct: Math.min(100, Math.max(1, Number(raw.cacheMonitor?.dropDeltaPct ?? 15))),
+      windowMinutes: Math.min(1440, Math.max(5, Math.round(Number(raw.cacheMonitor?.windowMinutes ?? 60)))),
+      minSamples: Math.min(1000, Math.max(1, Math.round(Number(raw.cacheMonitor?.minSamples ?? 5)))),
+      pollIntervalSec: Math.min(3600, Math.max(10, Math.round(Number(raw.cacheMonitor?.pollIntervalSec ?? 60)))),
+      analysisIntervalMinutes: Math.min(1440, Math.max(0, Math.round(Number(raw.cacheMonitor?.analysisIntervalMinutes ?? 30)))),
+      cooldownMinutes: Math.min(1440, Math.max(1, Math.round(Number(raw.cacheMonitor?.cooldownMinutes ?? 15)))),
+      maxCallsPerHour: Math.min(120, Math.max(1, Math.round(Number(raw.cacheMonitor?.maxCallsPerHour ?? 12)))),
+      dailyTokenBudget: Math.min(2_000_000, Math.max(1000, Math.round(Number(raw.cacheMonitor?.dailyTokenBudget ?? 120_000)))),
+    },
     agentMatchers: Array.isArray(raw.agentMatchers) && raw.agentMatchers.length > 0
       ? raw.agentMatchers
       : DEFAULT_AGENT_MATCHERS,
@@ -675,6 +737,7 @@ export function applyHotConfigUpdate(targetConfig, nextConfig) {
     'ops',
     'plugins',
     'updates',
+    'cacheMonitor',
     'agentMatchers',
   ];
   for (const section of hotSections) {

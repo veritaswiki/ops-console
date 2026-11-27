@@ -45,6 +45,8 @@ import { handleServiceEmbedProxy } from './service-proxy.mjs';
 import { TelemetryStore } from './store.mjs';
 import { TimeSeriesStore } from './timeseries.mjs';
 import { IncrementalUpdater } from './updater.mjs';
+import { DecisionAdvisor } from './decision-advisor.mjs';
+import { RuntimeCacheMonitor } from './cache-monitor.mjs';
 import {
   buildClearSessionCookie,
   buildSessionCookie,
@@ -435,6 +437,20 @@ export function createOpsConsole(options = {}) {
     eventBus,
     verifyRunner: options.evolutionVerifyRunner || null,
     prPublisher: options.evolutionPrPublisher || null,
+  });
+  const decisionAdvisor = options.decisionAdvisor || new DecisionAdvisor({
+    config,
+    logger,
+    eventBus,
+    fetchImpl: options.advisorFetchImpl || undefined,
+  });
+  const cacheMonitor = options.cacheMonitor || new RuntimeCacheMonitor({
+    config,
+    advisor: decisionAdvisor,
+    probeRegistry,
+    logger,
+    eventBus,
+    usageFile: options.usageFile !== undefined ? options.usageFile : (config.demo ? '' : undefined),
   });
   const allowIframe = Boolean(config.security?.allowIframe);
   const secHeaders = (isHtml = false) => getSecurityHeaders({ isHtml, allowIframe });
@@ -1313,33 +1329,68 @@ export function createOpsConsole(options = {}) {
           return;
         }
         const snap = await hub.collectSnapshot(false);
-        const providers = (snap.magpie?.providers || []).map((p) => ({
-          name: p.name,
-          requests: p.count || 0,
-          tokensK: 0,
-          avgTtftMs: snap.magpie?.latencyMs ?? 0,
-          errorRatePct: 0,
-          costUsd: 0,
-          circuitState: 'closed',
-        }));
-        sendJson(res, 200, {
-          ok: true,
-          window: '24h',
-          summary: {
-            totalRequests: providers.reduce((a, b) => a + b.requests, 0),
-            totalTokens: 0,
-            avgTtftMs: snap.magpie?.latencyMs ?? 0,
-            p95LatencyMs: snap.magpie?.latencyMs ?? 0,
-            cacheHitPct: 0,
-            estimatedCostUsd24h: 0,
-            dailyBudgetUsd: 10,
-            errorRatePct: 0,
-          },
-          providers,
-          sessions: [],
-          accelerators: [],
-          hourly: [],
-        }, {}, req);
+        const telemetry = await cacheMonitor.getTelemetryOverlay(snap);
+        sendJson(res, 200, telemetry, {}, req);
+        return;
+      }
+
+      // ─── Runtime Cache Monitor & Shared Decision Advisor (/api/cache-monitor/*, /api/decision-advisor/*) ──
+      if (method === 'GET' && pathname === '/api/cache-monitor') {
+        const status = await cacheMonitor.getStatus();
+        sendJson(res, 200, status, {}, req);
+        return;
+      }
+
+      if (method === 'PUT' && pathname === '/api/cache-monitor/config') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const updatedConfig = await cacheMonitor.updateConfig(data || {});
+        const advisorStatus = await decisionAdvisor.getStatus();
+        sendJson(res, 200, { ok: true, config: updatedConfig, advisor: advisorStatus }, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/cache-monitor/analyze') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await cacheMonitor.triggerManualAnalysis({
+          key: data?.key ? String(data.key) : null,
+          model: data?.model ? String(data.model) : null,
+          mode: data?.mode ? String(data.mode) : null,
+        });
+        sendJson(res, 200, { ok: true, ...result }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/decision-advisor/status') {
+        const status = await decisionAdvisor.getStatus();
+        sendJson(res, 200, { ok: true, ...status }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/decision-advisor/diagnoses') {
+        const domainId = url.searchParams.get('domainId') || null;
+        const limit = Number(url.searchParams.get('limit') || 50);
+        const items = await decisionAdvisor.getDiagnoses({ domainId, limit });
+        sendJson(res, 200, { ok: true, items }, {}, req);
+        return;
+      }
+
+      if (method === 'PUT' && pathname === '/api/decision-advisor/config') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const updated = await decisionAdvisor.updateConfig(data || {});
+        const status = await decisionAdvisor.getStatus();
+        sendJson(res, 200, { ok: true, config: updated, status }, {}, req);
         return;
       }
 
@@ -3685,6 +3736,8 @@ export function createOpsConsole(options = {}) {
       await agentModuleHost.init();
       await selfEvolution.init();
       await updater.init();
+      await decisionAdvisor.ensureLoaded();
+      await cacheMonitor.ensureLoaded();
       await store.hydrateTimeSeries(timeseries, { limitPerSeries: config.fleet?.historyPoints || 60 });
       for (const host of hosts) {
         const srv = http.createServer(handleRequest);
@@ -3706,6 +3759,9 @@ export function createOpsConsole(options = {}) {
       }
       started = true;
       hub.warmUp();
+      if (!config.demo && !options.disableBackgroundTimers) {
+        cacheMonitor.start();
+      }
       logger.info('server_started', {
         version: APP_VERSION,
         demo: config.demo,
@@ -3723,6 +3779,7 @@ export function createOpsConsole(options = {}) {
 
   async function stop() {
     updater.stopWatchers();
+    cacheMonitor.stop();
     await agentModuleHost.dispose();
     await pluginManager.disposeAll('shutdown');
     logs.closeAllStreams();
@@ -3767,6 +3824,8 @@ export function createOpsConsole(options = {}) {
     updater,
     agentModuleHost,
     selfEvolution,
+    decisionAdvisor,
+    cacheMonitor,
     servers,
     addresses,
     start,

@@ -163,6 +163,7 @@ describe('Wave 2 module helpers', () => {
     assert.deepEqual(parseOverviewPrefs('{invalid json'), DEFAULT_OVERVIEW_PREFS);
     assert.deepEqual(parseOverviewPrefs(JSON.stringify({ graph: false, metrics: false })), {
       metrics: false,
+      cache: true,
       graph: false,
       connectors: true,
       storageEvents: true,

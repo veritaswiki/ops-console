@@ -1733,6 +1733,8 @@ export async function collectProbeMetrics(config = {}, state = {}) {
         nodeId: resolvedNodeId,
       });
 
+  const cacheTelemetry = await collectLocalCacheTelemetry(config, { nowFn: () => nowMs }).catch(() => null);
+
   return {
     schemaVersion: SCHEMA_VERSION,
     probeVersion: PROBE_VERSION,
@@ -1763,6 +1765,7 @@ export async function collectProbeMetrics(config = {}, state = {}) {
     modelSources: modelDiscovery.modelSources,
     models: modelDiscovery.models,
     agentBindings: modelDiscovery.agentBindings,
+    cache: cacheTelemetry,
     hubRttMs,
   };
 }
@@ -2258,4 +2261,292 @@ if (isMainModule()) {
     process.stderr.write(`[ops-probe] Fatal error: ${error?.message || String(error)}\n`);
     process.exitCode = 1;
   });
+}
+const LOCAL_CACHE_TELEMETRY_TAIL_BYTES = 2 * 1024 * 1024;
+const LOCAL_CACHE_TELEMETRY_WINDOW_MS = 60 * 60 * 1000;
+const LOCAL_CACHE_LONG_GAP_MS = 5 * 60 * 1000;
+const LOCAL_CACHE_MAX_BUCKETS = 32;
+
+function cleanCacheLabel(value, fallback = 'unknown', maxLen = 96) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return fallback;
+  const cleaned = raw
+    .replace(PROBE_EMAIL_RE, '[redacted-email]')
+    .replace(PROBE_SECRET_RE, '[redacted-secret]')
+    .replace(/[\r\n\t]+/g, ' ')
+    .trim()
+    .slice(0, maxLen);
+  return cleaned || fallback;
+}
+
+function computeProbeCacheHitPct(tokensIn, cacheRead, cacheWrite = 0) {
+  const denom = tokensIn + cacheRead + cacheWrite;
+  if (denom <= 0) return null;
+  return Math.round(((cacheRead / denom) * 100) * 100) / 100;
+}
+
+function probePercentile(sortedNums, p) {
+  if (!sortedNums.length) return 0;
+  const idx = Math.min(sortedNums.length - 1, Math.max(0, Math.ceil(sortedNums.length * p) - 1));
+  return Math.round(sortedNums[idx]);
+}
+
+export async function collectLocalCacheTelemetry(config = {}, options = {}) {
+  if (config.collectCache === false) return null;
+  const nowMs = typeof options.nowFn === 'function' ? options.nowFn() : Date.now();
+  const windowMinutes = Math.max(5, Math.min(1440, Math.round(Number(config.cacheWindowMinutes) || 60)));
+  const windowMs = windowMinutes * 60 * 1000;
+  const explicitPath = String(config.magpieUsageFile || process.env.MAGPIE_USAGE_FILE || '').trim();
+  const configHome = String(config.magpieConfigHome || process.env.MAGPIE_CONFIG_HOME || '').trim();
+  const candidates = [];
+  if (explicitPath) candidates.push(explicitPath);
+  if (configHome) candidates.push(path.join(configHome, 'usage.jsonl'));
+  candidates.push('/opt/magpie/config/magpie/usage.jsonl');
+  candidates.push(path.join(os.homedir(), '.config', 'magpie', 'usage.jsonl'));
+
+  let targetFile = null;
+  let stat = null;
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    try {
+      const info = await fs.stat(candidate);
+      if (info.isFile() && info.size > 0) {
+        targetFile = candidate;
+        stat = info;
+        break;
+      }
+    } catch {
+      // try next candidate
+    }
+  }
+  if (!targetFile || !stat) return null;
+
+  const startOffset = Math.max(0, stat.size - LOCAL_CACHE_TELEMETRY_TAIL_BYTES);
+  const readLen = stat.size - startOffset;
+  if (readLen <= 0) return null;
+
+  let text = '';
+  let fh = null;
+  try {
+    fh = await fs.open(targetFile, 'r');
+    const buf = Buffer.allocUnsafe(readLen);
+    const { bytesRead } = await fh.read(buf, 0, readLen, startOffset);
+    text = buf.subarray(0, bytesRead).toString('utf8');
+  } catch {
+    return null;
+  } finally {
+    await fh?.close().catch(() => {});
+  }
+
+  const lines = text.split('\n');
+  if (startOffset > 0 && lines.length > 0) {
+    lines.shift();
+  }
+  const cutoffMs = nowMs - windowMs;
+  const byKey = new Map();
+  let totalRequests = 0;
+  let totalIn = 0;
+  let totalOut = 0;
+  let totalCacheRead = 0;
+  let totalCacheWrite = 0;
+  let totalTtft = 0;
+  let totalTtftCount = 0;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed[0] !== '{') continue;
+    let raw;
+    try {
+      raw = JSON.parse(trimmed);
+    } catch {
+      continue;
+    }
+    if (!raw || typeof raw !== 'object') continue;
+    const tsMs = Date.parse(String(raw.t || ''));
+    if (!Number.isFinite(tsMs) || tsMs < cutoffMs || tsMs > nowMs + 60_000) continue;
+
+    const agent = cleanCacheLabel(raw.agent, 'unknown', 64);
+    const model = cleanCacheLabel(raw.model || raw.req || raw.served, 'unknown', 120);
+    const tokensIn = Math.max(0, Number(raw.in) || 0);
+    const tokensOut = Math.max(0, Number(raw.out) || 0);
+    const cacheRead = Math.max(0, Number(raw.cache_read) || 0);
+    const cacheWrite = Math.max(0, Number(raw.cache_write) || 0);
+    const ttftMs = Math.max(0, Number(raw.ttft_ms) || 0);
+    const durationMs = Math.max(0, Number(raw.ms) || 0);
+    const status = Math.max(0, Math.round(Number(raw.status) || 200));
+    const upParts = raw.up_parts && typeof raw.up_parts === 'object' ? raw.up_parts : {};
+    const upSystem = Math.max(0, Number(upParts.system) || 0);
+    const upTools = Math.max(0, Number(upParts.tools) || 0);
+    const routeKey = `${cleanCacheLabel(raw.provider, 'unknown', 48)}:${cleanCacheLabel(raw.served || raw.model, 'unknown', 80)}`;
+    const ep = cleanCacheLabel(raw.ep, '', 48);
+    const sessionHash = raw.session
+      ? crypto.createHash('sha256').update(String(raw.session)).digest('hex').slice(0, 10)
+      : '';
+
+    totalRequests += 1;
+    totalIn += tokensIn;
+    totalOut += tokensOut;
+    totalCacheRead += cacheRead;
+    totalCacheWrite += cacheWrite;
+    if (ttftMs > 0) {
+      totalTtft += ttftMs;
+      totalTtftCount += 1;
+    }
+
+    const key = `${agent}::${model}`;
+    let agg = byKey.get(key);
+    if (!agg) {
+      agg = {
+        agent,
+        model,
+        requests: 0,
+        errorCount: 0,
+        tokensIn: 0,
+        tokensOut: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        ttftSum: 0,
+        ttftCount: 0,
+        latencies: [],
+        samples: [],
+      };
+      byKey.set(key, agg);
+    }
+    agg.requests += 1;
+    if (status >= 400) agg.errorCount += 1;
+    agg.tokensIn += tokensIn;
+    agg.tokensOut += tokensOut;
+    agg.cacheRead += cacheRead;
+    agg.cacheWrite += cacheWrite;
+    if (ttftMs > 0) {
+      agg.ttftSum += ttftMs;
+      agg.ttftCount += 1;
+    }
+    if (durationMs > 0) agg.latencies.push(durationMs);
+    agg.samples.push({
+      tsMs,
+      tokensIn,
+      cacheRead,
+      cacheWrite,
+      upSystem,
+      upTools,
+      routeKey,
+      ep,
+      sessionHash,
+    });
+  }
+
+  if (totalRequests === 0) return null;
+
+  const buckets = [];
+  for (const agg of byKey.values()) {
+    agg.samples.sort((a, b) => a.tsMs - b.tsMs);
+    agg.latencies.sort((a, b) => a - b);
+
+    let systemDriftCount = 0;
+    let systemDeltaBytes = 0;
+    let toolsDriftCount = 0;
+    let toolsDeltaBytes = 0;
+    let routeSwitchCount = 0;
+    let epSwitchCount = 0;
+    let longGapCount = 0;
+    let gapSumSec = 0;
+    let gapCount = 0;
+    const lastBySession = new Map();
+
+    for (let idx = 0; idx < agg.samples.length; idx += 1) {
+      const cur = agg.samples[idx];
+      if (idx > 0) {
+        const prev = agg.samples[idx - 1];
+        if (cur.upSystem > 0 && prev.upSystem > 0 && cur.upSystem !== prev.upSystem) {
+          systemDriftCount += 1;
+          systemDeltaBytes += Math.abs(cur.upSystem - prev.upSystem);
+        }
+        if (cur.upTools > 0 && prev.upTools > 0 && cur.upTools !== prev.upTools) {
+          toolsDriftCount += 1;
+          toolsDeltaBytes += Math.abs(cur.upTools - prev.upTools);
+        }
+        if (cur.routeKey && prev.routeKey && cur.routeKey !== prev.routeKey) {
+          routeSwitchCount += 1;
+        }
+        if (cur.ep && prev.ep && cur.ep !== prev.ep) {
+          epSwitchCount += 1;
+        }
+      }
+      if (cur.sessionHash) {
+        const prevTs = lastBySession.get(cur.sessionHash);
+        if (prevTs !== undefined && cur.tsMs > prevTs) {
+          const gapMs = cur.tsMs - prevTs;
+          gapSumSec += gapMs / 1000;
+          gapCount += 1;
+          if (gapMs >= LOCAL_CACHE_LONG_GAP_MS) longGapCount += 1;
+        }
+        lastBySession.set(cur.sessionHash, cur.tsMs);
+      }
+    }
+
+    let baselineHitPct = null;
+    let recentHitPct = null;
+    let dropPct = 0;
+    if (agg.samples.length >= 4) {
+      const splitAt = Math.max(1, Math.floor(agg.samples.length * 0.65));
+      const baseSlice = agg.samples.slice(0, splitAt);
+      const recentSlice = agg.samples.slice(splitAt);
+      const sumSlice = (arr) => arr.reduce(
+        (acc, item) => ({
+          i: acc.i + item.tokensIn,
+          r: acc.r + item.cacheRead,
+          w: acc.w + item.cacheWrite,
+        }),
+        { i: 0, r: 0, w: 0 },
+      );
+      const bSum = sumSlice(baseSlice);
+      const rSum = sumSlice(recentSlice);
+      baselineHitPct = computeProbeCacheHitPct(bSum.i, bSum.r, bSum.w);
+      recentHitPct = computeProbeCacheHitPct(rSum.i, rSum.r, rSum.w);
+      if (baselineHitPct !== null && recentHitPct !== null && baselineHitPct > recentHitPct) {
+        dropPct = Math.round((baselineHitPct - recentHitPct) * 100) / 100;
+      }
+    }
+
+    buckets.push({
+      agent: agg.agent,
+      model: agg.model,
+      requests: agg.requests,
+      errorCount: agg.errorCount,
+      tokensIn: agg.tokensIn,
+      tokensOut: agg.tokensOut,
+      cacheRead: agg.cacheRead,
+      cacheWrite: agg.cacheWrite,
+      cacheHitPct: computeProbeCacheHitPct(agg.tokensIn, agg.cacheRead, agg.cacheWrite),
+      baselineHitPct,
+      recentHitPct,
+      dropPct,
+      avgTtftMs: agg.ttftCount > 0 ? Math.round(agg.ttftSum / agg.ttftCount) : 0,
+      p95LatencyMs: probePercentile(agg.latencies, 0.95),
+      systemDriftCount,
+      systemDeltaBytes,
+      toolsDriftCount,
+      toolsDeltaBytes,
+      routeSwitchCount,
+      epSwitchCount,
+      longGapCount,
+      avgSessionGapSec: gapCount > 0 ? Math.round(gapSumSec / gapCount) : 0,
+    });
+  }
+
+  buckets.sort((a, b) => b.requests - a.requests || a.agent.localeCompare(b.agent));
+
+  return {
+    collectedAt: new Date(nowMs).toISOString(),
+    windowMinutes,
+    requests: totalRequests,
+    tokensIn: totalIn,
+    tokensOut: totalOut,
+    cacheRead: totalCacheRead,
+    cacheWrite: totalCacheWrite,
+    cacheHitPct: computeProbeCacheHitPct(totalIn, totalCacheRead, totalCacheWrite),
+    avgTtftMs: totalTtftCount > 0 ? Math.round(totalTtft / totalTtftCount) : 0,
+    buckets: buckets.slice(0, LOCAL_CACHE_MAX_BUCKETS),
+  };
 }

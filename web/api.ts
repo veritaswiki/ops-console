@@ -35,8 +35,13 @@ import type {
   BotActivityItem,
   BotFleetResponse,
   BotItem,
+  CacheMonitorAnalyzeResponse,
+  CacheMonitorConfig,
+  CacheMonitorStatusResponse,
   CloudflareSnapshot,
   ConfigStudioResponse,
+  DecisionAdvisorDiagnosis,
+  DecisionAdvisorStatus,
   EvolutionConfirmAction,
   EvolutionConfirmResponse,
   EvolutionFilePatchInput,
@@ -289,6 +294,54 @@ export const setAlertSilence = (minutes: number) =>
 
 export const fetchGatewayTelemetry = (signal?: AbortSignal) =>
   apiRequest<GatewayTelemetryResponse>('/api/gateway/telemetry', { cacheTtlMs: 5000, signal });
+
+export const fetchCacheMonitorStatus = (signal?: AbortSignal) =>
+  apiRequest<CacheMonitorStatusResponse>('/api/cache-monitor', { cacheTtlMs: 4000, signal });
+
+export const updateCacheMonitorConfig = (patch: Partial<CacheMonitorConfig>) =>
+  apiRequest<{ ok?: boolean; config: CacheMonitorConfig; advisor: DecisionAdvisorStatus | null }>(
+    '/api/cache-monitor/config',
+    {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    },
+  );
+
+export const triggerCacheMonitorAnalysis = (payload: {
+  key?: string | null;
+  model?: string | null;
+  mode?: 'llm' | 'deterministic' | null;
+} = {}) =>
+  apiRequest<CacheMonitorAnalyzeResponse>('/api/cache-monitor/analyze', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const fetchDecisionAdvisorStatus = (signal?: AbortSignal) =>
+  apiRequest<DecisionAdvisorStatus>('/api/decision-advisor/status', { cacheTtlMs: 4000, signal });
+
+export const fetchDecisionAdvisorDiagnoses = (
+  params: { domainId?: string; limit?: number } = {},
+  signal?: AbortSignal,
+) => {
+  const qs = new URLSearchParams();
+  if (params.domainId) qs.set('domainId', params.domainId);
+  if (params.limit) qs.set('limit', String(params.limit));
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  return apiRequest<{ ok?: boolean; items: DecisionAdvisorDiagnosis[] }>(
+    `/api/decision-advisor/diagnoses${suffix}`,
+    { cacheTtlMs: 4000, signal },
+  );
+};
+
+export const updateDecisionAdvisorConfig = (patch: Partial<DecisionAdvisorStatus['config']>) =>
+  apiRequest<{ ok?: boolean; config: DecisionAdvisorStatus['config']; status: DecisionAdvisorStatus }>(
+    '/api/decision-advisor/config',
+    {
+      method: 'PUT',
+      body: JSON.stringify(patch),
+    },
+  );
 
 export const compareMemoryRetrieval = (q: string, signal?: AbortSignal) => {
   const qs = new URLSearchParams({ q });

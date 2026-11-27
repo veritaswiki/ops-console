@@ -509,9 +509,63 @@ export function sanitizeProbePayload(raw, expectedNodeId) {
           .map((binding) => sanitizeAgentBinding(binding))
           .filter(Boolean)
       : [],
+    cache: sanitizeProbeCache(raw.cache),
     regionOverride: cleanStr(raw.region || '', 64),
     note: cleanStr(raw.note || '', 120),
     hubRttMs: clampNum(raw.hubRttMs, 0, 60000, null),
+  };
+}
+
+function sanitizeProbeCacheBucket(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const agent = cleanStr(raw.agent || 'unknown', 64) || 'unknown';
+  const model = cleanStr(raw.model || 'unknown', 120) || 'unknown';
+  const requests = clampNum(raw.requests, 0, 10_000_000, 0);
+  if (requests <= 0) return null;
+  return {
+    agent,
+    model,
+    requests: Math.round(requests),
+    errorCount: Math.round(clampNum(raw.errorCount, 0, 10_000_000, 0)),
+    tokensIn: Math.round(clampNum(raw.tokensIn, 0, 100_000_000_000, 0)),
+    tokensOut: Math.round(clampNum(raw.tokensOut, 0, 100_000_000_000, 0)),
+    cacheRead: Math.round(clampNum(raw.cacheRead, 0, 100_000_000_000, 0)),
+    cacheWrite: Math.round(clampNum(raw.cacheWrite, 0, 100_000_000_000, 0)),
+    cacheHitPct: clampNum(raw.cacheHitPct, 0, 100, null),
+    baselineHitPct: clampNum(raw.baselineHitPct, 0, 100, null),
+    recentHitPct: clampNum(raw.recentHitPct, 0, 100, null),
+    dropPct: clampNum(raw.dropPct, 0, 100, 0),
+    avgTtftMs: Math.round(clampNum(raw.avgTtftMs, 0, 600_000, 0)),
+    p95LatencyMs: Math.round(clampNum(raw.p95LatencyMs, 0, 600_000, 0)),
+    systemDriftCount: Math.round(clampNum(raw.systemDriftCount, 0, 1_000_000, 0)),
+    systemDeltaBytes: Math.round(clampNum(raw.systemDeltaBytes, 0, 10_000_000_000, 0)),
+    toolsDriftCount: Math.round(clampNum(raw.toolsDriftCount, 0, 1_000_000, 0)),
+    toolsDeltaBytes: Math.round(clampNum(raw.toolsDeltaBytes, 0, 10_000_000_000, 0)),
+    routeSwitchCount: Math.round(clampNum(raw.routeSwitchCount, 0, 1_000_000, 0)),
+    epSwitchCount: Math.round(clampNum(raw.epSwitchCount, 0, 1_000_000, 0)),
+    longGapCount: Math.round(clampNum(raw.longGapCount, 0, 1_000_000, 0)),
+    avgSessionGapSec: Math.round(clampNum(raw.avgSessionGapSec, 0, 86_400, 0)),
+  };
+}
+
+function sanitizeProbeCache(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const buckets = Array.isArray(raw.buckets)
+    ? raw.buckets.slice(0, 32).map((b) => sanitizeProbeCacheBucket(b)).filter(Boolean)
+    : [];
+  const requests = Math.round(clampNum(raw.requests, 0, 100_000_000, 0));
+  if (requests <= 0 && buckets.length === 0) return null;
+  return {
+    collectedAt: cleanStr(raw.collectedAt || '', 64) || null,
+    windowMinutes: Math.round(clampNum(raw.windowMinutes, 5, 1440, 60)),
+    requests,
+    tokensIn: Math.round(clampNum(raw.tokensIn, 0, 100_000_000_000, 0)),
+    tokensOut: Math.round(clampNum(raw.tokensOut, 0, 100_000_000_000, 0)),
+    cacheRead: Math.round(clampNum(raw.cacheRead, 0, 100_000_000_000, 0)),
+    cacheWrite: Math.round(clampNum(raw.cacheWrite, 0, 100_000_000_000, 0)),
+    cacheHitPct: clampNum(raw.cacheHitPct, 0, 100, null),
+    avgTtftMs: Math.round(clampNum(raw.avgTtftMs, 0, 600_000, 0)),
+    buckets,
   };
 }
 
@@ -1025,6 +1079,7 @@ export class ProbeRegistry {
         modelSources: nodeIsOnline ? (data?.modelSources || []) : [],
         models: nodeIsOnline ? (data?.models || []) : [],
         agentBindings: nodeIsOnline ? (data?.agentBindings || []) : [],
+        cache: nodeIsOnline ? (data?.cache || null) : null,
         agentsCount: data?.agents?.count ?? 0,
         backupDisk: sshRem?.backupDisk || (sshRem?.backup && sshRem.backup !== 'n/a' ? sshRem.backup : null),
         rttMs: data?.hubRttMs ?? (sshRem?.reachable ? sshRem.rttMs : (extCheck?.reachable ? extCheck.rttMs : null)),

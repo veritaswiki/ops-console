@@ -69,6 +69,7 @@ import {
   type GovernanceSubTab,
 } from './agent-settings/GovernanceSettingsPanel';
 import { GatewaySettingsPanel } from './agent-settings/GatewaySettingsPanel';
+import { CacheMonitorPanel } from './agent-settings/CacheMonitorPanel';
 
 export type AgentSettingsTab = AgentSettingsTabId;
 
@@ -99,6 +100,8 @@ export interface AgentSettingsViewProps {
   readOnly?: boolean;
   theme?: 'light' | 'dark';
   onToggleTheme?: () => void;
+  activeTab?: string;
+  onTabChange?: (next: string) => void;
   selectedCategory?: string;
   selectedPid?: number | null;
   onSelectCategory?: (category: string) => void;
@@ -113,6 +116,8 @@ export function AgentSettingsView({
   readOnly = false,
   theme = 'light',
   onToggleTheme,
+  activeTab: controlledTab,
+  onTabChange,
   selectedCategory = '',
   selectedPid = null,
   onSelectCategory,
@@ -132,7 +137,21 @@ export function AgentSettingsView({
   );
 
   const [activeTab, setActiveTab] = React.useState<string>(
-    selectedPid != null || Boolean(selectedCategory) ? 'gateway' : 'general',
+    controlledTab || (selectedPid != null || Boolean(selectedCategory) ? 'gateway' : 'general'),
+  );
+
+  React.useEffect(() => {
+    if (controlledTab && controlledTab !== activeTab) {
+      setActiveTab(controlledTab);
+    }
+  }, [controlledTab]);
+
+  const handleSelectTab = React.useCallback(
+    (nextTab: string) => {
+      setActiveTab(nextTab);
+      onTabChange?.(nextTab);
+    },
+    [onTabChange],
   );
   const [orchestrationSubTab, setOrchestrationSubTab] =
     React.useState<OrchestrationSubTab>('a2a');
@@ -320,7 +339,8 @@ export function AgentSettingsView({
       activeTab === 'general' ||
       activeTab === 'orchestration' ||
       activeTab === 'multi-device' ||
-      activeTab === 'gateway'
+      activeTab === 'gateway' ||
+      activeTab === 'cache'
     ) {
       fetchModelCatalog(controller.signal)
         .then((catalog) => {
@@ -735,7 +755,7 @@ export function AgentSettingsView({
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => setActiveTab(item.id)}
+                  onClick={() => handleSelectTab(item.id)}
                   aria-current={isActive ? 'page' : undefined}
                   data-settings-tab={item.id}
                   data-testid={`settings-nav-${item.id}`}
@@ -764,7 +784,7 @@ export function AgentSettingsView({
                     <button
                       key={slot.id}
                       type="button"
-                      onClick={() => setActiveTab(slot.id)}
+                      onClick={() => handleSelectTab(slot.id)}
                       aria-current={isActive ? 'page' : undefined}
                       data-settings-tab={slot.id}
                       data-testid={`settings-nav-${slot.id}`}
@@ -945,6 +965,14 @@ export function AgentSettingsView({
               selectedPid={selectedPid}
               onSelectCategory={onSelectCategory}
               onSelectPid={onSelectPid}
+            />
+          )}
+
+          {activeTab === 'cache' && (
+            <CacheMonitorPanel
+              readOnly={readOnly}
+              modelOptions={modelOptions}
+              onToast={onToast}
             />
           )}
 

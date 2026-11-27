@@ -1,6 +1,7 @@
 import React from 'react';
 import {
   Activity,
+  Gauge,
   Globe,
   ShieldCheck,
   SlidersHorizontal,
@@ -17,7 +18,8 @@ export type AgentSettingsTabId =
   | 'multi-device'
   | 'orchestration'
   | 'governance'
-  | 'gateway';
+  | 'gateway'
+  | 'cache';
 
 export type RailPanelRegion =
   | 'sidebar-nav'
@@ -365,6 +367,15 @@ export const SETTINGS_SECTION_SLOTS: readonly SettingsSectionSlot[] = [
     description: 'Magpie 24h 遥测、成本熔断、加速器与本地进程',
     icon: Activity,
     order: 50,
+    group: 'runtime',
+  },
+  {
+    id: 'cache',
+    kind: 'settings-section',
+    label: '缓存命中与决策归因',
+    description: '多机 Agent × 模型缓存命中率监控、阈值告警与可选决策模型自动归因',
+    icon: Gauge,
+    order: 60,
     group: 'runtime',
   },
 ] as const;
