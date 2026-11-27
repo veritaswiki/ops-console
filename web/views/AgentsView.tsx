@@ -273,8 +273,10 @@ export function AgentsView({
   const [expandedTraces, setExpandedTraces] = React.useState<Record<string, boolean>>({});
   const [copiedTaskId, setCopiedTaskId] = React.useState<string | null>(null);
   const [systemCards, setSystemCards] = React.useState<LocalSlashCard[]>([]);
+  const [headerSearchOpen, setHeaderSearchOpen] = React.useState(false);
 
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
+  const headerSearchInputRef = React.useRef<HTMLInputElement | null>(null);
   const configSeededRef = React.useRef(false);
   const prevActiveTaskIdRef = React.useRef<string | null>(activeTaskId);
 
@@ -1591,25 +1593,70 @@ export function AgentsView({
 
         <div className="flex items-center gap-2 shrink-0">
           {workspaceMode === 'thread' && tasks.length > 0 && (
-            <div className="relative hidden lg:block w-[210px]">
-              <Search
-                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-[var(--ink-subtle)]"
-                strokeWidth={1.75}
-              />
-              <input
-                type="text"
-                value={effectiveSearchQuery}
-                onChange={(event) => handleSearchChange(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter' && effectiveSearchQuery.trim()) {
-                    setWorkspaceMode('kanban');
-                  }
+            headerSearchOpen || effectiveSearchQuery.trim().length > 0 ? (
+              <div className="relative hidden sm:block w-[210px]">
+                <Search
+                  className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 size-3.5 text-[var(--ink-subtle)]"
+                  strokeWidth={1.75}
+                />
+                <input
+                  ref={headerSearchInputRef}
+                  type="text"
+                  value={effectiveSearchQuery}
+                  onChange={(event) => handleSearchChange(event.target.value)}
+                  onBlur={() => {
+                    if (!effectiveSearchQuery.trim()) {
+                      setHeaderSearchOpen(false);
+                    }
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' && effectiveSearchQuery.trim()) {
+                      setWorkspaceMode('kanban');
+                    } else if (event.key === 'Escape') {
+                      if (effectiveSearchQuery) {
+                        handleSearchChange('');
+                      } else {
+                        setHeaderSearchOpen(false);
+                      }
+                    }
+                  }}
+                  placeholder="搜索任务 ID / 历史..."
+                  aria-label="按任务 ID 或提示词搜索"
+                  className={cn(inputBaseClass, 'h-8 w-full pl-8 pr-7')}
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (effectiveSearchQuery) {
+                      handleSearchChange('');
+                    } else {
+                      setHeaderSearchOpen(false);
+                    }
+                  }}
+                  aria-label={effectiveSearchQuery ? '清空搜索' : '收起搜索'}
+                  className={cn(
+                    'h-5 w-5 absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer',
+                    FOCUS_RING,
+                  )}
+                >
+                  <X className="size-3" strokeWidth={1.75} />
+                </button>
+              </div>
+            ) : (
+              <Button
+                variant="ghost"
+                size="icon"
+                aria-label="搜索任务 ID 或提示词"
+                title="搜索任务 ID 或提示词"
+                data-testid="agent-header-search-toggle"
+                onClick={() => {
+                  setHeaderSearchOpen(true);
+                  window.requestAnimationFrame(() => headerSearchInputRef.current?.focus());
                 }}
-                placeholder="搜索任务 ID / 历史..."
-                aria-label="按任务 ID 或提示词搜索"
-                className={cn(inputBaseClass, 'h-8 w-full pl-8 pr-2.5')}
-              />
-            </div>
+              >
+                <Search className="size-4" strokeWidth={1.75} />
+              </Button>
+            )
           )}
 
           <Button

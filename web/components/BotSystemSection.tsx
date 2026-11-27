@@ -14,7 +14,6 @@ import { Button, EmptyState, inputBaseClass, KpiStrip, Panel, StatusIndicator } 
 
 const CHANNEL_OPTIONS: ReadonlyArray<{ value: BotChannel; label: string }> = [
   { value: 'github', label: 'GitHub Webhook / App' },
-  { value: 'feishu', label: '飞书 / Lark 群机器人' },
   { value: 'telegram', label: 'Telegram Bot' },
   { value: 'discord', label: 'Discord Bot' },
   { value: 'slack', label: 'Slack App' },
@@ -63,7 +62,7 @@ export function BotSystemSection({
   const [form, setForm] = React.useState({
     name: '',
     handle: '',
-    channel: 'feishu' as BotChannel,
+    channel: 'github' as BotChannel,
     role: 'commander-bridge' as BotRole,
     boundAgentId: availableAgents[0]?.id || '',
     defaultProjectId: projects[0]?.id || '',
@@ -196,7 +195,7 @@ export function BotSystemSection({
             label: '累计接收事件',
             value: String(summary.totalEvents),
             numeric: { primary: summary.totalEvents },
-            sub: '支持 GitHub / 飞书 / Telegram / Webhook',
+            sub: '支持 GitHub / Telegram / Discord / Slack / Webhook',
           },
           {
             label: '自动建 Linear Issue',
@@ -328,7 +327,7 @@ export function BotSystemSection({
                   disabled={readOnly || creating}
                   value={form.webhookEnvVar}
                   onChange={(e) => setForm((f) => ({ ...f, webhookEnvVar: e.target.value.toUpperCase() }))}
-                  placeholder="FEISHU_BOT_WEBHOOK"
+                  placeholder="GITHUB_WEBHOOK_SECRET"
                   className={cn('w-full h-9 px-3 font-mono text-[12px]', inputBaseClass)}
                 />
               </label>

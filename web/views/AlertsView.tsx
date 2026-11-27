@@ -79,7 +79,6 @@ const CHANNEL_LABELS: Record<string, string> = {
   slack: 'Slack',
   telegram: 'Telegram Bot',
   discord: 'Discord',
-  feishu: '飞书机器人',
   wecom: '企业微信',
   bark: 'Bark 推送',
   email: 'Email',
@@ -640,7 +639,9 @@ export function AlertsView({
                   onChange={(e) => setRuleForm((s) => ({ ...s, channel: e.target.value }))}
                   className={cn('ui-select w-full h-9 pl-3 cursor-pointer', inputBaseClass)}
                 >
-                  {(state?.supportedChannels || Object.keys(CHANNEL_LABELS)).map((ch) => (
+                  {(state?.supportedChannels || Object.keys(CHANNEL_LABELS))
+                    .filter((ch) => ch !== 'feishu')
+                    .map((ch) => (
                     <option key={ch} value={ch}>
                       {CHANNEL_LABELS[ch] || ch}
                     </option>

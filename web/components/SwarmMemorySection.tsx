@@ -78,9 +78,9 @@ const TRIGGER_PRESETS = [
   {
     id: 'spawn',
     label: '新工单 (Slow Spawn)',
-    channel: 'feishu',
+    channel: 'webhook',
     actor: 'ops-lead',
-    threadKey: 'feishu:ops-console#inc-209',
+    threadKey: 'webhook:ops-console#inc-209',
     summary: '排查亚太边缘节点 TLS 握手抖动并生成隔离修复工单',
   },
 ] as const;
@@ -743,7 +743,7 @@ export function SwarmMemorySection({
         {/* Right: Fast / Slow Path Trigger Simulator & Recent Events */}
         <Panel
           title="Fast / Slow Path 触发器入口"
-          description="模拟外部 GitHub / CI / 飞书 / 告警事件流入，验证零 Token 代码直滤、已订阅直通与薄 Router 派单。"
+          description="模拟外部 GitHub / CI / Webhook / 告警事件流入，验证零 Token 代码直滤、已订阅直通与薄 Router 派单。"
         >
           {/* Preset buttons */}
           <div className="mb-3 flex flex-wrap items-center gap-1.5">
@@ -780,7 +780,6 @@ export function SwarmMemorySection({
                 >
                   <option value="github">github</option>
                   <option value="ci">ci</option>
-                  <option value="feishu">feishu</option>
                   <option value="alert">alert</option>
                   <option value="webhook">webhook</option>
                 </select>
@@ -1028,7 +1027,6 @@ export function SwarmMemorySection({
                 >
                   <option value="github">github</option>
                   <option value="ci">ci</option>
-                  <option value="feishu">feishu</option>
                   <option value="alert">alert</option>
                 </select>
 

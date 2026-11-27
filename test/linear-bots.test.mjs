@@ -160,7 +160,20 @@ test('Bot Fleet APIs: create, toggle, trigger event -> auto Linear Issue -> Comm
     assert.equal(listRes.status, 200);
     const listJson = await listRes.json();
     assert.equal(listJson.ok, true);
-    assert.ok(listJson.bots.length >= 3);
+    assert.ok(listJson.bots.length >= 2);
+    assert.ok(!listJson.bots.some((b) => b.channel === 'feishu'), 'default seed bots should exclude feishu');
+
+    // Feishu channel remains accepted at the API interface level without being seeded by default
+    const feishuStubRes = await fetch(`${baseUrl}/api/bots`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Feishu Stub', channel: 'feishu', role: 'triage-intake' }),
+    });
+    assert.equal(feishuStubRes.status, 201);
+    const feishuStub = (await feishuStubRes.json()).bot;
+    assert.equal(feishuStub.channel, 'feishu');
+    const feishuDelRes = await fetch(`${baseUrl}/api/bots/${encodeURIComponent(feishuStub.id)}`, { method: 'DELETE' });
+    assert.equal(feishuDelRes.status, 200);
 
     // Create a new custom release Bot
     const createRes = await fetch(`${baseUrl}/api/bots`, {

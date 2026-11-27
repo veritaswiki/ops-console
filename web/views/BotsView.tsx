@@ -45,7 +45,7 @@ export function BotsView({
   return (
     <ModuleFrame
       title="Bot"
-      description="创建和管理飞书、Telegram、Discord、Slack 与 Webhook 自动化机器人，自动接收消息并派发给 Agent。"
+      description="创建和管理 GitHub、Telegram、Discord、Slack 与 Webhook 自动化机器人，自动接收消息并派发给 Agent。"
       meta={`${botsState?.summary.online || 0}/${botsState?.summary.total || 0} Bot 在线`}
       testId="view-bots"
     >

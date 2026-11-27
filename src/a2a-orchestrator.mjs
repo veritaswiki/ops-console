@@ -910,10 +910,10 @@ function buildDemoA2AState() {
     {
       id: 'trg-7004',
       ts: new Date(now - 3 * 60_000).toISOString(),
-      channel: 'feishu',
+      channel: 'github',
       actor: 'ops-lead',
       threadKey: 'gh:ops-console#pr-142',
-      summary: '飞书群 @SuperAgent：请加速完成 PR #142 评审并合入',
+      summary: 'GitHub PR 评论 @SuperAgent：请加速完成 PR #142 评审并合入',
       decision: 'fast_passthrough',
       reason: 'Subscription Passthrough：关联工单 tkt-sa-401 正在 DSH 评审阶段，直推至 Claude Worker 会话',
       ticketId: 'tkt-sa-401',
