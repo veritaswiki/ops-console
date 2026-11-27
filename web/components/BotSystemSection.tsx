@@ -83,6 +83,7 @@ export function BotSystemSection({
 
   const bots = botsState?.bots || [];
   const activities = botsState?.activities || [];
+  const liveIntegrations = botsState?.liveIntegrations;
   const summary = botsState?.summary || {
     total: 0,
     enabled: 0,
@@ -121,6 +122,33 @@ export function BotSystemSection({
       await onReload();
     } catch (err) {
       onToast?.(err instanceof Error ? err.message : '建立 Bot 失败', 'err');
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const handleQuickCreateGithubBot = async () => {
+    if (readOnly) return;
+    setCreating(true);
+    try {
+      const repoName = liveIntegrations?.repoFullName || '当前仓库';
+      const res = await createBot({
+        name: `${repoName} GitHub 评审 Bot`,
+        handle: '@github-reviewer',
+        channel: 'github',
+        role: 'pr-reviewer',
+        boundAgentId: availableAgents[0]?.id || undefined,
+        defaultProjectId: projects[0]?.id || undefined,
+        webhookEnvVar: 'GITHUB_TOKEN',
+        triggerKeywords: '/review, /fix, /ship',
+        description: `对接 ${repoName} 真实 PR / Issue 与 Actions CI 的自动化评审 Bot`,
+        autoCreateIssue: true,
+        autoDispatchCommander: true,
+      });
+      onToast?.(`已建立 Bot：${res.bot.name}`, 'ok');
+      await onReload();
+    } catch (err) {
+      onToast?.(err instanceof Error ? err.message : '建立 GitHub Bot 失败', 'err');
     } finally {
       setCreating(false);
     }
@@ -212,6 +240,79 @@ export function BotSystemSection({
           },
         ]}
       />
+
+      {liveIntegrations && (
+        <Panel
+          title="实时通道与仓库自动化接入"
+          description="自动检测本机 GitHub CLI、仓库 GitHub Actions 工作流与服务端 Bot 凭据环境变量就绪度（只读脱敏，不暴露密钥值）。"
+        >
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2 text-[12px]">
+                <span className="font-medium text-[var(--ink)]">
+                  GitHub 仓库与 Actions 工作流 ({liveIntegrations.workflows.length})
+                </span>
+                <StatusIndicator
+                  status={liveIntegrations.ghAuthenticated ? 'healthy' : 'standby'}
+                  label={
+                    liveIntegrations.ghAuthenticated
+                      ? `gh 已登录${liveIntegrations.ghAccount ? ` (@${liveIntegrations.ghAccount})` : ''}`
+                      : 'gh 未登录'
+                  }
+                />
+              </div>
+              {liveIntegrations.repoFullName && (
+                <div className="font-mono text-[11.5px] text-[var(--ink-subtle)]">
+                  当前仓库：{liveIntegrations.repoFullName}
+                </div>
+              )}
+              {liveIntegrations.workflows.length === 0 ? (
+                <div className="text-[12px] text-[var(--ink-subtle)]">
+                  未在 .github/workflows 下检测到工作流 YAML。
+                </div>
+              ) : (
+                <div className="space-y-1.5">
+                  {liveIntegrations.workflows.map((wf) => (
+                    <div
+                      key={wf.file}
+                      className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[var(--surface-subtle)] border border-[var(--border-subtle)] text-[12px]"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-medium text-[var(--ink)] truncate">{wf.name}</div>
+                        <div className="font-mono text-[11px] text-[var(--ink-subtle)] truncate">{wf.file}</div>
+                      </div>
+                      <span className="font-mono text-[11px] text-[var(--ink-muted)] shrink-0">
+                        {wf.triggers.length > 0 ? wf.triggers.join(', ') : 'manual'}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <div className="text-[12px] font-medium text-[var(--ink)]">服务端凭据环境变量就绪状态</div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {liveIntegrations.envStatus.map((envItem) => (
+                  <div
+                    key={envItem.name}
+                    className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg bg-[var(--surface-subtle)] border border-[var(--border-subtle)] text-[12px]"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-mono text-[11.5px] text-[var(--ink)] truncate">{envItem.name}</div>
+                      <div className="text-[11px] text-[var(--ink-subtle)] truncate">{envItem.label}</div>
+                    </div>
+                    <StatusIndicator
+                      status={envItem.configured ? 'healthy' : 'standby'}
+                      label={envItem.configured ? '已配置' : '未设置'}
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </Panel>
+      )}
 
       <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
         {/* Create Bot Form */}
@@ -404,7 +505,23 @@ export function BotSystemSection({
           bodyClassName="p-0"
         >
           {bots.length === 0 ? (
-            <EmptyState title="暂无已注册 Bot" message="在左侧表单创建一个多渠道 Bot 以接入总指挥编排流水线。" />
+            <div className="p-6 space-y-3 text-center">
+              <EmptyState
+                title="暂无已注册 Bot"
+                message="当前为真实运行态（已移除演示假数据）。可在左侧创建多渠道 Bot，或一键接入本仓库 GitHub Bot。"
+              />
+              {!readOnly && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={creating}
+                  onClick={() => void handleQuickCreateGithubBot()}
+                >
+                  <Bot className="size-3.5" />
+                  一键创建本仓库 GitHub Bot
+                </Button>
+              )}
+            </div>
           ) : (
             <div className="divide-y divide-[var(--border-subtle)]">
               {bots.map((bot) => {

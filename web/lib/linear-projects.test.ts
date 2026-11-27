@@ -139,3 +139,54 @@ test('buildLinearDependencyGraph constructs commander, issues, blocking edges, a
   assert.ok(graph.edges.some((e) => e.kind === 'blocks'));
   assert.ok(graph.edges.some((e) => e.kind === 'delivers'));
 });
+
+test('buildLinearDependencyGraph incorporates live A2A tasks and GitHub PRs without duplicating linked items', () => {
+  const graph = buildLinearDependencyGraph({
+    commanderName: 'Live Lead',
+    commanderId: 'a2a-lead',
+    issues: [],
+    projects: [],
+    liveA2ATasks: [
+      {
+        id: 'task-live-1',
+        contextId: 'ctx-1',
+        prompt: '排查节点离线原因',
+        state: 'working',
+        leadAgentId: 'a2a-lead',
+        workerAgentId: 'a2a-worker-1',
+        workerAgentName: 'Claude Worker',
+        workerNodeId: 'hub-local',
+        routingReason: 'manual',
+        createdAt: '2026-11-27T00:00:00Z',
+        updatedAt: '2026-11-27T00:01:00Z',
+        messages: [],
+        artifacts: [],
+      },
+    ],
+    liveGithubPrs: [
+      {
+        number: 10,
+        title: 'feat: tailscale & cloudflare consoles',
+        state: 'OPEN',
+        isDraft: false,
+        headRefName: 'feat/tailscale-cloudflare',
+        baseRefName: 'main',
+        author: 'octocat',
+        updatedAt: '2026-11-27T00:00:00Z',
+        url: 'https://github.com/example/ops-console/pull/10',
+        additions: 120,
+        deletions: 10,
+        changedFiles: 5,
+        reviewDecision: '',
+        checksStatus: 'PASSING',
+        checksSummary: 'All passed',
+        labels: [],
+      },
+    ],
+  });
+
+  assert.equal(graph.nodes.length, 3);
+  assert.ok(graph.nodes.some((n) => n.id === 'a2a-task-task-live-1'));
+  assert.ok(graph.nodes.some((n) => n.id === 'live-pr-10' && n.kind === 'github-pr'));
+  assert.equal(graph.edges.length, 2);
+});

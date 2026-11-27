@@ -1,11 +1,16 @@
 import React from 'react';
-import { RefreshCw } from 'lucide-react';
+import { GitPullRequest, RefreshCw } from 'lucide-react';
 import {
   dispatchLinearCommander,
+  fetchA2AState,
+  fetchGithubOverview,
   fetchLinearState,
+  syncLinearGithub,
   updateLinearIssue,
 } from '../api';
 import type {
+  A2ATaskRecord,
+  GithubPullRequestItem,
   LinearIssuePriority,
   LinearIssueStatus,
   LinearStateResponse,
@@ -31,8 +36,11 @@ export function AgentGraphView({
   onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
 }) {
   const [linearState, setLinearState] = React.useState<LinearStateResponse | null>(null);
+  const [liveA2ATasks, setLiveA2ATasks] = React.useState<A2ATaskRecord[]>([]);
+  const [liveGithubPrs, setLiveGithubPrs] = React.useState<GithubPullRequestItem[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [refreshing, setRefreshing] = React.useState(false);
+  const [syncingGithub, setSyncingGithub] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [dispatchingId, setDispatchingId] = React.useState<string | null>(null);
 
@@ -40,8 +48,22 @@ export function AgentGraphView({
     setRefreshing(true);
     setError(null);
     try {
-      const data = await fetchLinearState();
-      setLinearState(data);
+      const [linRes, a2aRes, ghRes] = await Promise.allSettled([
+        fetchLinearState(),
+        fetchA2AState(),
+        fetchGithubOverview(),
+      ]);
+      if (linRes.status === 'fulfilled') {
+        setLinearState(linRes.value);
+      } else {
+        throw linRes.reason;
+      }
+      if (a2aRes.status === 'fulfilled') {
+        setLiveA2ATasks(a2aRes.value.tasks || []);
+      }
+      if (ghRes.status === 'fulfilled') {
+        setLiveGithubPrs(ghRes.value.pullRequests || []);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : '加载分配图谱失败');
     } finally {
@@ -49,6 +71,20 @@ export function AgentGraphView({
       setRefreshing(false);
     }
   }, []);
+
+  const handleSyncGithub = async () => {
+    if (readOnly) return;
+    setSyncingGithub(true);
+    try {
+      const res = await syncLinearGithub('pull');
+      onToast?.(res.summary || `已同步 GitHub (${res.importedCount} 新增 / ${res.updatedCount} 更新)`, 'ok');
+      await loadState();
+    } catch (err) {
+      onToast?.(err instanceof Error ? err.message : '同步 GitHub 失败', 'err');
+    } finally {
+      setSyncingGithub(false);
+    }
+  };
 
   React.useEffect(() => {
     void loadState();
@@ -118,15 +154,28 @@ export function AgentGraphView({
           </span>
         </div>
 
-        <Button
-          variant="secondary"
-          size="sm"
-          disabled={refreshing}
-          onClick={() => void loadState()}
-        >
-          <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
-          刷新
-        </Button>
+        <div className="flex items-center gap-2 shrink-0">
+          {!readOnly && (
+            <Button
+              variant="secondary"
+              size="sm"
+              disabled={syncingGithub}
+              onClick={() => void handleSyncGithub()}
+            >
+              <GitPullRequest className={cn('size-3.5', syncingGithub && 'animate-pulse')} />
+              {syncingGithub ? '同步中...' : '同步 GitHub PR/Issue'}
+            </Button>
+          )}
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={refreshing}
+            onClick={() => void loadState()}
+          >
+            <RefreshCw className={cn('size-3.5', refreshing && 'animate-spin')} />
+            刷新
+          </Button>
+        </div>
       </div>
 
       <React.Suspense fallback={<WidgetSkeleton heightClass="h-[560px]" label="正在加载工作流画布" />}>
@@ -135,6 +184,8 @@ export function AgentGraphView({
           commanderId={commanderAgent?.id || linearState?.commander.leadAgentId || 'lead'}
           issues={linearState?.issues || []}
           projects={linearState?.projects || []}
+          liveA2ATasks={liveA2ATasks}
+          liveGithubPrs={liveGithubPrs}
           availableAgents={availableAgents}
           availableBots={linearState?.availableBots || []}
           readOnly={readOnly}
