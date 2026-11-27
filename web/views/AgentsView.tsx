@@ -28,12 +28,14 @@ import type {
   A2APingResponse,
   A2AStateResponse,
   A2ATaskRecord,
+  MagpieCatalogResponse,
 } from '../types';
 import {
   cancelA2ATask,
   copyToClipboard,
   dispatchA2ATask,
   fetchA2AState,
+  fetchMagpieModels,
   handoffA2ASession,
   pingA2AAgent,
   updateA2ATaskState,
@@ -58,6 +60,11 @@ import {
   type KanbanLifecycleColumnId,
   type SlashCommandDef,
 } from '../lib/agent-console';
+import {
+  formatMagpieModelOption,
+  groupMagpieModels,
+  resolveAgentDefaultModel,
+} from '../lib/magpie-models';
 import { cn, FOCUS_RING } from '../lib/cn';
 import { formatClock, formatDateTime } from '../utils/format';
 import { AgentSlashMenu } from '../components/AgentSlashMenu';
@@ -251,6 +258,7 @@ export function AgentsView({
   onToast,
 }: AgentsViewProps) {
   const [a2aState, setA2aState] = React.useState<A2AStateResponse | null>(null);
+  const [magpieCatalog, setMagpieCatalog] = React.useState<MagpieCatalogResponse | null>(null);
   const [workspaceMode, setWorkspaceMode] = React.useState<WorkspaceMode>('thread');
   const [localSearchQuery, setLocalSearchQuery] = React.useState('');
   const [selectedTarget, setSelectedTarget] = React.useState<string>('auto');
@@ -318,6 +326,22 @@ export function AgentsView({
   }, [loadState, activeTaskId]);
 
   React.useEffect(() => {
+    const controller = new AbortController();
+    fetchMagpieModels(controller.signal)
+      .then((catalog) => {
+        if (!controller.signal.aborted) {
+          setMagpieCatalog(catalog);
+        }
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) {
+          setMagpieCatalog(null);
+        }
+      });
+    return () => controller.abort();
+  }, []);
+
+  React.useEffect(() => {
     if (activeTaskId && activeTaskId !== prevActiveTaskIdRef.current) {
       setWorkspaceMode('thread');
     }
@@ -344,6 +368,38 @@ export function AgentsView({
       agents[0] ||
       null,
     [agents, a2aState?.leadAgentId],
+  );
+
+  const magpieModels = React.useMemo(() => magpieCatalog?.models || [], [magpieCatalog?.models]);
+  const magpieBindings = React.useMemo(
+    () => magpieCatalog?.agentBindings || [],
+    [magpieCatalog?.agentBindings],
+  );
+  const magpieModelGroups = React.useMemo(
+    () => groupMagpieModels(magpieModels),
+    [magpieModels],
+  );
+  const selectedAgentPeer = React.useMemo(
+    () =>
+      selectedTarget === 'auto'
+        ? leadAgent
+        : agents.find((agent) => agent.id === selectedTarget) || leadAgent,
+    [agents, leadAgent, selectedTarget],
+  );
+  const resolvedDefaultModel = React.useMemo(
+    () =>
+      resolveAgentDefaultModel(
+        selectedAgentPeer,
+        magpieBindings,
+        a2aState?.orchestrationConfig?.mainModel,
+      ),
+    [selectedAgentPeer, magpieBindings, a2aState?.orchestrationConfig?.mainModel],
+  );
+  const hasCustomModelOverride = React.useMemo(
+    () =>
+      Boolean(modelOverride) &&
+      !magpieModels.some((item) => item.id === modelOverride),
+    [modelOverride, magpieModels],
   );
 
   const activeTask = React.useMemo(
@@ -463,6 +519,7 @@ export function AgentsView({
           prompt: cleanPrompt,
           targetAgentId: resolvedTarget,
           executionMode: opts.mode || executionMode,
+          model: modelOverride || undefined,
           modelOverride: modelOverride || undefined,
           reasoningEffort,
           contextId,
@@ -1404,13 +1461,13 @@ export function AgentsView({
         <div className="mt-2.5 pt-2.5 border-t border-[var(--border-subtle)]/70 flex flex-wrap items-center justify-between gap-2">
           <div className="flex flex-wrap items-center gap-1.5 min-w-0">
             <select
-              aria-label="选择模型与 Harness"
-              data-testid="agent-model-select"
+              aria-label="选择执行 Agent"
+              data-testid="agent-target-select"
               disabled={readOnly || submitting}
               value={selectedTarget}
               onChange={(event) => setSelectedTarget(event.target.value)}
               className={cn(
-                'ui-select h-8 max-w-[240px] rounded-lg border border-transparent hover:border-[var(--border)] bg-[var(--surface-subtle)]/75 pl-2.5 pr-7 text-[12px] font-medium text-[var(--ink-muted)] hover:text-[var(--ink)] cursor-pointer transition-colors truncate',
+                'ui-select h-8 max-w-[220px] rounded-lg border border-transparent hover:border-[var(--border)] bg-[var(--surface-subtle)]/75 pl-2.5 pr-7 text-[12px] font-medium text-[var(--ink-muted)] hover:text-[var(--ink)] cursor-pointer transition-colors truncate',
                 FOCUS_RING,
               )}
             >
@@ -1421,11 +1478,48 @@ export function AgentsView({
                 <optgroup key={group.nodeId} label={`${group.nodeName} (${group.nodeId})`}>
                   {group.agents.map((peer) => (
                     <option key={peer.id} value={peer.id}>
-                      {shortAgentName(peer.name)} · {peer.modelHint || peer.harness}
+                      {shortAgentName(peer.name)} · {peer.magpieModel || peer.modelHint || peer.harness}
                     </option>
                   ))}
                 </optgroup>
               ))}
+            </select>
+
+            <select
+              aria-label="选择 Magpie 模型"
+              data-testid="agent-model-select"
+              disabled={readOnly || submitting}
+              value={modelOverride}
+              onChange={(event) => setModelOverride(event.target.value)}
+              title={
+                magpieCatalog?.reachable
+                  ? `Magpie 网关已连接 (${magpieCatalog.totalModels} 个模型)`
+                  : 'Magpie 模型目录（未连接时沿用 Agent 默认配置）'
+              }
+              className={cn(
+                'ui-select h-8 max-w-[260px] rounded-lg border border-transparent hover:border-[var(--border)] bg-[var(--surface-subtle)]/75 pl-2.5 pr-7 font-mono text-[11.5px] font-medium text-[var(--ink-muted)] hover:text-[var(--ink)] cursor-pointer transition-colors truncate',
+                modelOverride && 'border-[var(--accent)]/45 text-[var(--ink)]',
+                FOCUS_RING,
+              )}
+            >
+              <option value="">默认 · {resolvedDefaultModel.label}</option>
+              {hasCustomModelOverride && (
+                <option value={modelOverride}>手动 · {modelOverride}</option>
+              )}
+              {magpieModelGroups.map((group) => (
+                <optgroup key={group.id} label={group.label}>
+                  {group.models.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {formatMagpieModelOption(item)}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+              {magpieCatalog && !magpieCatalog.reachable && magpieModels.length === 0 && (
+                <option value="" disabled>
+                  Magpie 网关暂不可达（沿用 Agent 配置）
+                </option>
+              )}
             </select>
 
             <select
@@ -1588,6 +1682,26 @@ export function AgentsView({
             <span>{nodeGroups.length} 设备节点</span>
             <span aria-hidden="true">·</span>
             <span>Google A2A v{a2aState?.architecture?.protocolVersion || '0.3'}</span>
+            {a2aState?.signing && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span
+                  data-testid="agent-signing-status"
+                  title={`签名算法 ${a2aState.signing.algorithm} · Key ${a2aState.signing.keyId} · 来源 ${a2aState.signing.keySource}`}
+                  className={cn(
+                    'inline-flex items-center gap-1',
+                    a2aState.signing.configured ? 'text-[var(--ok)]' : 'text-[var(--ink-subtle)]',
+                  )}
+                >
+                  <ShieldCheck className="size-3.5 shrink-0" strokeWidth={1.75} />
+                  <span>
+                    {a2aState.signing.configured
+                      ? `HMAC (${a2aState.signing.keyId})`
+                      : 'HMAC 临时密钥'}
+                  </span>
+                </span>
+              </>
+            )}
           </div>
         </div>
 
@@ -1893,13 +2007,32 @@ export function AgentsView({
                       {task.appliedModel && (
                         <>
                           <span aria-hidden="true">·</span>
-                          <span className="text-[var(--ink-muted)]">{task.appliedModel}</span>
+                          <span className="text-[var(--ink-muted)]">
+                            {task.appliedModel}
+                            {task.modelSource === 'magpie-agent'
+                              ? ' [Magpie]'
+                              : task.modelSource === 'manual'
+                                ? ' [指定]'
+                                : ''}
+                          </span>
                         </>
                       )}
                       {task.appliedEffort && (
                         <>
                           <span aria-hidden="true">/</span>
                           <span>{task.appliedEffort}</span>
+                        </>
+                      )}
+                      {task.signed && (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span
+                            title={`HMAC-SHA256 已签名 · keyId: ${task.signatureKeyId || 'default'}`}
+                            className="inline-flex items-center gap-1 text-[var(--ok)]"
+                          >
+                            <ShieldCheck className="size-3 shrink-0" strokeWidth={1.75} />
+                            <span>已签名</span>
+                          </span>
                         </>
                       )}
                       {task.executionMode && (

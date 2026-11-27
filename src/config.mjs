@@ -169,6 +169,11 @@ export function validateConfig(raw) {
     errors.push('auth.webKey must be empty or a string with at least 16 characters');
   }
 
+  const a2aSecret = raw.a2a?.sharedSecret ?? '';
+  if (a2aSecret && (typeof a2aSecret !== 'string' || a2aSecret.length < 16)) {
+    errors.push('a2a.sharedSecret must be empty or a string with at least 16 characters');
+  }
+
   if (raw.services !== undefined) {
     if (!Array.isArray(raw.services)) {
       errors.push('services must be an array');
@@ -296,6 +301,25 @@ export function loadConfig(options = {}) {
     ? resolveSecretRef(raw.connectors.syncthing.apiKey, { env, warnings, fieldName: 'connectors.syncthing.apiKey', fromConfig: true })
     : String(env.SYNCTHING_API_KEY || '').trim();
 
+  let resolvedA2ASecret = '';
+  let resolvedA2ASecretSource = 'ephemeral';
+  if (env.OPS_A2A_SHARED_SECRET_FILE) {
+    resolvedA2ASecret = readSecretFileStrict(env.OPS_A2A_SHARED_SECRET_FILE, 'OPS_A2A_SHARED_SECRET_FILE');
+    resolvedA2ASecretSource = resolvedA2ASecret ? 'file' : 'ephemeral';
+  } else if (env.OPS_A2A_SHARED_SECRET !== undefined && String(env.OPS_A2A_SHARED_SECRET).trim()) {
+    const rawEnvA2A = String(env.OPS_A2A_SHARED_SECRET).trim();
+    resolvedA2ASecret = resolveSecretRef(rawEnvA2A, { env, warnings, fieldName: 'OPS_A2A_SHARED_SECRET' });
+    resolvedA2ASecretSource = resolvedA2ASecret
+      ? (rawEnvA2A.startsWith('file://') ? 'file' : 'env')
+      : 'ephemeral';
+  } else if (raw.a2a?.sharedSecret) {
+    const rawCfgA2A = String(raw.a2a.sharedSecret).trim();
+    resolvedA2ASecret = resolveSecretRef(rawCfgA2A, { env, warnings, fieldName: 'a2a.sharedSecret', fromConfig: true });
+    resolvedA2ASecretSource = resolvedA2ASecret
+      ? (rawCfgA2A.startsWith('file://') ? 'file' : (rawCfgA2A.startsWith('env://') ? 'env' : 'config'))
+      : 'ephemeral';
+  }
+
   const merged = {
     configPath: resolvedPath || null,
     demo: Boolean(demoMode),
@@ -312,6 +336,10 @@ export function loadConfig(options = {}) {
     },
     auth: {
       webKey: String(resolvedWebKey || '').trim(),
+    },
+    a2a: {
+      sharedSecret: String(resolvedA2ASecret || '').trim(),
+      secretSource: resolvedA2ASecret ? resolvedA2ASecretSource : 'ephemeral',
     },
     security: {
       allowedOrigins: Array.isArray(raw.security?.allowedOrigins) ? raw.security.allowedOrigins : [],

@@ -4,7 +4,11 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { buildSignedA2AHeaders, getA2ASigningSecret } from './a2a-protocol.mjs';
+import {
+  buildSignedA2AHeaders,
+  getA2ASigningMetadata,
+  getA2ASigningSecret,
+} from './a2a-protocol.mjs';
 import { validateSafeEndpointUrl } from './mcp-fleet.mjs';
 import { redactText } from './redact.mjs';
 
@@ -1291,12 +1295,42 @@ export class A2AOrchestrator {
     await fs.rename(tmpPath, this.filePath);
   }
 
-  getState(fleetNodes = []) {
+  _matchMagpieBinding(agent, magpieBindings = []) {
+    if (!Array.isArray(magpieBindings) || magpieBindings.length === 0 || !agent) return null;
+    const canonicalHarness = (value) => {
+      const lower = String(value || '').trim().toLowerCase();
+      if (lower === 'codex' || lower === 'codex-cli') return 'codex-cli';
+      if (lower === 'pi' || lower === 'pi-agent') return 'pi-agent';
+      if (lower === 'dsh' || lower === 'dsh-expert') return 'dsh-expert';
+      if (lower === 'agy' || lower === 'agy-cli') return 'agy-cli';
+      return lower;
+    };
+    const agentHarness = canonicalHarness(agent.harness);
+    const agentName = String(agent.name || '').toLowerCase();
+    for (const binding of magpieBindings) {
+      const bHarness = canonicalHarness(binding?.harness);
+      const bName = String(binding?.name || '').toLowerCase();
+      if (agentHarness && bHarness && agentHarness === bHarness) return binding;
+      if (bName && agentName && (agentName.includes(bName) || bName.includes(agentName))) return binding;
+    }
+    return null;
+  }
+
+  getState(fleetNodes = [], options = {}) {
+    const magpieBindings = Array.isArray(options?.magpieBindings) ? options.magpieBindings : [];
     const nodeNameMap = new Map((fleetNodes || []).map((n) => [n.id, n.name || n.id]));
     const agentList = [...this.agents.values()].map((agent, idx) => {
       const { authToken: _omittedAuth, ...safeAgent } = agent;
+      const binding = this._matchMagpieBinding(safeAgent, magpieBindings);
+      const magpieModel = binding?.canonicalModel || null;
       return {
         ...safeAgent,
+        modelHint: safeAgent.modelHint || magpieModel || null,
+        magpieModel,
+        magpieEffort: binding?.effort || null,
+        magpieMode: binding?.mode || null,
+        magpieBindingName: binding?.name || null,
+        magpieConfigSource: binding?.configSource || null,
         nodeName: nodeNameMap.get(agent.nodeId) || agent.nodeName || agent.nodeId,
         role: agent.id === this.leadAgentId ? 'lead' : 'worker',
         reasoningEffort: sanitizeEffort(agent.reasoningEffort, agent.id === this.leadAgentId ? 'high' : 'medium'),
@@ -1386,6 +1420,7 @@ export class A2AOrchestrator {
       },
       leadAgentId: leadAgent?.id || null,
       leadAgent,
+      signing: getA2ASigningMetadata(this.config),
       orchestrationConfig: this.orchestrationConfig,
       summary: {
         totalAgents: agentList.length,
@@ -2761,7 +2796,7 @@ export class A2AOrchestrator {
 
     const rpcCheck = validateSafeEndpointUrl(agent.rpcUrl);
     if (rpcCheck.ok) {
-      const { secret } = getA2ASigningSecret();
+      const { secret } = getA2ASigningSecret(this.config);
       const sendRpcProbe = async (rpcMethod) => {
         const rawBody = JSON.stringify({
           jsonrpc: '2.0',
@@ -3024,16 +3059,35 @@ export class A2AOrchestrator {
       prompt,
       payload.requiredSkill,
     );
+    const magpieBindings = Array.isArray(options.magpieBindings) ? options.magpieBindings : [];
+    const workerBinding = this._matchMagpieBinding(worker, magpieBindings);
+    const explicitModel = String(payload.model || payload.modelOverride || '').trim();
+    const magpieDefaultModel = String(workerBinding?.canonicalModel || '').trim();
 
     const appliedModel = redactText(
       String(
-        payload.modelOverride
+        explicitModel
         || (executionMode === 'main-sub' ? this.orchestrationConfig.subModel : '')
         || matchedRule?.targetModel
+        || magpieDefaultModel
         || worker.modelHint
         || this.orchestrationConfig.subModel,
       ),
-    ).slice(0, 64);
+    ).slice(0, 96);
+
+    const modelSource = explicitModel
+      ? 'manual'
+      : (executionMode === 'main-sub' && this.orchestrationConfig.subModel)
+        ? 'orchestrator'
+        : matchedRule?.targetModel
+          ? 'rule'
+          : magpieDefaultModel
+            ? 'magpie-agent'
+            : worker.modelHint
+              ? 'agent-hint'
+              : 'orchestrator';
+
+    const signingMeta = getA2ASigningMetadata(this.config);
 
     const appliedEffort = sanitizeEffort(
       payload.reasoningEffort
@@ -3085,6 +3139,10 @@ export class A2AOrchestrator {
       matchedRuleName: matchedRule?.name || null,
       matchedSkill,
       appliedModel,
+      selectedModel: appliedModel,
+      modelSource,
+      signed: Boolean(signingMeta.configured),
+      signatureKeyId: signingMeta.keyId,
       appliedEffort,
       worktreeBranch,
       mcpScope,
@@ -3247,7 +3305,9 @@ export class A2AOrchestrator {
                 delegatorAgentId: lead.id,
                 delegatorNodeId: lead.nodeId,
                 executionMode,
+                model: appliedModel,
                 appliedModel,
+                modelSource,
                 appliedEffort,
                 matchedSkill,
                 worktreeBranch,
@@ -3259,7 +3319,7 @@ export class A2AOrchestrator {
             },
           };
           const rawBody = JSON.stringify(rpcPayload);
-          const { secret } = getA2ASigningSecret();
+          const { secret } = getA2ASigningSecret(this.config);
           const res = await fetch(rpcCheck.url, {
             method: 'POST',
             headers: buildSignedA2AHeaders(rawBody, {

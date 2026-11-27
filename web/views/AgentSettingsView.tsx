@@ -33,10 +33,12 @@ import type {
   A2AAgentPeer,
   A2AConnectProfilesResponse,
   A2APingResponse,
+  A2ASigningVerifyResponse,
   A2ASkillCatalogItem,
   A2AStateResponse,
   GatewayTelemetryResponse,
   LinearStateResponse,
+  MagpieCatalogResponse,
   OrchestrationMode,
   ReasoningEffort,
   SnapshotResponse,
@@ -51,6 +53,7 @@ import {
   fetchA2AState,
   fetchGatewayTelemetry,
   fetchLinearState,
+  fetchMagpieModels,
   pingA2AAgent,
   saveA2ATopologyPositions,
   setLeadA2AAgent,
@@ -60,6 +63,7 @@ import {
   updateLinearCommander,
   updateLinearGithubConfig,
   upsertA2ARoutingRule,
+  verifyA2ASigning,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
 import { formatBytes, formatCompactNumber, formatUptime } from '../utils/format';
@@ -256,6 +260,10 @@ export function AgentSettingsView({
 
   const [a2aState, setA2aState] = React.useState<A2AStateResponse | null>(null);
   const [a2aLoading, setA2aLoading] = React.useState(false);
+  const [magpieCatalog, setMagpieCatalog] = React.useState<MagpieCatalogResponse | null>(null);
+  const [verifyingSigning, setVerifyingSigning] = React.useState(false);
+  const [signingVerifyResult, setSigningVerifyResult] =
+    React.useState<A2ASigningVerifyResponse | null>(null);
   const [linearState, setLinearState] = React.useState<LinearStateResponse | null>(null);
   const [telemetry, setTelemetry] = React.useState<GatewayTelemetryResponse | null>(null);
   const [focusedLogAgentId, setFocusedLogAgentId] = React.useState<string>('all');
@@ -442,6 +450,15 @@ export function AgentSettingsView({
     if (activeTab === 'multi-device') {
       void loadConnectProfiles(profileParams, controller.signal);
     }
+    if (activeTab === 'general' || activeTab === 'multi-device' || activeTab === 'gateway') {
+      fetchMagpieModels(controller.signal)
+        .then((res) => {
+          if (!controller.signal.aborted) setMagpieCatalog(res);
+        })
+        .catch(() => {
+          // Non-blocking catalog lookup
+        });
+    }
     if (activeTab === 'gateway') {
       fetchGatewayTelemetry(controller.signal)
         .then((res) => {
@@ -476,6 +493,45 @@ export function AgentSettingsView({
     },
     [onToast],
   );
+
+  const handleVerifySigning = React.useCallback(async () => {
+    if (verifyingSigning) return;
+    setVerifyingSigning(true);
+    try {
+      const res = await verifyA2ASigning();
+      setSigningVerifyResult(res);
+      onToast?.(
+        res.valid
+          ? `HMAC-SHA256 签名自检通过（Key ${res.signing.keyId}）`
+          : `签名校验失败：${res.reason || 'invalid'}`,
+        res.valid ? 'ok' : 'err',
+      );
+    } catch (err) {
+      onToast?.(`签名校验请求失败：${(err as Error).message}`, 'err');
+    } finally {
+      setVerifyingSigning(false);
+    }
+  }, [verifyingSigning, onToast]);
+
+  const modelPresetOptions = React.useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    for (const model of magpieCatalog?.models || []) {
+      if (model?.id && !seen.has(model.id)) {
+        seen.add(model.id);
+        list.push(model.id);
+      }
+    }
+    for (const fallback of MODEL_PRESETS) {
+      if (!seen.has(fallback)) {
+        seen.add(fallback);
+        list.push(fallback);
+      }
+    }
+    return list;
+  }, [magpieCatalog?.models]);
+
+  const activeSigningMeta = connectProfiles?.signing || a2aState?.signing || null;
 
   const handleSaveRouting = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -1101,10 +1157,16 @@ export function AgentSettingsView({
                   </div>
 
                   <datalist id="settings-model-presets">
-                    {MODEL_PRESETS.map((model) => (
+                    {modelPresetOptions.map((model) => (
                       <option key={model} value={model} />
                     ))}
                   </datalist>
+
+                  <div className="text-[12px] font-mono text-[var(--ink-subtle)]">
+                    {magpieCatalog?.reachable
+                      ? `已从天翼云 Magpie 网关同步 ${magpieCatalog.totalModels} 个模型，识别 ${magpieCatalog.agentBindings.length} 项 Agent 模型绑定。`
+                      : 'Magpie 网关未连接，当前使用内置模型候选列表。'}
+                  </div>
 
                   <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
                     <label className="inline-flex items-center gap-2 text-[13px] text-[var(--ink-muted)] cursor-pointer">
@@ -1246,12 +1308,28 @@ export function AgentSettingsView({
                 title="Google A2A v0.3 Hub 端点与签名校验"
                 description="供其他主机上的 Agent、CLI 探针或第三方编排器通过标准 AgentCard 与 JSON-RPC 接入。"
                 actions={
-                  connectProfiles ? (
-                    <StatusIndicator
-                      status={connectProfiles.signingConfigured ? 'healthy' : 'degraded'}
-                      label={connectProfiles.signingConfigured ? 'HMAC 签名已启用' : '未配置签名密钥'}
-                    />
-                  ) : null
+                  <div className="flex flex-wrap items-center gap-2">
+                    {connectProfiles && (
+                      <StatusIndicator
+                        status={connectProfiles.signingConfigured ? 'healthy' : 'degraded'}
+                        label={
+                          connectProfiles.signingConfigured
+                            ? `HMAC 已配置 (${activeSigningMeta?.keyId || 'default'})`
+                            : '临时进程签名'
+                        }
+                      />
+                    )}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={verifyingSigning}
+                      onClick={() => void handleVerifySigning()}
+                      data-testid="verify-a2a-signing-btn"
+                    >
+                      <ShieldCheck className="size-3.5" strokeWidth={1.75} />
+                      {verifyingSigning ? '验证中...' : '验证 HMAC 签名'}
+                    </Button>
+                  </div>
                 }
               >
                 {profilesLoading && !connectProfiles ? (
@@ -1279,6 +1357,44 @@ export function AgentSettingsView({
                         互联模式：<span className="font-mono text-[var(--ink)]">{connectProfiles.profiles.length} 套方案</span>
                       </span>
                     </div>
+
+                    {activeSigningMeta && (
+                      <div
+                        data-testid="a2a-signing-metadata"
+                        className="rounded-lg border border-[var(--border)] bg-[var(--surface-subtle)]/45 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-3 text-[12px] font-mono text-[var(--ink-muted)]"
+                      >
+                        <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
+                          <span>
+                            算法：<span className="text-[var(--ink)]">{activeSigningMeta.algorithm}</span>
+                          </span>
+                          <span>
+                            请求头：<span className="text-[var(--ink)]">{activeSigningMeta.header}</span>
+                          </span>
+                          <span>
+                            Key ID：<span className="text-[var(--ink)]">{activeSigningMeta.keyId}</span>
+                          </span>
+                          <span>
+                            密钥来源：<span className="text-[var(--ink)]">{activeSigningMeta.keySource}</span>
+                          </span>
+                          <span>
+                            防重放窗口：<span className="text-[var(--ink)]">{activeSigningMeta.replayWindowSec}s</span>
+                          </span>
+                        </div>
+                        {signingVerifyResult && (
+                          <span
+                            data-testid="a2a-signing-verify-result"
+                            className={cn(
+                              'font-medium',
+                              signingVerifyResult.valid ? 'text-[var(--ok)]' : 'text-[var(--err)]',
+                            )}
+                          >
+                            {signingVerifyResult.valid
+                              ? `自检通过 · sig=${signingVerifyResult.sampleSignaturePrefix || 'ok'}`
+                              : `校验失败 · ${signingVerifyResult.reason || 'invalid'}`}
+                          </span>
+                        )}
+                      </div>
+                    )}
 
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                       <div className="flex items-center justify-between gap-2 px-3 py-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-subtle)]/50">
@@ -1408,9 +1524,12 @@ export function AgentSettingsView({
                                 </div>
                               </td>
                               <td className="py-2.5 px-3 font-mono text-[12px] text-[var(--ink-muted)]">
-                                <div>{agent.modelHint || '继承默认'}</div>
+                                <div className="text-[var(--ink)]">
+                                  {agent.magpieModel || agent.modelHint || '继承默认'}
+                                </div>
                                 <div className="text-[11px] text-[var(--ink-subtle)]">
-                                  effort: {agent.reasoningEffort || 'medium'}
+                                  effort: {agent.magpieEffort || agent.reasoningEffort || 'medium'}
+                                  {agent.magpieModel ? ' · Magpie' : ''}
                                 </div>
                               </td>
                               <td className="py-2.5 px-3">

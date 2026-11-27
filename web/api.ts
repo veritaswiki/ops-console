@@ -4,6 +4,7 @@ import type {
   A2AConnectProfilesResponse,
   A2AContextSpillNode,
   A2APingResponse,
+  A2ASigningVerifyResponse,
   A2AStateResponse,
   A2ASuperAgentConfig,
   A2ASuperAgentTicket,
@@ -32,6 +33,7 @@ import type {
   LinearProjectItem,
   LinearStateResponse,
   LogsResponse,
+  MagpieCatalogResponse,
   McpFleetResponse,
   McpTestResult,
   MemoryCompareResponse,
@@ -605,6 +607,19 @@ export const deleteMcp = (mcpId: string) =>
 export const fetchA2AState = (signal?: AbortSignal) =>
   apiRequest<A2AStateResponse>('/api/a2a/state', { cacheTtlMs: 3000, signal });
 
+export const fetchMagpieModels = (signal?: AbortSignal) =>
+  apiRequest<MagpieCatalogResponse>('/api/magpie/models', { cacheTtlMs: 5000, signal });
+
+export const verifyA2ASigning = (payload?: {
+  rawBody?: string;
+  signature?: string;
+  timestampSec?: number;
+}) =>
+  apiRequest<A2ASigningVerifyResponse>('/api/a2a/signing/verify', {
+    method: 'POST',
+    body: JSON.stringify(payload || {}),
+  });
+
 export const setLeadA2AAgent = (agentId: string) =>
   apiRequest<{ ok?: boolean; leadAgentId: string; leadAgent: A2AAgentPeer }>('/api/a2a/lead', {
     method: 'POST',
@@ -787,6 +802,7 @@ export const dispatchA2ATask = (payload: {
   prompt: string;
   targetAgentId?: string;
   executionMode?: string;
+  model?: string;
   modelOverride?: string;
   reasoningEffort?: string;
   requireDshReview?: boolean;

@@ -6,11 +6,58 @@ const A2A_SPEC_VERSION = '0.3.0';
 const MAX_REPLAY_SKEW_SEC = 300;
 const EPHEMERAL_A2A_SECRET = crypto.randomBytes(32).toString('hex');
 
-export function getA2ASigningSecret() {
+export function computeA2AKeyId(secret) {
+  const digest = crypto
+    .createHash('sha256')
+    .update(String(secret || ''))
+    .digest('hex')
+    .slice(0, 12);
+  return `sha256:${digest}`;
+}
+
+export function getA2ASigningSecret(config = null) {
+  const cfgSecret = String(config?.a2a?.sharedSecret || '').trim();
+  if (cfgSecret) {
+    const keySource = String(config?.a2a?.secretSource || 'config');
+    return {
+      secret: cfgSecret,
+      configuredViaEnv: keySource === 'env',
+      configured: true,
+      keySource,
+      keyId: computeA2AKeyId(cfgSecret),
+      algorithm: 'HMAC-SHA256',
+      header: 'X-A2A-Signature',
+      timestampHeader: 'X-A2A-Timestamp',
+      replayWindowSec: MAX_REPLAY_SKEW_SEC,
+    };
+  }
   const envSecret = String(process.env.OPS_A2A_SHARED_SECRET || '').trim();
+  const activeSecret = envSecret || EPHEMERAL_A2A_SECRET;
   return {
-    secret: envSecret || EPHEMERAL_A2A_SECRET,
+    secret: activeSecret,
     configuredViaEnv: Boolean(envSecret),
+    configured: Boolean(envSecret),
+    keySource: envSecret ? 'env' : 'ephemeral',
+    keyId: computeA2AKeyId(activeSecret),
+    algorithm: 'HMAC-SHA256',
+    header: 'X-A2A-Signature',
+    timestampHeader: 'X-A2A-Timestamp',
+    replayWindowSec: MAX_REPLAY_SKEW_SEC,
+  };
+}
+
+export function getA2ASigningMetadata(config = null) {
+  const info = getA2ASigningSecret(config);
+  return {
+    enabled: true,
+    configured: Boolean(info.configured),
+    configuredViaEnv: Boolean(info.configuredViaEnv),
+    algorithm: info.algorithm,
+    header: info.header,
+    timestampHeader: info.timestampHeader,
+    replayWindowSec: info.replayWindowSec,
+    keyId: info.keyId,
+    keySource: info.keySource,
   };
 }
 
@@ -336,6 +383,10 @@ export async function handleA2AJsonRpc({
             ? params.contextId
             : (typeof params.message?.contextId === 'string' ? params.message.contextId : undefined),
           executionMode: typeof params.metadata?.executionMode === 'string' ? params.metadata.executionMode : undefined,
+          modelOverride: typeof params.metadata?.model === 'string'
+            ? params.metadata.model
+            : (typeof params.metadata?.modelOverride === 'string' ? params.metadata.modelOverride : undefined),
+          reasoningEffort: typeof params.metadata?.reasoningEffort === 'string' ? params.metadata.reasoningEffort : undefined,
           parentTaskId: typeof params.metadata?.parentTaskId === 'string' ? params.metadata.parentTaskId : undefined,
           worktreeBranch: typeof params.metadata?.worktreeBranch === 'string' ? params.metadata.worktreeBranch : undefined,
           slashCommand: typeof params.metadata?.slashCommand === 'string' ? params.metadata.slashCommand : undefined,

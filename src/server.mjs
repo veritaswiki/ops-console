@@ -8,6 +8,8 @@ import { A2AOrchestrator } from './a2a-orchestrator.mjs';
 import {
   buildHubAgentCard,
   buildNodeConnectProfiles,
+  buildSignedA2AHeaders,
+  getA2ASigningMetadata,
   getA2ASigningSecret,
   handleA2AJsonRpc,
   verifyA2ASignature,
@@ -18,6 +20,10 @@ import { BotFleetManager } from './bot-fleet.mjs';
 import { SingleFlightCache } from './cache.mjs';
 import { APP_VERSION, PACKAGE_ROOT, validateConfig } from './config.mjs';
 import { createDemoProvider } from './connectors/demo.mjs';
+import {
+  collectMagpieCatalog,
+  getCachedMagpieAgentBindings,
+} from './connectors/gateway-magpie.mjs';
 import { ConnectorHub } from './connectors/index.mjs';
 import { collectCloudflare } from './connectors/network-cloudflare.mjs';
 import { runTailscaleNetcheck, runTailscalePing } from './connectors/network-tailscale.mjs';
@@ -500,7 +506,7 @@ export function createOpsConsole(options = {}) {
           return;
         }
         const rawBody = await readRawText(req, MAX_BODY_BYTES);
-        const signing = getA2ASigningSecret();
+        const signing = getA2ASigningSecret(config);
         const hasSigHeaders = Boolean(req.headers['x-a2a-signature'] || req.headers['x-a2a-timestamp']);
         const sigCheck = hasSigHeaders
           ? verifyA2ASignature({
@@ -513,7 +519,7 @@ export function createOpsConsole(options = {}) {
         const webAuth = config.auth.webKey
           ? checkRequestAuth(req, url, config.auth.webKey)
           : { authorized: false, method: 'none' };
-        const authRequired = Boolean(config.auth.webKey || signing.configuredViaEnv);
+        const authRequired = Boolean(config.auth.webKey || signing.configured);
 
         if (hasSigHeaders && !sigCheck.valid) {
           sendJson(res, 401, {
@@ -1441,11 +1447,73 @@ export function createOpsConsole(options = {}) {
       }
 
       // ─── Harness-Free A2A Lead/Worker Orchestrator (/api/a2a/*) ────────────
+      if (method === 'GET' && pathname === '/api/magpie/models') {
+        const catalog = config.demo && demoProvider
+          ? demoProvider.getMagpieCatalog()
+          : await collectMagpieCatalog(config.connectors.magpie, { awaitCli: true });
+        sendJson(res, 200, catalog, {}, req);
+        return;
+      }
+
       if (method === 'GET' && pathname === '/api/a2a/state') {
         const snapshot = await hub.collectSnapshot(false);
         const fleetNodes = snapshot?.fleet?.nodes || [];
-        const state = a2aOrchestrator.getState(fleetNodes);
+        const magpieBindings = config.demo && demoProvider
+          ? (snapshot?.magpie?.agents || [])
+          : (snapshot?.magpie?.agentBindings || snapshot?.magpie?.agents || getCachedMagpieAgentBindings(config.connectors.magpie));
+        const state = a2aOrchestrator.getState(fleetNodes, { magpieBindings });
         sendJson(res, 200, state, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/a2a/signing/verify') {
+        const { data } = await readBody(req);
+        const signing = getA2ASigningSecret(config);
+        const signingMeta = getA2ASigningMetadata(config);
+        const hasProvided = Boolean(data?.signature && data?.timestampSec !== undefined && data?.rawBody !== undefined);
+        if (hasProvided) {
+          const verified = verifyA2ASignature({
+            rawBody: String(data.rawBody),
+            signature: String(data.signature),
+            timestampSec: data.timestampSec,
+            secret: signing.secret,
+          });
+          sendJson(res, 200, {
+            ok: true,
+            mode: 'verify',
+            valid: Boolean(verified.valid),
+            reason: verified.reason || null,
+            signing: signingMeta,
+          }, {}, req);
+          return;
+        }
+        const tsSec = Math.floor(Date.now() / 1000);
+        const sampleBody = JSON.stringify({
+          jsonrpc: '2.0',
+          id: `sig-verify-${tsSec}`,
+          method: 'agent/ping',
+          params: { keyId: signingMeta.keyId },
+        });
+        const headers = buildSignedA2AHeaders(sampleBody, {
+          secret: signing.secret,
+          timestampSec: tsSec,
+        });
+        const verified = verifyA2ASignature({
+          rawBody: sampleBody,
+          signature: headers['X-A2A-Signature'],
+          timestampSec: headers['X-A2A-Timestamp'],
+          secret: signing.secret,
+          nowSec: tsSec,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          mode: 'self-test',
+          valid: Boolean(verified.valid),
+          reason: verified.reason || null,
+          verifiedTimestampSec: tsSec,
+          sampleSignaturePrefix: String(headers['X-A2A-Signature'] || '').slice(0, 19),
+          signing: signingMeta,
+        }, {}, req);
         return;
       }
 
@@ -1464,13 +1532,17 @@ export function createOpsConsole(options = {}) {
           tailscaleHost,
           cloudflareDomain,
         });
+        const signingMeta = getA2ASigningMetadata(config);
         sendJson(res, 200, {
           ok: true,
           protocol: 'Google A2A (Agent2Agent)',
           specVersion: '0.3.0',
           hubAgentCardUrl: `${origin}/.well-known/agent-card.json`,
           hubRpcUrl: `${origin}/a2a`,
-          signingConfigured: getA2ASigningSecret().configuredViaEnv,
+          signingConfigured: signingMeta.configured,
+          signingKeyId: signingMeta.keyId,
+          signingKeySource: signingMeta.keySource,
+          signing: signingMeta,
           profiles,
         }, {}, req);
         return;
@@ -1579,7 +1651,10 @@ export function createOpsConsole(options = {}) {
           return;
         }
         const { data } = await readBody(req);
-        const task = await a2aOrchestrator.dispatchTask(data, { actor: 'web' });
+        const magpieBindings = config.demo && demoProvider
+          ? (demoProvider.getMagpieCatalog().agentBindings || [])
+          : getCachedMagpieAgentBindings(config.connectors.magpie);
+        const task = await a2aOrchestrator.dispatchTask(data, { actor: 'web', magpieBindings });
         await logger.appendAudit({
           action: 'a2a:dispatch-task',
           target: `${task.leadAgentId}->${task.workerAgentId}`,
