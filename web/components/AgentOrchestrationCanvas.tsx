@@ -41,6 +41,7 @@ import type {
   A2AOrchestrationConfig,
   A2ARoutingRule,
   A2ASkillCatalogItem,
+  DynamicModelCatalogResponse,
   FleetNode,
   OrchestrationMode,
   ReasoningEffort,
@@ -55,6 +56,7 @@ import {
   type CanvasViewLens,
   type ClusterHostNodeData,
 } from '../lib/agent-topology';
+import { getModelsForNodeAgent } from '../lib/model-catalog';
 import { cn, FOCUS_RING } from '../lib/cn';
 import { statusLabel, statusTone } from '../utils/format';
 import { Button, inputBaseClass, SegmentedFilter, StatusIndicator } from './ui';
@@ -299,6 +301,7 @@ interface CanvasProps {
   agents: A2AAgentPeer[];
   fleetNodes?: FleetNode[];
   skillCatalog?: A2ASkillCatalogItem[];
+  modelCatalog?: DynamicModelCatalogResponse | null;
   routingRules: A2ARoutingRule[];
   leadAgentId: string | null;
   orchestrationConfig: A2AOrchestrationConfig;
@@ -334,6 +337,7 @@ function CanvasInner({
   agents,
   fleetNodes = [],
   skillCatalog = [],
+  modelCatalog = null,
   routingRules,
   leadAgentId,
   orchestrationConfig,
@@ -366,6 +370,34 @@ function CanvasInner({
     () => computeClusterConnectivityStats(agents, fleetNodes, routingRules, skillCatalog),
     [agents, fleetNodes, routingRules, skillCatalog],
   );
+
+  const modelOptions = React.useMemo(() => {
+    const catalogModels = getModelsForNodeAgent(modelCatalog, null, null);
+    const options: Array<{ value: string; label: string }> = [];
+    const seen = new Set<string>();
+    if (catalogModels.length > 0) {
+      for (const model of catalogModels) {
+        if (!model?.id || seen.has(model.id)) continue;
+        seen.add(model.id);
+        options.push({
+          value: model.id,
+          label: model.displayName || model.id,
+        });
+      }
+    } else {
+      for (const preset of MODEL_PRESETS) {
+        if (seen.has(preset)) continue;
+        seen.add(preset);
+        options.push({ value: preset, label: preset });
+      }
+    }
+    for (const current of [orchestrationConfig.mainModel, orchestrationConfig.subModel]) {
+      if (!current || seen.has(current)) continue;
+      seen.add(current);
+      options.unshift({ value: current, label: `${current} · 当前配置` });
+    }
+    return options;
+  }, [modelCatalog, orchestrationConfig.mainModel, orchestrationConfig.subModel]);
 
   const computeGraph = React.useCallback((): { nodes: Node[]; edges: Edge[] } => {
     if (lens === 'cluster') {
@@ -646,8 +678,8 @@ function CanvasInner({
                 onChange={(e) => void onUpdateConfig({ mainModel: e.target.value })}
                 className={cn('ui-select h-8 pl-2.5 text-[12px] font-mono cursor-pointer min-w-0 w-[180px]', inputBaseClass)}
               >
-                {MODEL_PRESETS.map((m) => (
-                  <option key={m} value={m}>{m}</option>
+                {modelOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
               <select
@@ -672,8 +704,8 @@ function CanvasInner({
                 onChange={(e) => void onUpdateConfig({ subModel: e.target.value })}
                 className={cn('ui-select h-8 pl-2.5 text-[12px] font-mono cursor-pointer min-w-0 w-[180px]', inputBaseClass)}
               >
-                {MODEL_PRESETS.map((m) => (
-                  <option key={m} value={m}>{m}</option>
+                {modelOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
               <select
@@ -1247,8 +1279,8 @@ function CanvasInner({
           )}
 
           <datalist id="ops-model-presets">
-            {MODEL_PRESETS.map((m) => (
-              <option key={m} value={m} />
+            {modelOptions.map((option) => (
+              <option key={option.value} value={option.value} />
             ))}
           </datalist>
         </div>

@@ -1694,6 +1694,75 @@ export interface A2ATaskStep {
   detail: string;
 }
 
+export type A2AThreadRelation = 'root' | 'fork' | 'fresh-context' | 'btw' | 'subtask';
+
+export interface A2AQueuedTurn {
+  id: string;
+  prompt: string;
+  model?: string | null;
+  effort?: string | null;
+  createdAt: string;
+  actor: string;
+  status: 'queued' | 'dispatched' | 'canceled' | string;
+}
+
+export interface A2ASteeringNote {
+  id: string;
+  instruction: string;
+  createdAt: string;
+  actor: string;
+  appliedAt?: string | null;
+}
+
+export interface A2ACompactionMarker {
+  id: string;
+  createdAt: string;
+  actor: string;
+  summary: string;
+  compactedUpToStepIndex: number;
+  tokensBefore: number;
+  tokensAfter: number;
+}
+
+export interface A2AOutputSpillRef {
+  id: string;
+  taskId: string;
+  label: string;
+  bytes: number;
+  preview: string;
+  truncated: boolean;
+  createdAt: string;
+}
+
+export interface A2AContextBudget {
+  estimatedTokens: number;
+  maxTokens: number;
+  usagePct: number;
+  compactedCount: number;
+}
+
+export interface A2AThreadAttention {
+  unread: boolean;
+  snoozed: boolean;
+  snoozeWokenEarly: boolean;
+  needsAttention: boolean;
+  reasons: string[];
+}
+
+export interface A2ATasksPageResponse {
+  ok: boolean;
+  items: A2ATaskRecord[];
+  total: number;
+  limit: number;
+  offset: number;
+  hasMore: boolean;
+}
+
+export interface A2ASpillDetailResponse {
+  ok: boolean;
+  spill: A2AOutputSpillRef & { content: string };
+}
+
 export interface A2ATaskRecord {
   id: string;
   contextId?: string;
@@ -1730,6 +1799,20 @@ export interface A2ATaskRecord {
   artifact?: string;
   isSideThread?: boolean;
   btwNotes?: A2ABtwNote[];
+  parentThreadId?: string | null;
+  rootThreadId?: string | null;
+  relation?: A2AThreadRelation | string;
+  queuedTurns?: A2AQueuedTurn[];
+  steeringNotes?: A2ASteeringNote[];
+  settledAt?: string | null;
+  snoozedAt?: string | null;
+  snoozedUntil?: string | null;
+  readWatermarkAt?: string | null;
+  lastActivityAt?: string | null;
+  compactions?: A2ACompactionMarker[];
+  outputSpills?: A2AOutputSpillRef[];
+  contextBudget?: A2AContextBudget;
+  attention?: A2AThreadAttention;
 }
 
 export interface A2ACollaborationLog {
@@ -2311,6 +2394,23 @@ export interface GithubPullRequestItem {
   checksStatus?: 'SUCCESS' | 'FAILURE' | 'PENDING' | 'UNKNOWN' | string;
   checksSummary?: string;
   labels?: string[];
+}
+
+export interface GithubPullRequestSummary {
+  number: number;
+  title: string;
+  state: 'OPEN' | 'CLOSED' | 'MERGED' | string;
+  isDraft?: boolean;
+  headRefName: string;
+  baseRefName?: string;
+  author?: string;
+  url: string;
+  updatedAt?: string;
+  reviewDecision?: string | null;
+  checksStatus?: 'SUCCESS' | 'FAILURE' | 'PENDING' | 'UNKNOWN' | string;
+  issueNumber?: number | null;
+  linkedIssueId?: string | null;
+  linkedIssueIdentifier?: string | null;
 }
 
 export interface GithubIssueItem {

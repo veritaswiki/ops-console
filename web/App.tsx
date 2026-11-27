@@ -240,6 +240,9 @@ export function App() {
   const [activeAgentTaskId, setActiveAgentTaskId] = React.useState<string | null>(null);
   const [agentSearchQuery, setAgentSearchQuery] = React.useState<string>('');
   const [agentSearchOpen, setAgentSearchOpen] = React.useState<boolean>(false);
+  const [a2aRevision, setA2aRevision] = React.useState<number>(0);
+  const [catalogRevision, setCatalogRevision] = React.useState<number>(0);
+  const [focusedProjectIssueId, setFocusedProjectIssueId] = React.useState<string | null>(null);
   const sidebarAgentSearchRef = React.useRef<HTMLInputElement>(null);
 
   const [pollMs, setPollMs] = React.useState<number>(10000);
@@ -426,6 +429,7 @@ export function App() {
   // Real-time SSE delta event bus subscription (aligned with backend event names)
   const viewRef = React.useRef<ViewId>(view);
   viewRef.current = view;
+  const pendingEventsRef = React.useRef<Set<string>>(new Set());
 
   React.useEffect(() => {
     if (typeof EventSource === 'undefined') return;
@@ -434,6 +438,22 @@ export function App() {
       if (timer != null) return;
       timer = window.setTimeout(() => {
         timer = null;
+        const fired = pendingEventsRef.current;
+        const bumpA2aRevision = [
+          'a2a_updated',
+          'evolution_updated',
+          'agent_declarative_reloaded',
+          'module_reloaded',
+          'pr_applied',
+        ].some((type) => fired.has(type));
+        const bumpCatalogRevision = [
+          'model_catalog_updated',
+          'probe_heartbeat',
+          'a2a_updated',
+        ].some((type) => fired.has(type));
+        fired.clear();
+        if (bumpA2aRevision) setA2aRevision((revision) => revision + 1);
+        if (bumpCatalogRevision) setCatalogRevision((revision) => revision + 1);
         if (document.visibilityState === 'visible') {
           void loadSnapshot(false);
           void loadRecentAgentTasks();
@@ -476,8 +496,12 @@ export function App() {
       'update_applied',
       'update_rolled_back',
     ];
+    const handleDeltaEvent = (eventType: string) => () => {
+      pendingEventsRef.current.add(eventType);
+      scheduleDeltaSync();
+    };
     for (const type of eventTypes) {
-      es.addEventListener(type, scheduleDeltaSync);
+      es.addEventListener(type, handleDeltaEvent(type));
     }
 
     const handleHotNotice = (eventType: string) => (evt: MessageEvent) => {
@@ -485,6 +509,7 @@ export function App() {
       if (!notice) return;
       setHotUpdateNotice(notice);
       if (eventType === 'module_reloaded' || eventType === 'pr_applied') {
+        pendingEventsRef.current.add(eventType);
         scheduleDeltaSync();
       }
       if (eventType === 'server_restarting') {
@@ -520,6 +545,7 @@ export function App() {
     return () => {
       if (timer != null) window.clearTimeout(timer);
       if (readyPollTimer != null) window.clearInterval(readyPollTimer);
+      pendingEventsRef.current.clear();
       for (const { type, handler } of hotHandlers) {
         es.removeEventListener(type, handler as EventListener);
       }
@@ -662,6 +688,14 @@ export function App() {
     setMobileNavOpen(false);
     window.scrollTo({ top: 0 });
   };
+
+  const handleOpenProjectIssue = React.useCallback(
+    (issueId?: string) => {
+      setFocusedProjectIssueId(issueId || null);
+      handleSelectView('projects');
+    },
+    [handleSelectView],
+  );
 
   const commandEntries = React.useMemo<CommandEntry[]>(() => {
     const list: CommandEntry[] = [];
@@ -1679,14 +1713,25 @@ export function App() {
                       onSelectTask={setActiveAgentTaskId}
                       searchQuery={agentSearchQuery}
                       onSearchQueryChange={setAgentSearchQuery}
+                      a2aRevision={a2aRevision}
+                      catalogRevision={catalogRevision}
                       onTasksUpdated={() => void loadRecentAgentTasks()}
                       onOpenSettings={() => handleSelectView('agent-settings')}
+                      onOpenProjectIssue={handleOpenProjectIssue}
+                      onOpenSelfEvolution={() => {
+                        setViewSubTab('ops', 'updates');
+                        handleSelectView('ops');
+                      }}
                       onToast={pushToast}
                     />
                   )}
                   {view === 'projects' && (
                     <ProjectsView
                       readOnly={readOnly}
+                      a2aRevision={a2aRevision}
+                      focusedIssueId={focusedProjectIssueId}
+                      onClearFocusedIssue={() => setFocusedProjectIssueId(null)}
+                      onOpenAgentTask={handleOpenAgentThread}
                       onToast={pushToast}
                     />
                   )}

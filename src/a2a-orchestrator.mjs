@@ -21,6 +21,17 @@ import {
   normalizeBtwThread,
   summarizeBtwStats,
 } from './a2a-btw.mjs';
+import {
+  INLINE_OUTPUT_MAX_CHARS,
+  MAX_QUEUED_TURNS,
+  MAX_STEER_NOTES,
+  SPILL_ID_RE,
+  estimateContextBudget,
+  normalizeTaskWorkspaceFields,
+  paginateTasks,
+  readSpillPayload,
+  truncateInlineWithSpill,
+} from './a2a-workspace-controls.mjs';
 import { validateSafeEndpointUrl } from './mcp-fleet.mjs';
 import { redactText } from './redact.mjs';
 
@@ -1167,6 +1178,7 @@ export class A2AOrchestrator {
     this.collaborationLogs = [];
     this.btwThreads = new Map();
     this.btwConfirmTokens = new Map();
+    this.memorySpills = new Map();
     this._logListener = null;
     this._initialized = false;
   }
@@ -1229,6 +1241,7 @@ export class A2AOrchestrator {
       this.superAgentConfig = demo.superAgentConfig;
       this.triggerEvents = demo.triggerEvents;
       this.tasks = demo.tasks;
+      for (const task of this.tasks) this._normalizeWorkspaceTask(task);
       this.collaborationLogs = demo.collaborationLogs;
       return;
     }
@@ -1297,6 +1310,7 @@ export class A2AOrchestrator {
           if (normalized) this.btwThreads.set(normalized.id, normalized);
         }
       }
+      for (const task of this.tasks) this._normalizeWorkspaceTask(task);
     } catch {
       // Fresh state
     }
@@ -1350,6 +1364,50 @@ export class A2AOrchestrator {
       if (bName && agentName && (agentName.includes(bName) || bName.includes(agentName))) return binding;
     }
     return null;
+  }
+
+  _pendingBtwCountForTask(task) {
+    if (!task?.id) return 0;
+    let count = 0;
+    for (const thread of this.btwThreads.values()) {
+      if (thread?.taskId !== task.id) continue;
+      if (thread.status === 'open' || thread.status === 'pending_approval') count += 1;
+    }
+    return count;
+  }
+
+  _normalizeWorkspaceTask(task) {
+    return normalizeTaskWorkspaceFields(task, {
+      pendingBtwCount: this._pendingBtwCountForTask(task),
+    });
+  }
+
+  _requireTask(taskId) {
+    const cleanId = String(taskId || '').trim();
+    const task = cleanId ? this.tasks.find((item) => item.id === cleanId) : null;
+    if (!task) {
+      const err = new Error(`A2A task not found: ${cleanId || '(empty)'}`);
+      err.statusCode = 404;
+      throw err;
+    }
+    return task;
+  }
+
+  async _spillIfTooLarge(task, text, label) {
+    const value = redactText(text);
+    if (value.length <= INLINE_OUTPUT_MAX_CHARS) return value;
+    const result = await truncateInlineWithSpill({
+      text: value,
+      taskId: task?.id,
+      label,
+      dataDir: this.dataDir,
+      memorySpills: this.memorySpills,
+    });
+    if (result.spillRef) {
+      if (!Array.isArray(task.outputSpills)) task.outputSpills = [];
+      task.outputSpills.push(result.spillRef);
+    }
+    return result.text;
   }
 
   getState(fleetNodes = [], options = {}) {
@@ -1438,7 +1496,7 @@ export class A2AOrchestrator {
       routingRules: rules,
       skillCatalog: skills,
       sessions,
-      tasks: this.tasks.slice(0, 30),
+      tasks: this.tasks.slice(0, 30).map((task) => this._normalizeWorkspaceTask(task)),
       btwThreads: btwListing.threads,
       btwSummary: btwListing.summary,
       superAgentConfig: this.superAgentConfig,
@@ -3446,6 +3504,9 @@ export class A2AOrchestrator {
       }
     }
 
+    taskRecord.artifact = await this._spillIfTooLarge(taskRecord, taskRecord.artifact, 'artifact');
+    this._normalizeWorkspaceTask(taskRecord);
+
     if (linkedSession) {
       linkedSession.revision = (linkedSession.revision || 0) + 1;
       linkedSession.messageCount = (linkedSession.messageCount || 0) + 1;
@@ -3536,6 +3597,7 @@ export class A2AOrchestrator {
       : `看板状态调整: ${prevState} -> ${cleanState} (${actor})`;
     task.state = cleanState;
     task.updatedAt = nowIso;
+    task.lastActivityAt = nowIso;
     if (!Array.isArray(task.steps)) task.steps = [];
     task.steps.push({ ts: nowIso, state: cleanState, detail });
 
@@ -3556,8 +3618,307 @@ export class A2AOrchestrator {
       detail,
     });
 
+    this._normalizeWorkspaceTask(task);
     await this.persist();
     return { ok: true, task };
+  }
+
+  listTasksPaginated(options = {}) {
+    for (const task of this.tasks) this._normalizeWorkspaceTask(task);
+    const page = paginateTasks(this.tasks, options);
+    return { ok: true, ...page };
+  }
+
+  async enqueueTaskTurn(taskId, payload = {}, { actor = 'web' } = {}) {
+    const task = this._requireTask(taskId);
+    const prompt = redactText(String(payload?.prompt || '').trim()).slice(0, 2000);
+    if (!prompt) {
+      const err = new Error('Queued turn prompt is required');
+      err.statusCode = 400;
+      throw err;
+    }
+    const nowIso = new Date().toISOString();
+    const actionActor = String(actor || 'web').slice(0, 32);
+    const queuedTurn = {
+      id: `turn-${crypto.randomBytes(4).toString('hex')}`,
+      prompt,
+      model: redactText(String(payload?.model || task.appliedModel || '')).slice(0, 96) || null,
+      effort: sanitizeEffort(payload?.effort || task.appliedEffort, task.appliedEffort || 'medium'),
+      createdAt: nowIso,
+      actor: actionActor,
+      status: 'queued',
+    };
+    if (!Array.isArray(task.queuedTurns)) task.queuedTurns = [];
+    task.queuedTurns.push(queuedTurn);
+    if (task.queuedTurns.length > MAX_QUEUED_TURNS) {
+      task.queuedTurns = task.queuedTurns.slice(-MAX_QUEUED_TURNS);
+    }
+    task.lastActivityAt = nowIso;
+    task.updatedAt = nowIso;
+    if (!Array.isArray(task.steps)) task.steps = [];
+    task.steps.push({
+      ts: nowIso,
+      state: 'queued',
+      phase: 'queue-turn',
+      detail: redactText(`已排队第 ${task.queuedTurns.length} 轮追问 (${queuedTurn.model || 'auto'} · ${queuedTurn.effort})：${prompt.slice(0, 160)}`),
+    });
+    this._normalizeWorkspaceTask(task);
+    await this.persist();
+    return { task, queuedTurn };
+  }
+
+  async steerTask(taskId, payload = {}, { actor = 'web' } = {}) {
+    const task = this._requireTask(taskId);
+    const instruction = redactText(String(payload?.instruction || '').trim()).slice(0, 2000);
+    if (!instruction) {
+      const err = new Error('Steering instruction is required');
+      err.statusCode = 400;
+      throw err;
+    }
+    const nowIso = new Date().toISOString();
+    const actionActor = String(actor || 'web').slice(0, 32);
+    const steeringNote = {
+      id: `steer-${crypto.randomBytes(4).toString('hex')}`,
+      instruction,
+      createdAt: nowIso,
+      actor: actionActor,
+      appliedAt: null,
+    };
+    if (!Array.isArray(task.steeringNotes)) task.steeringNotes = [];
+    task.steeringNotes.push(steeringNote);
+    if (task.steeringNotes.length > MAX_STEER_NOTES) {
+      task.steeringNotes = task.steeringNotes.slice(-MAX_STEER_NOTES);
+    }
+    task.lastActivityAt = nowIso;
+    task.updatedAt = nowIso;
+    if (!Array.isArray(task.steps)) task.steps = [];
+    task.steps.push({
+      ts: nowIso,
+      state: task.state,
+      phase: 'steer',
+      detail: redactText(`人工引导已记录（待 Worker 应用）：${instruction.slice(0, 160)}`),
+    });
+    this._normalizeWorkspaceTask(task);
+    await this.persist();
+    return { task, steeringNote };
+  }
+
+  async restartTask(taskId, payload = {}, { actor = 'web' } = {}) {
+    const source = this._requireTask(taskId);
+    const nowIso = new Date().toISOString();
+    const actionActor = String(actor || 'web').slice(0, 32);
+
+    if (payload?.freshContext === true) {
+      const nextTaskId = `a2a-task-${crypto.randomBytes(3).toString('hex')}`;
+      const prompt = redactText(String(payload?.prompt || '').trim()).slice(0, 1000) || source.prompt;
+      const nextTask = {
+        id: nextTaskId,
+        contextId: source.contextId || `ctx-${nextTaskId}`,
+        parentTaskId: null,
+        parentThreadId: source.id,
+        rootThreadId: source.rootThreadId || source.id,
+        relation: 'fresh-context',
+        protocolMethod: source.protocolMethod || 'message/send',
+        executionMode: source.executionMode,
+        state: 'working',
+        prompt,
+        leadAgentId: source.leadAgentId,
+        leadAgentName: source.leadAgentName,
+        leadNodeId: source.leadNodeId,
+        workerAgentId: source.workerAgentId,
+        workerAgentName: source.workerAgentName,
+        workerNodeId: source.workerNodeId,
+        matchedRuleId: source.matchedRuleId || null,
+        matchedRuleName: source.matchedRuleName || null,
+        matchedSkill: source.matchedSkill,
+        appliedModel: source.appliedModel,
+        selectedModel: source.selectedModel || source.appliedModel,
+        modelSource: source.modelSource || 'orchestrator',
+        signed: Boolean(source.signed),
+        signatureKeyId: source.signatureKeyId || null,
+        appliedEffort: source.appliedEffort,
+        worktreeBranch: this.orchestrationConfig.worktreeIsolation
+          ? `${source.executionMode || 'worktree'}/${nextTaskId}`
+          : (source.worktreeBranch || null),
+        mcpScope: Array.isArray(source.mcpScope) ? [...source.mcpScope] : [],
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        durationMs: 0,
+        actor: actionActor,
+        subtasks: [],
+        dshReview: null,
+        steps: [
+          {
+            ts: nowIso,
+            state: 'working',
+            phase: 'fresh-context',
+            detail: redactText(`从线程 ${source.id} 以全新上下文重启，保留源线程 ${Array.isArray(source.steps) ? source.steps.length : 0} 步历史（root=${source.rootThreadId || source.id}）。`),
+          },
+        ],
+        artifact: '',
+      };
+      this._normalizeWorkspaceTask(nextTask);
+      this.tasks.unshift(nextTask);
+      if (this.tasks.length > 60) this.tasks.length = 60;
+      await this.persist();
+      return { task: nextTask, sourceTaskId: source.id, freshContext: true };
+    }
+
+    source.state = 'working';
+    source.settledAt = null;
+    source.updatedAt = nowIso;
+    source.lastActivityAt = nowIso;
+    if (!Array.isArray(source.steps)) source.steps = [];
+    source.steps.push({
+      ts: nowIso,
+      state: 'working',
+      phase: 'restart',
+      detail: redactText(`操作员重启任务（保留既有上下文与 ${Array.isArray(source.compactions) ? source.compactions.length : 0} 次压缩标记）。`),
+    });
+    this._normalizeWorkspaceTask(source);
+    await this.persist();
+    return { task: source, sourceTaskId: source.id, freshContext: false };
+  }
+
+  async settleTask(taskId, { actor = 'web' } = {}) {
+    const task = this._requireTask(taskId);
+    const nowIso = new Date().toISOString();
+    task.settledAt = nowIso;
+    task.readWatermarkAt = nowIso;
+    task.snoozedAt = null;
+    task.snoozedUntil = null;
+    task.lastActivityAt = nowIso;
+    this._normalizeWorkspaceTask(task);
+    await this.persist();
+    return { task, actor: String(actor || 'web') };
+  }
+
+  async snoozeTask(taskId, payload = {}, { actor = 'web' } = {}) {
+    const task = this._requireTask(taskId);
+    const nowMs = Date.now();
+    let untilMs = Number.NaN;
+    const untilIso = String(payload?.untilIso || '').trim();
+    if (untilIso) {
+      untilMs = Date.parse(untilIso);
+      if (!Number.isFinite(untilMs) || untilMs <= nowMs) {
+        const err = new Error('snoozedUntil must be a valid future ISO timestamp');
+        err.statusCode = 400;
+        throw err;
+      }
+    } else {
+      const minutesRaw = Number(payload?.minutes);
+      const minutes = Number.isFinite(minutesRaw)
+        ? Math.min(10080, Math.max(1, Math.round(minutesRaw)))
+        : 30;
+      untilMs = nowMs + minutes * 60_000;
+    }
+    task.snoozedAt = new Date(nowMs).toISOString();
+    task.snoozedUntil = new Date(untilMs).toISOString();
+    this._normalizeWorkspaceTask(task);
+    await this.persist();
+    return { task, actor: String(actor || 'web') };
+  }
+
+  async markTaskRead(taskId, payload = {}, { actor = 'web' } = {}) {
+    const task = this._requireTask(taskId);
+    const provided = String(payload?.watermarkAt || '').trim();
+    let watermarkAt = new Date().toISOString();
+    if (provided) {
+      const parsed = Date.parse(provided);
+      if (!Number.isFinite(parsed)) {
+        const err = new Error('watermarkAt must be a valid ISO timestamp');
+        err.statusCode = 400;
+        throw err;
+      }
+      watermarkAt = new Date(parsed).toISOString();
+    }
+    task.readWatermarkAt = watermarkAt;
+    this._normalizeWorkspaceTask(task);
+    await this.persist();
+    return { task, actor: String(actor || 'web') };
+  }
+
+  async compactTaskContext(taskId, payload = {}, { actor = 'web' } = {}) {
+    const task = this._requireTask(taskId);
+    const nowIso = new Date().toISOString();
+    const actionActor = String(actor || 'web').slice(0, 32);
+    if (!Array.isArray(task.steps)) task.steps = [];
+    const tokensBefore = estimateContextBudget(task).estimatedTokens;
+    const compactedUpToStepIndex = task.steps.length;
+    const rawSummary = redactText(String(payload?.summary || '').trim())
+      || `保留前 ${compactedUpToStepIndex} 步历史（仅标记，不删除原始步骤）。`;
+    let summary = rawSummary;
+    let spillRef = null;
+    if (rawSummary.length > INLINE_OUTPUT_MAX_CHARS) {
+      const spilled = await truncateInlineWithSpill({
+        text: rawSummary,
+        taskId: task.id,
+        label: 'compaction-summary',
+        dataDir: this.dataDir,
+        memorySpills: this.memorySpills,
+      });
+      summary = spilled.text;
+      spillRef = spilled.spillRef;
+      if (spillRef) {
+        if (!Array.isArray(task.outputSpills)) task.outputSpills = [];
+        task.outputSpills.push(spillRef);
+      }
+    }
+    const compaction = {
+      id: `cmp-${crypto.randomBytes(4).toString('hex')}`,
+      createdAt: nowIso,
+      actor: actionActor,
+      summary,
+      compactedUpToStepIndex,
+      tokensBefore,
+      tokensAfter: tokensBefore,
+      ...(spillRef ? { spillRefId: spillRef.id } : {}),
+    };
+    if (!Array.isArray(task.compactions)) task.compactions = [];
+    task.compactions.push(compaction);
+    task.steps.push({
+      ts: nowIso,
+      state: task.state,
+      phase: 'compact',
+      detail: redactText(`上下文压缩标记已写入（保留 ${compactedUpToStepIndex} 步原始历史）：${summary.split('\n')[0].slice(0, 200)}`),
+    });
+    const tokensAfter = estimateContextBudget(task).estimatedTokens;
+    compaction.tokensAfter = tokensAfter;
+    task.contextBudget = estimateContextBudget(task);
+    task.lastActivityAt = nowIso;
+    task.updatedAt = nowIso;
+    this._normalizeWorkspaceTask(task);
+    await this.persist();
+    return { task, compaction };
+  }
+
+  async getTaskSpill(taskId, spillId) {
+    const task = this._requireTask(taskId);
+    const id = String(spillId || '').trim();
+    if (!SPILL_ID_RE.test(id)) {
+      const err = new Error('Invalid spill id');
+      err.statusCode = 400;
+      throw err;
+    }
+    const spillMeta = (Array.isArray(task.outputSpills) ? task.outputSpills : [])
+      .find((item) => item?.id === id);
+    if (!spillMeta) {
+      const err = new Error(`Spill not found for task ${task.id}: ${id}`);
+      err.statusCode = 404;
+      throw err;
+    }
+    const payload = await readSpillPayload({
+      spillId: id,
+      taskId: task.id,
+      dataDir: this.dataDir,
+      memorySpills: this.memorySpills,
+    });
+    if (!payload) {
+      const err = new Error(`Spill payload not found: ${id}`);
+      err.statusCode = 404;
+      throw err;
+    }
+    return { ...spillMeta, content: payload.content };
   }
 
   /**
@@ -3782,6 +4143,7 @@ export class A2AOrchestrator {
       forkedTask.parentTaskId = parentTask?.id || null;
       forkedTask.isSideThread = true;
       forkedTask.worktreeBranch = `side/${forkedTask.id}`;
+      this._normalizeWorkspaceTask(forkedTask);
       worktreeBranch = forkedTask.worktreeBranch;
     }
 
