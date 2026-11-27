@@ -450,6 +450,18 @@ export function loadConfig(options = {}) {
         region: String(node.region || ''),
         provider: String(node.provider || ''),
         tailscaleIp: String(node.tailscaleIp || ''),
+        probeHost: String(node.probeHost || '').trim(),
+        probePort: Number.isInteger(Number(node.probePort)) && Number(node.probePort) >= 1 && Number(node.probePort) <= 65535
+          ? Number(node.probePort)
+          : null,
+        probeProtocol: String(node.probeProtocol || 'tcp').toLowerCase() === 'tcp' ? 'tcp' : 'tcp',
+        probeTimeoutMs: Number.isFinite(Number(node.probeTimeoutMs))
+          ? Math.min(5000, Math.max(500, Math.round(Number(node.probeTimeoutMs))))
+          : 2200,
+        knownStatus: ['offline', 'degraded', 'standby', 'healthy'].includes(String(node.knownStatus || '').toLowerCase())
+          ? String(node.knownStatus).toLowerCase()
+          : '',
+        expectedOfflineReason: String(node.expectedOfflineReason || '').trim().slice(0, 240),
         lat: Number.isFinite(Number(node.lat)) ? Number(node.lat) : null,
         lon: Number.isFinite(Number(node.lon)) ? Number(node.lon) : null,
         note: String(node.note || ''),

@@ -432,7 +432,34 @@ export function FleetView({
                 : []);
             const nodeMcps = selectedNode.mcps || [];
             const nodeHarnesses = selectedNode.harnesses || [];
+            const diagnosticReason = selectedNode.offlineReason || (selectedNode.status !== 'healthy' ? selectedNode.statusReason : null);
             return (
+              <div className="space-y-3">
+                {diagnosticReason && (
+                  <div
+                    data-testid="node-offline-reason-banner"
+                    className={cn(
+                      'rounded-lg border px-3 py-2.5 text-[12.5px] leading-relaxed',
+                      statusTone(selectedNode.status) === 'err'
+                        ? 'border-[var(--err-border)] bg-[var(--err-soft)] text-[var(--err)]'
+                        : statusTone(selectedNode.status) === 'warn'
+                          ? 'border-[var(--warn-border)] bg-[var(--warn-soft)] text-[var(--warn)]'
+                          : 'border-[var(--border)] bg-[var(--surface-subtle)] text-[var(--ink-muted)]',
+                    )}
+                  >
+                    <div className="font-medium text-[12px] mb-0.5">
+                      {statusTone(selectedNode.status) === 'err'
+                        ? '离线诊断原因'
+                        : statusTone(selectedNode.status) === 'warn'
+                          ? '降级原因'
+                          : '状态说明'}
+                    </div>
+                    <div>{diagnosticReason}</div>
+                    {selectedNode.note && selectedNode.note !== diagnosticReason && (
+                      <div className="mt-1 text-[11.5px] opacity-80">{selectedNode.note}</div>
+                    )}
+                  </div>
+                )}
               <Tabs defaultValue="hardware" key={selectedNode.id}>
                 <TabsList className="ui-tabs-list mb-4" data-testid="node-inspector-tabs">
                   <TabsTab value="hardware" className="ui-tabs-tab">
@@ -735,6 +762,7 @@ export function FleetView({
                   )}
                 </TabsPanel>
               </Tabs>
+              </div>
             );
           })()}
         </Panel>
@@ -896,7 +924,7 @@ export function FleetView({
                         ? `${Math.round(n.cpu.usagePct)}%`
                         : '-';
                   const memPct = n.memory?.usedPct;
-                  const rtt = n.network?.rttMs;
+                  const rtt = n.network?.rttMs ?? n.rttMs ?? null;
                   const rttRatio = rtt != null ? Math.min(100, Math.max(8, Math.round((rtt / maxRttMs) * 100))) : 0;
                   const ipCopyKey = `row-ip-${n.id}`;
                   return (
@@ -914,8 +942,24 @@ export function FleetView({
                       <td className="py-3 px-3 text-[var(--ink-muted)] whitespace-nowrap">
                         {deviceTypeLabel(n.deviceType)} · {n.region || 'Tailnet'}
                       </td>
-                      <td className="py-3 px-3 whitespace-nowrap">
-                        <StatusIndicator status={n.status} />
+                      <td className="py-3 px-3">
+                        <div className="flex flex-col gap-0.5 min-w-0 max-w-[260px]">
+                          <StatusIndicator status={n.status} />
+                          {(n.offlineReason || (n.status !== 'healthy' && n.statusReason)) && (
+                            <span
+                              data-testid="node-offline-reason"
+                              title={n.offlineReason || n.statusReason || ''}
+                              className={cn(
+                                'text-[11.5px] leading-snug truncate',
+                                statusTone(n.status) === 'err'
+                                  ? 'text-[var(--err)]'
+                                  : 'text-[var(--ink-subtle)]',
+                              )}
+                            >
+                              {n.offlineReason || n.statusReason}
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="py-3 px-3 font-mono text-[12.5px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
                         {n.tailscaleIp ? (

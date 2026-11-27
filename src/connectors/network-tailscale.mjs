@@ -101,6 +101,10 @@ export async function collectTailscale(cfg) {
         rxBytes: peer.RxBytes || 0,
         txBytes: peer.TxBytes || 0,
         lastSeen: peer.LastSeen && !String(peer.LastSeen).startsWith('0001-') ? peer.LastSeen : null,
+        expired: Boolean(peer.Expired),
+        keyExpiry: peer.KeyExpiry && !String(peer.KeyExpiry).startsWith('0001-') ? peer.KeyExpiry : null,
+        exitNode: Boolean(peer.ExitNode),
+        exitNodeOption: Boolean(peer.ExitNodeOption),
       });
     }
   }

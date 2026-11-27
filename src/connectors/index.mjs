@@ -12,6 +12,7 @@ import { collectMihomo } from './network-mihomo.mjs';
 import { collectSyncthing } from './service-syncthing.mjs';
 import { collectRemoteNodes } from './remote-ssh.mjs';
 import { collectFirewall } from './firewall.mjs';
+import { probeExternalDeclaredNodes } from '../probes.mjs';
 
 async function collectOpsStateFiles(config) {
   const [health, backup, alerts, activeOpsJobs] = await Promise.all([
@@ -335,9 +336,11 @@ export class ConnectorHub {
       }
       const cachedRemotesEntry = this.cache.entries?.get('remotes');
       const cachedRemotes = Array.isArray(cachedRemotesEntry?.value) ? cachedRemotesEntry.value : [];
+      const externalChecks = await this.collectExternalNodes(force);
       const fleet = this.probeRegistry.buildFleetView({
         snapshot: finalSnapshot,
         remotes: cachedRemotes,
+        externalChecks,
       });
       finalSnapshot = { ...finalSnapshot, fleet };
     }
@@ -346,6 +349,19 @@ export class ConnectorHub {
       ...finalSnapshot,
       incidents: this.store ? this.store.listIncidents({ limit: 15 }) : [],
     };
+  }
+
+  async collectExternalNodes(force = false) {
+    if (this.config.demo) return {};
+    const declaredNodes = this.config.fleet?.declaredNodes || [];
+    const hasTargets = declaredNodes.some((node) => node?.probeHost && Number.isInteger(Number(node.probePort)));
+    if (!hasTargets) return {};
+    return this.cache.getOrLoad(
+      'externalNodes',
+      30_000,
+      () => probeExternalDeclaredNodes(declaredNodes),
+      { force, staleOnError: true },
+    );
   }
 
   async collectRemotes(force = false) {
