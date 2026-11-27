@@ -161,7 +161,7 @@ function makeTask(overrides: Partial<A2ATaskRecord>): A2ATaskRecord {
   };
 }
 
-test('SLASH_COMMANDS exposes all 14 required commands with valid metadata', () => {
+test('SLASH_COMMANDS exposes all 15 required commands with valid metadata', () => {
   const expectedNames = [
     '/help',
     '/agent',
@@ -175,6 +175,7 @@ test('SLASH_COMMANDS exposes all 14 required commands with valid metadata', () =
     '/status',
     '/ping',
     '/handoff',
+    '/btw',
     '/compact',
     '/clear',
   ];

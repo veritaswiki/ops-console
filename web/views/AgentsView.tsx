@@ -37,6 +37,7 @@ import {
   fetchA2AState,
   fetchMagpieModels,
   handoffA2ASession,
+  openA2ABtwThread,
   pingA2AAgent,
   updateA2ATaskState,
 } from '../api';
@@ -66,7 +67,9 @@ import {
   resolveAgentDefaultModel,
 } from '../lib/magpie-models';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { countBtwAttention } from '../lib/btw';
 import { formatClock, formatDateTime } from '../utils/format';
+import { AgentBtwDrawer } from '../components/AgentBtwDrawer';
 import { AgentSlashMenu } from '../components/AgentSlashMenu';
 import { AgentTaskKanban } from '../components/AgentTaskKanban';
 import { Button, inputBaseClass, StatusIndicator } from '../components/ui';
@@ -282,6 +285,9 @@ export function AgentsView({
   const [copiedTaskId, setCopiedTaskId] = React.useState<string | null>(null);
   const [systemCards, setSystemCards] = React.useState<LocalSlashCard[]>([]);
   const [headerSearchOpen, setHeaderSearchOpen] = React.useState(false);
+  const [btwOpen, setBtwOpen] = React.useState(false);
+  const [btwInitialThreadId, setBtwInitialThreadId] = React.useState<string | null>(null);
+  const [btwContextTaskId, setBtwContextTaskId] = React.useState<string | null>(null);
 
   const textareaRef = React.useRef<HTMLTextAreaElement | null>(null);
   const headerSearchInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -857,6 +863,50 @@ export function AgentsView({
             });
             return;
           }
+          case '/btw': {
+            const matchingSession =
+              a2aState?.sessions?.find(
+                (sess) => activeTask?.contextId && sess.contextId === activeTask.contextId,
+              ) ||
+              a2aState?.sessions?.[0] ||
+              null;
+            if (!parsed.rest) {
+              setPrompt('');
+              setBtwContextTaskId(activeTask?.id || null);
+              setBtwInitialThreadId(null);
+              setBtwOpen(true);
+              return;
+            }
+            if (readOnly) {
+              setPrompt('');
+              setBtwContextTaskId(activeTask?.id || null);
+              setBtwInitialThreadId(null);
+              setBtwOpen(true);
+              onToast?.('只读模式下仅可查看 BTW 旁支与审批记录', 'err');
+              return;
+            }
+            setSubmitting(true);
+            try {
+              const opened = await openA2ABtwThread({
+                sessionId: matchingSession?.id,
+                taskId: activeTask?.id,
+                prompt: parsed.rest,
+                targetAgentId: selectedTarget !== 'auto' ? selectedTarget : undefined,
+                model: modelOverride || undefined,
+              });
+              setPrompt('');
+              setBtwContextTaskId(activeTask?.id || null);
+              setBtwInitialThreadId(opened.thread.id);
+              setBtwOpen(true);
+              await loadState();
+              onToast?.(`已开启隔离 BTW 旁支 ${opened.thread.id}（零污染主线）`, 'ok');
+            } catch (err) {
+              onToast?.(err instanceof Error ? err.message : '开启 BTW 旁支失败', 'err');
+            } finally {
+              setSubmitting(false);
+            }
+            return;
+          }
           default: {
             onToast?.(`未知斜杠命令：${parsed.command}，输入 /help 查看全部命令`, 'err');
             return;
@@ -888,6 +938,7 @@ export function AgentsView({
       readOnly,
       selectedTarget,
       activeTask,
+      modelOverride,
       dispatchTaskPayload,
     ],
   );
@@ -1615,6 +1666,23 @@ export function AgentsView({
   );
 
   const showActiveThread = threadTasks.length > 0 || systemCards.length > 0;
+  const btwThreads = a2aState?.btwThreads || [];
+  const btwGlobalCounts = React.useMemo(() => countBtwAttention(btwThreads), [btwThreads]);
+  const btwDrawerTask = React.useMemo(
+    () =>
+      (btwContextTaskId ? tasks.find((item) => item.id === btwContextTaskId) : null) ||
+      activeTask ||
+      null,
+    [btwContextTaskId, tasks, activeTask],
+  );
+  const btwDrawerSession = React.useMemo(() => {
+    const sessions = a2aState?.sessions || [];
+    if (btwDrawerTask?.contextId) {
+      const matched = sessions.find((sess) => sess.contextId === btwDrawerTask.contextId);
+      if (matched) return matched;
+    }
+    return sessions[0] || null;
+  }, [a2aState?.sessions, btwDrawerTask]);
 
   return (
     <div
@@ -1772,6 +1840,30 @@ export function AgentsView({
               </Button>
             )
           )}
+
+          <Button
+            variant="secondary"
+            size="sm"
+            data-testid="agent-open-btw-btn"
+            onClick={() => {
+              setBtwContextTaskId(activeTask?.id || null);
+              setBtwInitialThreadId(null);
+              setBtwOpen(true);
+            }}
+          >
+            <GitBranch className="size-3.5" strokeWidth={1.75} />
+            BTW 侧聊
+            {btwGlobalCounts.attentionCount > 0 ? (
+              <span className="inline-flex items-center gap-1 font-mono text-[11px] text-[var(--warn)] tabular-nums">
+                <span className="h-1.5 w-1.5 rounded-full bg-[var(--warn)]" aria-hidden="true" />
+                {btwGlobalCounts.attentionCount}
+              </span>
+            ) : btwGlobalCounts.total > 0 ? (
+              <span className="font-mono text-[11px] text-[var(--ink-subtle)] tabular-nums">
+                {btwGlobalCounts.total}
+              </span>
+            ) : null}
+          </Button>
 
           <Button
             variant="secondary"
@@ -2325,6 +2417,34 @@ export function AgentsView({
                           转到看板
                         </button>
 
+                        {(() => {
+                          const taskBtw = countBtwAttention(btwThreads, { taskId: task.id });
+                          return (
+                            <button
+                              type="button"
+                              data-testid={`task-open-btw-${task.id}`}
+                              onClick={() => {
+                                setBtwContextTaskId(task.id);
+                                setBtwInitialThreadId(null);
+                                setBtwOpen(true);
+                              }}
+                              className={cn(
+                                'inline-flex items-center gap-1 h-7 px-2 rounded-md hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] transition-colors cursor-pointer',
+                                taskBtw.attentionCount > 0 && 'text-[var(--warn)]',
+                                FOCUS_RING,
+                              )}
+                            >
+                              <GitBranch className="size-3.5" strokeWidth={1.75} />
+                              <span>BTW 侧聊</span>
+                              {taskBtw.total > 0 && (
+                                <span className="font-mono text-[11px] tabular-nums">
+                                  ({taskBtw.attentionCount > 0 ? `${taskBtw.attentionCount} 待审` : taskBtw.total})
+                                </span>
+                              )}
+                            </button>
+                          );
+                        })()}
+
                         {isTaskRunning && !readOnly && (
                           <button
                             type="button"
@@ -2376,6 +2496,22 @@ export function AgentsView({
           </div>
         </div>
       )}
+
+      <AgentBtwDrawer
+        open={btwOpen}
+        onClose={() => setBtwOpen(false)}
+        threads={btwThreads}
+        agents={agents}
+        sessions={a2aState?.sessions || []}
+        activeSession={btwDrawerSession}
+        activeTask={btwDrawerTask}
+        initialThreadId={btwInitialThreadId}
+        readOnly={readOnly}
+        onRefresh={async () => {
+          await loadState();
+        }}
+        onToast={onToast}
+      />
     </div>
   );
 }
