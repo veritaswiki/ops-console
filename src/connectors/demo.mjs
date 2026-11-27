@@ -617,9 +617,29 @@ export function createDemoProvider() {
     ];
   }
 
-  function queryLogs({ source, unit, level, q, lines }) {
-    let entries = [...demoLogs];
-    if (unit && unit !== 'all') {
+  function queryLogs({ source, unit, targets = [], level, q, lines }) {
+    const startedAt = Date.now();
+    const normalizedTargets = Array.isArray(targets) ? targets.filter(Boolean) : [];
+    let entries = demoLogs.map((entry) => {
+      const svc = state.services.find((s) => s.unit === entry.unit || s.id === entry.unit);
+      return {
+        ...entry,
+        serviceId: svc?.id || '',
+        serviceName: svc?.name || entry.unit,
+        sourceKind: source === 'file' ? 'file' : source === 'self' ? 'self' : source === 'audit' ? 'audit' : 'journald',
+        sourceId: svc?.unit || entry.unit,
+        sourceLabel: svc?.name || entry.unit,
+      };
+    });
+
+    if (source === 'unified' && normalizedTargets.length > 0 && !normalizedTargets.includes('all')) {
+      const allowedUnits = new Set();
+      for (const token of normalizedTargets) {
+        const svc = state.services.find((s) => s.id === token || s.unit === token);
+        allowedUnits.add(svc ? svc.unit : token);
+      }
+      entries = entries.filter((e) => allowedUnits.has(e.unit) || allowedUnits.has(e.serviceId));
+    } else if (unit && unit !== 'all') {
       const svc = state.services.find((s) => s.id === unit || s.unit === unit);
       const unitName = svc ? svc.unit : unit;
       entries = entries.filter((e) => e.unit === unitName);
@@ -628,23 +648,54 @@ export function createDemoProvider() {
     entries = entries.filter((e) => e.priority <= maxP);
     if (q) {
       const needle = q.toLowerCase();
-      entries = entries.filter((e) => `${e.unit} ${e.message}`.toLowerCase().includes(needle));
+      entries = entries.filter((e) => `${e.serviceName || ''} ${e.unit} ${e.message}`.toLowerCase().includes(needle));
     }
     const sliced = entries.slice(-(lines || 150));
     const counts = { total: sliced.length, error: 0, warn: 0, info: 0, debug: 0 };
     for (const e of sliced) counts[e.level] = (counts[e.level] || 0) + 1;
+    const unitCounts = new Map();
+    for (const item of sliced) {
+      unitCounts.set(item.unit, (unitCounts.get(item.unit) || 0) + 1);
+    }
+    const sources = [...unitCounts.entries()].map(([unitName, count]) => {
+      const svc = state.services.find((s) => s.unit === unitName);
+      return {
+        id: svc?.id || unitName,
+        name: svc?.name || unitName,
+        unit: unitName,
+        serviceId: svc?.id || '',
+        sourceKind: source === 'file' ? 'file' : 'journald',
+        count,
+        readBytes: count * 180,
+        fileSizeBytes: 0,
+        truncated: false,
+        elapsedMs: 4,
+      };
+    });
     return {
       ok: true,
       source: source || 'journald',
       unit: unit || 'all',
-      label: unit && unit !== 'all' ? unit : 'Demo Units',
+      target: source === 'unified' ? (normalizedTargets.length ? normalizedTargets.join(',') : 'all') : (unit || 'all'),
+      targets: normalizedTargets.length ? normalizedTargets : ['all'],
+      label: source === 'unified' ? '大一统全服务直读日志 (Demo)' : (unit && unit !== 'all' ? unit : 'Demo Units'),
       entries: sliced,
       counts,
+      sources,
+      stats: {
+        directRead: true,
+        elapsedMs: Math.max(1, Date.now() - startedAt),
+        totalReadBytes: sliced.length * 180,
+        sourcesQueried: sources.length,
+        truncatedSources: 0,
+        maxBytesPerFile: 256 * 1024,
+        maxLines: lines || 150,
+      },
       lines: sliced.map((e) => `${e.ts} [${e.level.toUpperCase()}] ${e.unit}: ${e.message}`).join('\n'),
     };
   }
 
-  function startDemoLogStream(emitEntry, { unit } = {}) {
+  function startDemoLogStream(emitEntry, { unit, targets = [] } = {}) {
     const templates = [
       { unit: 'magpie.service', level: 'info', priority: 6, message: 'Routed completion request via auto/deepseek-v4.1-flash (ttft=210ms)' },
       { unit: 'openviking.service', level: 'info', priority: 6, message: 'Semantic vector search completed in 14ms (top_k=8)' },
@@ -652,12 +703,27 @@ export function createDemoProvider() {
       { unit: 'mihomo.service', level: 'warn', priority: 4, message: 'Relay RTT spike detected (268ms); failover watchdog monitoring' },
       { unit: 'ops-console.service', level: 'info', priority: 6, message: 'Health probes green across 11 active services' },
     ];
+    const targetList = Array.isArray(targets) ? targets.filter(Boolean) : [];
     let idx = 0;
     const timer = setInterval(() => {
       const tpl = templates[idx % templates.length];
       idx += 1;
       if (unit && unit !== 'all' && !tpl.unit.includes(unit)) return;
-      emitEntry({ ts: new Date().toISOString(), pid: String(1500 + idx), ...tpl });
+      if (targetList.length > 0 && !targetList.includes('all')) {
+        const matched = targetList.some((tok) => tpl.unit.includes(tok));
+        if (!matched) return;
+      }
+      const svc = state.services.find((s) => s.unit === tpl.unit);
+      emitEntry({
+        ts: new Date().toISOString(),
+        pid: String(1500 + idx),
+        serviceId: svc?.id || '',
+        serviceName: svc?.name || tpl.unit,
+        sourceKind: 'journald',
+        sourceId: tpl.unit,
+        sourceLabel: svc?.name || tpl.unit,
+        ...tpl,
+      });
     }, 2500);
     timer.unref();
     return () => clearInterval(timer);

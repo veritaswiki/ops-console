@@ -37,9 +37,33 @@ export interface MetaResponse {
     probes?: boolean;
   };
   logSources?: {
-    services?: Array<{ id: string; name?: string; unit: string; scope?: string }>;
-    files?: Array<{ id: string; name?: string; path?: string }>;
-    memory?: Array<{ id: string; name?: string }>;
+    units?: Array<{
+      id: string;
+      name?: string;
+      unit: string;
+      scope?: string;
+      layer?: string;
+      hasLogFile?: boolean;
+      logFileId?: string | null;
+    }>;
+    services?: Array<{
+      id: string;
+      name?: string;
+      unit: string;
+      scope?: string;
+      layer?: string;
+      hasLogFile?: boolean;
+      logFileId?: string | null;
+    }>;
+    files?: Array<{ id: string; name?: string; path?: string; serviceId?: string; unit?: string }>;
+    memory?: Array<{ id: string; name?: string; unit?: string }>;
+    builtin?: Array<{ id: string; name: string }>;
+    limits?: {
+      maxLines: number;
+      defaultMaxBytesPerFile: number;
+      maxBytesPerFile: number;
+      maxSseStreams: number;
+    };
   };
   remotes?: Array<{
     id: string;
@@ -128,6 +152,8 @@ export interface ServiceItem {
   adminLabel?: string | null;
   embedUrl?: string | null;
   hasAdminUi?: boolean;
+  hasLogFile?: boolean;
+  logFileId?: string | null;
 }
 
 export interface TimerItem {
@@ -710,15 +736,61 @@ export interface ProbesResponse {
   }>;
 }
 
+export type LogSourceKind = 'unified' | 'service' | 'file' | 'self' | 'audit';
+
+export interface LogFilterState {
+  source: LogSourceKind;
+  target: string;
+  targets: string[];
+  since: string;
+  level: string;
+  query: string;
+  regex: boolean;
+}
+
+export type LogNavigationRequest = Partial<LogFilterState> & {
+  unit?: string;
+};
+
 export interface LogEntry {
   ts?: string;
   timestamp?: string;
   level?: string;
   severity?: string;
   source?: string;
+  sourceKind?: 'journald' | 'file' | 'self' | 'audit' | string;
+  sourceId?: string;
+  sourceLabel?: string;
+  serviceId?: string;
+  serviceName?: string;
   unit?: string;
+  pid?: string;
   message?: string;
   raw?: string;
+}
+
+export interface LogSourceStats {
+  id: string;
+  name: string;
+  unit?: string;
+  serviceId?: string;
+  sourceKind: 'journald' | 'file' | 'self' | 'audit' | string;
+  count: number;
+  readBytes: number;
+  fileSizeBytes: number;
+  truncated: boolean;
+  elapsedMs: number;
+  warning?: string;
+}
+
+export interface LogQueryStats {
+  directRead: boolean;
+  elapsedMs: number;
+  totalReadBytes: number;
+  sourcesQueried: number;
+  truncatedSources: number;
+  maxBytesPerFile: number;
+  maxLines: number;
 }
 
 export interface LogsResponse {
@@ -734,6 +806,10 @@ export interface LogsResponse {
   };
   source?: string;
   target?: string;
+  targets?: string[];
+  sources?: LogSourceStats[];
+  stats?: LogQueryStats;
+  warning?: string;
 }
 
 export interface AuditEntry {

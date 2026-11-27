@@ -11,7 +11,7 @@ import {
   RotateCw,
   Search,
 } from 'lucide-react';
-import type { ServiceItem, SnapshotResponse } from '../types';
+import type { LogNavigationRequest, MetaResponse, ServiceItem, SnapshotResponse } from '../types';
 import { executeServiceAction, issueConfirmToken } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
 import {
@@ -31,6 +31,7 @@ import {
   type ConfirmModalState,
 } from '../components/ui';
 import { ServiceAdminModal } from '../components/ServiceAdminModal';
+import { ServiceLogModal } from '../components/ServiceLogModal';
 import { ModuleFrame } from '../modules/ModuleFrame';
 
 const LAYER_FILTERS = [
@@ -72,6 +73,7 @@ function safeExternalUrl(raw?: string | null): string | null {
 
 export function ServicesView({
   snapshot,
+  meta,
   readOnly,
   activeLayer,
   onLayerChange,
@@ -81,11 +83,12 @@ export function ServicesView({
   onConfirm,
 }: {
   snapshot: SnapshotResponse | null;
+  meta: MetaResponse | null;
   readOnly: boolean;
   activeLayer?: string | null;
   onLayerChange?: (layer: LayerFilter) => void;
   onRefresh: () => Promise<void>;
-  onOpenLogs: (unit: string, level?: 'all' | 'error' | 'warn') => void;
+  onOpenLogs: (unitOrRequest: string | LogNavigationRequest, level?: 'all' | 'error' | 'warn') => void;
   onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
   onConfirm: (modal: ConfirmModalState) => void;
 }) {
@@ -107,6 +110,10 @@ export function ServicesView({
   const [sortDir, setSortDir] = React.useState<SortDir>('asc');
   const [expandedId, setExpandedId] = React.useState<string | null>(null);
   const [adminService, setAdminService] = React.useState<ServiceItem | null>(null);
+  const [logModalState, setLogModalState] = React.useState<{
+    service: ServiceItem;
+    level: 'all' | 'error' | 'warn';
+  } | null>(null);
 
   const allServices = snapshot?.services?.items || [];
   const adminServices = React.useMemo(
@@ -471,7 +478,9 @@ export function ServicesView({
                             <Button
                               variant="secondary"
                               size="sm"
-                              onClick={() => onOpenLogs(svc.unit)}
+                              data-testid={`open-logs-${svc.id}`}
+                              onClick={() => setLogModalState({ service: svc, level: 'all' })}
+                              title={`在页内小窗查看 ${svc.name || svc.id} 实时日志`}
                             >
                               <FileText className="size-3.5 text-[var(--ink-muted)]" strokeWidth={1.75} />
                               日志
@@ -580,7 +589,7 @@ export function ServicesView({
                                 <Button
                                   variant="secondary"
                                   size="sm"
-                                  onClick={() => onOpenLogs(svc.unit, 'error')}
+                                  onClick={() => setLogModalState({ service: svc, level: 'error' })}
                                 >
                                   查看 Error 日志
                                 </Button>
@@ -624,6 +633,18 @@ export function ServicesView({
       </Panel>
 
       <ServiceAdminModal service={adminService} onClose={() => setAdminService(null)} />
+      <ServiceLogModal
+        service={logModalState?.service || null}
+        initialLevel={logModalState?.level || 'all'}
+        snapshot={snapshot}
+        meta={meta}
+        onClose={() => setLogModalState(null)}
+        onExpandToLogs={(filterState) => {
+          setLogModalState(null);
+          onOpenLogs(filterState);
+        }}
+        onToast={onToast}
+      />
     </ModuleFrame>
   );
 }

@@ -223,18 +223,23 @@ function normalizeLogQuery(searchParams) {
   const rawSource = searchParams.get('source') || 'journald';
   const source = rawSource === 'service' ? 'journald' : rawSource;
   const target = searchParams.get('target') || '';
+  const targetsRaw = searchParams.get('targets') || searchParams.get('services') || '';
+  const targets = targetsRaw
+    ? targetsRaw.split(',').map((item) => item.trim()).filter(Boolean)
+    : (source === 'unified' && target ? target.split(',').map((item) => item.trim()).filter(Boolean) : []);
   const unit = searchParams.get('unit') || (source === 'journald' ? target : '');
   const file = searchParams.get('file') || (source === 'file' ? target : '');
   const since = searchParams.get('since') || '1h';
   const level = searchParams.get('level') || searchParams.get('severity') || 'all';
   const lines = Number(searchParams.get('lines') || searchParams.get('limit') || 150);
+  const maxBytesPerFile = searchParams.get('maxBytesPerFile') ? Number(searchParams.get('maxBytesPerFile')) : undefined;
   let q = searchParams.get('q') || '';
   const regexFlag = searchParams.get('regex');
   if ((regexFlag === '1' || regexFlag === 'true') && q && !(q.startsWith('/') && q.endsWith('/'))) {
     q = `/${q}/`;
   }
   const includeLines = searchParams.get('includeLines') === '1' || searchParams.get('includeLines') === 'true';
-  return { source, unit, file, since, level, lines, q, includeLines };
+  return { source, target, targets, unit, file, since, level, lines, maxBytesPerFile, q, includeLines };
 }
 
 function sanitizeDownloadName(str) {
@@ -2572,6 +2577,17 @@ export function createOpsConsole(options = {}) {
 
       if (method === 'GET' && pathname === '/api/logs') {
         const queryParams = normalizeLogQuery(url.searchParams);
+        const result = await logs.query(queryParams);
+        sendJson(res, result.ok ? 200 : 400, result, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/logs/unified') {
+        const queryParams = normalizeLogQuery(url.searchParams);
+        queryParams.source = 'unified';
+        if (!queryParams.targets.length && queryParams.target) {
+          queryParams.targets = queryParams.target.split(',').map((item) => item.trim()).filter(Boolean);
+        }
         const result = await logs.query(queryParams);
         sendJson(res, result.ok ? 200 : 400, result, {}, req);
         return;

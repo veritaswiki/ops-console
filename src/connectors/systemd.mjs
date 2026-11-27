@@ -80,9 +80,16 @@ export async function collectSystemdServices(config) {
       }
 
       const adminMeta = enrichServiceAdminMeta(svc);
+      const linkedLogFile = (config.logFiles || []).find((f) => f.serviceId && f.serviceId === svc.id) || null;
+      const { logFile: nativeLogFile, ...publicSvc } = svc;
+      const resolvedLogFileId = nativeLogFile
+        ? `svc-file:${svc.id}`
+        : (linkedLogFile ? linkedLogFile.id : null);
       return {
-        ...svc,
+        ...publicSvc,
         ...adminMeta,
+        hasLogFile: Boolean(resolvedLogFileId),
+        logFileId: resolvedLogFileId,
         loadState: raw.LoadState || 'unknown',
         activeState,
         subState,
