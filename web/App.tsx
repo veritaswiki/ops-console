@@ -48,6 +48,7 @@ import { OverviewView } from './views/OverviewView';
 import { OfflineIndicator, PWAInstallButton } from './hooks/usePWA';
 import {
   CONSOLE_MODULES,
+  getFooterModules,
   getModuleByChord,
   getModuleById,
   getModulesGroupedByDomain,
@@ -67,6 +68,7 @@ import {
   loadProjectsView,
   loadServicesView,
   MODULE_DOMAINS,
+  type ModuleDomainId,
   parseViewFromHash,
   prefetchModule,
 } from './modules/registry';
@@ -90,9 +92,51 @@ const OpsView = React.lazy(() => loadOpsView().then((m) => ({ default: m.OpsView
 
 const DOMAIN_TITLE_MAP = new Map(MODULE_DOMAINS.map((d) => [d.id, d.title]));
 const GROUPED_MODULES = getModulesGroupedByDomain();
+const FOOTER_MODULES = getFooterModules();
 
 const THEME_STORAGE_KEY = 'ops-console-theme';
 const SIDEBAR_STORAGE_KEY = 'ops-console-sidebar-collapsed';
+const NAV_GROUPS_STORAGE_KEY = 'ops-console-nav-groups';
+
+const DEFAULT_NAV_GROUPS: Record<ModuleDomainId, boolean> = {
+  agent: true,
+  observe: true,
+  infra: true,
+  operate: true,
+};
+
+function readInitialNavGroups(): Record<ModuleDomainId, boolean> {
+  try {
+    const raw = window.localStorage.getItem(NAV_GROUPS_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_NAV_GROUPS };
+    const parsed = JSON.parse(raw) as Partial<Record<ModuleDomainId, unknown>>;
+    return {
+      agent: typeof parsed.agent === 'boolean' ? parsed.agent : true,
+      observe: typeof parsed.observe === 'boolean' ? parsed.observe : true,
+      infra: typeof parsed.infra === 'boolean' ? parsed.infra : true,
+      operate: typeof parsed.operate === 'boolean' ? parsed.operate : true,
+    };
+  } catch {
+    return { ...DEFAULT_NAV_GROUPS };
+  }
+}
+
+function sidebarTaskStateLabel(state: string): string {
+  switch (state) {
+    case 'submitted':
+      return '排队中';
+    case 'working':
+      return '执行中';
+    case 'completed':
+      return '已完成';
+    case 'failed':
+      return '失败';
+    case 'canceled':
+      return '已取消';
+    default:
+      return state;
+  }
+}
 
 function readInitialSidebarCollapsed(): boolean {
   try {
@@ -131,11 +175,9 @@ function applyTheme(theme: 'light' | 'dark') {
 export function App() {
   const [view, setView] = React.useState<ViewId>(() => parseViewFromHash(window.location.hash) || 'agents');
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState<boolean>(() => readInitialSidebarCollapsed());
-  const [harnessNavExpanded, setHarnessNavExpanded] = React.useState<boolean>(true);
-  const [opsNavExpanded, setOpsNavExpanded] = React.useState<boolean>(() => {
-    const initial = parseViewFromHash(window.location.hash) || 'agents';
-    return getModuleById(initial).domain !== 'agent';
-  });
+  const [navGroups, setNavGroups] = React.useState<Record<ModuleDomainId, boolean>>(() =>
+    readInitialNavGroups(),
+  );
   const [theme, setTheme] = React.useState<'light' | 'dark'>(() => readInitialTheme());
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
   const [commandOpen, setCommandOpen] = React.useState(false);
@@ -147,6 +189,7 @@ export function App() {
   const [audit, setAudit] = React.useState<AuditEntry[]>([]);
   const [recentAgentTasks, setRecentAgentTasks] = React.useState<A2ATaskRecord[]>([]);
   const [activeAgentTaskId, setActiveAgentTaskId] = React.useState<string | null>(null);
+  const [agentSearchQuery, setAgentSearchQuery] = React.useState<string>('');
 
   const [pollMs, setPollMs] = React.useState<number>(10000);
   const [loading, setLoading] = React.useState<boolean>(true);
@@ -217,10 +260,22 @@ export function App() {
     }
   }, [sidebarCollapsed]);
 
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem(NAV_GROUPS_STORAGE_KEY, JSON.stringify(navGroups));
+    } catch {
+      // Ignore storage access errors
+    }
+  }, [navGroups]);
+
+  const toggleNavGroup = React.useCallback((domainId: ModuleDomainId) => {
+    setNavGroups((prev) => ({ ...prev, [domainId]: !prev[domainId] }));
+  }, []);
+
   const loadRecentAgentTasks = React.useCallback(async () => {
     try {
       const res = await fetchA2AState();
-      setRecentAgentTasks((res.tasks || []).slice(0, 6));
+      setRecentAgentTasks((res.tasks || []).slice(0, 60));
     } catch {
       // Non-blocking secondary load
     }
@@ -449,13 +504,12 @@ export function App() {
 
   const handleSelectView = (next: ViewId) => {
     setView(next);
+    const mod = getModuleById(next);
     if (next === 'agents') {
       setActiveAgentTaskId(null);
-      setHarnessNavExpanded(true);
-    } else if (getModuleById(next).domain === 'agent') {
-      setHarnessNavExpanded(true);
-    } else {
-      setOpsNavExpanded(true);
+    }
+    if (mod.placement !== 'footer') {
+      setNavGroups((prev) => (prev[mod.domain] ? prev : { ...prev, [mod.domain]: true }));
     }
     setMobileNavOpen(false);
     window.scrollTo({ top: 0 });
@@ -464,7 +518,7 @@ export function App() {
   const handleOpenAgentThread = (taskId: string) => {
     setActiveAgentTaskId(taskId);
     setView('agents');
-    setHarnessNavExpanded(true);
+    setNavGroups((prev) => (prev.agent ? prev : { ...prev, agent: true }));
     setMobileNavOpen(false);
     window.scrollTo({ top: 0 });
   };
@@ -621,13 +675,31 @@ export function App() {
 
   const activeAlertsCount = snapshot?.activeAlertsCount ?? 0;
 
-  const agentGroup = GROUPED_MODULES.find((g) => g.domain.id === 'agent');
-  const secondaryModules = React.useMemo(
-    () => CONSOLE_MODULES.filter((m) => m.domain !== 'agent'),
-    [],
-  );
-  const secondaryAlertBadge = failedSvcCount + activeAlertsCount;
   const isHarnessView = activeModule.domain === 'agent';
+
+  const filteredSidebarAgentTasks = React.useMemo(() => {
+    const query = agentSearchQuery.trim().toLowerCase();
+    if (!query) {
+      return recentAgentTasks.slice(0, 8);
+    }
+    return recentAgentTasks
+      .filter((task) => {
+        const haystack = [
+          task.id,
+          task.contextId,
+          task.prompt,
+          task.workerAgentName,
+          task.workerNodeId,
+          task.state,
+          sidebarTaskStateLabel(task.state),
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return haystack.includes(query);
+      })
+      .slice(0, 15);
+  }, [recentAgentTasks, agentSearchQuery]);
 
   const renderNavItem = (mod: (typeof CONSOLE_MODULES)[number]) => {
     const Icon = mod.icon;
@@ -690,41 +762,91 @@ export function App() {
           )}
         </div>
 
-        {/* Recent Agent threads live directly under Agent in the left sidebar */}
-        {isAgentHome && recentAgentTasks.length > 0 && (
+        {/* Agent task search + recent / filtered threads directly under Agent */}
+        {isAgentHome && (
           <div
-            className="ml-4 pl-2.5 border-l border-[var(--border-subtle)] py-0.5 space-y-0.5"
+            className="ml-3.5 pl-2.5 border-l border-[var(--border-subtle)] py-1 space-y-1.5"
             data-testid="sidebar-agent-threads"
           >
-            {recentAgentTasks.slice(0, 5).map((task) => {
-              const threadActive = view === 'agents' && activeAgentTaskId === task.id;
-              const dotClass =
-                task.state === 'completed'
-                  ? 'bg-[var(--ok-dot)]'
-                  : task.state === 'working' || task.state === 'submitted'
-                    ? 'bg-[var(--warn-dot)]'
-                    : task.state === 'failed' || task.state === 'canceled'
-                      ? 'bg-[var(--err-dot)]'
-                      : 'bg-[var(--muted-dot)]';
-              return (
+            <div className="relative">
+              <Search
+                className="size-3.5 text-[var(--ink-subtle)] absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none"
+                strokeWidth={1.75}
+              />
+              <input
+                type="text"
+                value={agentSearchQuery}
+                onChange={(e) => setAgentSearchQuery(e.target.value)}
+                placeholder="搜索任务 ID / 提示词..."
+                aria-label="搜索 Agent 任务 ID 或提示词"
+                data-testid="sidebar-agent-search"
+                className={cn(
+                  'h-7 w-full rounded-md border border-[var(--border)] bg-[var(--bg)] pl-7 pr-6 text-[16px] sm:text-[11.5px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)]',
+                  'transition-[border-color,background-color] duration-150 ease-out hover:border-[var(--border-strong)] focus:border-[var(--accent)]',
+                  FOCUS_RING,
+                )}
+              />
+              {agentSearchQuery.length > 0 && (
                 <button
-                  key={task.id}
                   type="button"
-                  onClick={() => handleOpenAgentThread(task.id)}
-                  title={task.prompt || task.id}
+                  onClick={() => setAgentSearchQuery('')}
+                  aria-label="清空任务搜索"
+                  data-testid="sidebar-agent-search-clear"
                   className={cn(
-                    'w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-[12px] text-left cursor-pointer transition-colors min-w-0',
+                    'h-5 w-5 absolute right-1 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer',
                     FOCUS_RING,
-                    threadActive
-                      ? 'bg-[var(--surface-active)] text-[var(--ink)] font-medium'
-                      : 'text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
                   )}
                 >
-                  <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', dotClass)} aria-hidden="true" />
-                  <span className="truncate">{task.prompt || task.id}</span>
+                  <X className="size-3" strokeWidth={1.75} />
                 </button>
-              );
-            })}
+              )}
+            </div>
+
+            {filteredSidebarAgentTasks.length > 0 ? (
+              <div className="space-y-0.5 max-h-[264px] overflow-y-auto pr-0.5">
+                {filteredSidebarAgentTasks.map((task) => {
+                  const threadActive = view === 'agents' && activeAgentTaskId === task.id;
+                  const dotClass =
+                    task.state === 'completed'
+                      ? 'bg-[var(--ok-dot)]'
+                      : task.state === 'working' || task.state === 'submitted'
+                        ? 'bg-[var(--warn-dot)]'
+                        : task.state === 'failed' || task.state === 'canceled'
+                          ? 'bg-[var(--err-dot)]'
+                          : 'bg-[var(--muted-dot)]';
+                  const shortId = task.id.length > 14 ? task.id.slice(-10) : task.id;
+                  return (
+                    <button
+                      key={task.id}
+                      type="button"
+                      onClick={() => handleOpenAgentThread(task.id)}
+                      title={`${task.id} · ${task.prompt || ''}`}
+                      className={cn(
+                        'w-full flex flex-col gap-0.5 px-2 py-1.5 rounded-md text-left cursor-pointer transition-colors min-w-0',
+                        FOCUS_RING,
+                        threadActive
+                          ? 'bg-[var(--surface-active)] text-[var(--ink)]'
+                          : 'text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
+                      )}
+                    >
+                      <span className="flex items-center gap-1.5 min-w-0 text-[12px] leading-snug">
+                        <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', dotClass)} aria-hidden="true" />
+                        <span className="truncate">{task.prompt || task.id}</span>
+                      </span>
+                      <span className="flex items-center gap-1.5 pl-3 text-[10.5px] font-mono text-[var(--ink-subtle)] tabular-nums min-w-0">
+                        <span className="truncate">{shortId}</span>
+                        <span aria-hidden="true">·</span>
+                        <span className="shrink-0">{sidebarTaskStateLabel(task.state)}</span>
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            ) : agentSearchQuery.trim().length > 0 ? (
+              <div className="px-2 py-1.5 text-[11.5px] text-[var(--ink-subtle)]">
+                无匹配任务
+              </div>
+            ) : null}
           </div>
         )}
       </div>
@@ -784,70 +906,105 @@ export function App() {
         )}
       </div>
 
-      {/* Flat 2-Group Collapsible Navigation: Harness + 系统与运维 */}
-      <nav className="flex-1 overflow-y-auto px-2.5 py-3.5 space-y-3" aria-label="主导航">
-        {agentGroup && (
-          <div data-testid="sidebar-domain-harness">
-            <button
-              type="button"
-              data-testid="sidebar-harness-toggle"
-              aria-expanded={harnessNavExpanded}
-              onClick={() => setHarnessNavExpanded((prev) => !prev)}
-              className={cn(
-                'w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[11.5px] font-semibold tracking-wide text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer select-none',
-                FOCUS_RING,
-              )}
+      {/* Categorized Collapsible Navigation across 4 operational domains */}
+      <nav className="flex-1 overflow-y-auto px-2.5 py-3 space-y-2.5" aria-label="主导航">
+        {GROUPED_MODULES.map((group, groupIdx) => {
+          const expanded = navGroups[group.domain.id];
+          const groupFailedCount = group.modules.some((m) => m.badgeKey === 'failedServices')
+            ? failedSvcCount
+            : 0;
+          const groupAlertCount = group.modules.some((m) => m.badgeKey === 'alerts')
+            ? activeAlertsCount
+            : 0;
+          const collapsedBadgeCount = groupFailedCount + groupAlertCount;
+          return (
+            <div
+              key={group.domain.id}
+              data-testid={`sidebar-domain-${group.domain.id}`}
+              className={cn(groupIdx > 0 && 'pt-2.5 border-t border-[var(--border-subtle)]')}
             >
-              <span className="inline-flex items-center gap-1.5">
-                {harnessNavExpanded ? (
-                  <ChevronDown className="size-3.5" strokeWidth={1.75} />
-                ) : (
-                  <ChevronRight className="size-3.5" strokeWidth={1.75} />
+              <button
+                type="button"
+                data-testid={`sidebar-toggle-${group.domain.id}`}
+                aria-expanded={expanded}
+                onClick={() => toggleNavGroup(group.domain.id)}
+                className={cn(
+                  'w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[11.5px] font-semibold tracking-wide text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer select-none',
+                  FOCUS_RING,
                 )}
-                <span>{agentGroup.domain.title}</span>
-              </span>
-            </button>
-            {harnessNavExpanded && (
-              <div className="mt-1 flex flex-col gap-0.5">
-                {agentGroup.modules.map((mod) => renderNavItem(mod))}
-              </div>
-            )}
-          </div>
-        )}
-
-        <div className="pt-2.5 border-t border-[var(--border-subtle)]" data-testid="sidebar-domain-ops">
-          <button
-            type="button"
-            data-testid="sidebar-ops-toggle"
-            aria-expanded={opsNavExpanded}
-            onClick={() => setOpsNavExpanded((prev) => !prev)}
-            className={cn(
-              'w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[11.5px] font-semibold tracking-wide text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer select-none',
-              FOCUS_RING,
-            )}
-          >
-            <span className="inline-flex items-center gap-1.5">
-              {opsNavExpanded ? (
-                <ChevronDown className="size-3.5" strokeWidth={1.75} />
-              ) : (
-                <ChevronRight className="size-3.5" strokeWidth={1.75} />
+              >
+                <span className="inline-flex items-center gap-1.5">
+                  {expanded ? (
+                    <ChevronDown className="size-3.5" strokeWidth={1.75} />
+                  ) : (
+                    <ChevronRight className="size-3.5" strokeWidth={1.75} />
+                  )}
+                  <span>{group.domain.title}</span>
+                </span>
+                {!expanded && collapsedBadgeCount > 0 && (
+                  <span
+                    className={cn(
+                      'font-mono text-[11px] font-semibold tabular-nums',
+                      groupFailedCount > 0 ? 'text-[var(--err)]' : 'text-[var(--warn)]',
+                    )}
+                  >
+                    {collapsedBadgeCount}
+                  </span>
+                )}
+              </button>
+              {expanded && (
+                <div className="mt-1 flex flex-col gap-0.5">
+                  {group.modules.map((mod) => renderNavItem(mod))}
+                </div>
               )}
-              <span>系统与运维</span>
-            </span>
-            {!opsNavExpanded && secondaryAlertBadge > 0 && (
-              <span className="font-mono text-[11px] font-semibold text-[var(--warn)] tabular-nums">
-                {secondaryAlertBadge}
-              </span>
-            )}
-          </button>
-
-          {opsNavExpanded && (
-            <div className="mt-1 flex flex-col gap-0.5">
-              {secondaryModules.map((mod) => renderNavItem(mod))}
             </div>
-          )}
-        </div>
+          );
+        })}
       </nav>
+
+      {/* Pinned Footer Settings Action */}
+      {FOOTER_MODULES.length > 0 && (
+        <div className="px-2.5 py-2 border-t border-[var(--border-subtle)] shrink-0 space-y-0.5">
+          {FOOTER_MODULES.map((mod) => {
+            const Icon = mod.icon;
+            const isActive = view === mod.id;
+            return (
+              <button
+                key={mod.id}
+                type="button"
+                data-view={mod.id}
+                data-testid="sidebar-footer-settings"
+                aria-current={isActive ? 'page' : undefined}
+                onClick={() => handleSelectView(mod.id)}
+                onMouseEnter={() => prefetchModule(mod.id)}
+                onFocus={() => prefetchModule(mod.id)}
+                className={cn(
+                  'w-full flex items-center justify-between gap-2.5 px-2.5 py-2 rounded-lg text-[13.5px] font-medium select-none cursor-pointer whitespace-nowrap',
+                  'transition-colors duration-150 ease-out',
+                  FOCUS_RING,
+                  isActive
+                    ? 'bg-[var(--surface-active)] text-[var(--ink)]'
+                    : 'text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
+                )}
+              >
+                <span className="flex items-center gap-2.5 min-w-0">
+                  <Icon
+                    className={cn(
+                      'size-4 shrink-0',
+                      isActive ? 'text-[var(--accent)]' : 'text-[var(--ink-subtle)]',
+                    )}
+                    strokeWidth={1.75}
+                  />
+                  <span className="truncate">{mod.label}</span>
+                </span>
+                <kbd className="font-mono text-[10.5px] text-[var(--ink-subtle)] px-1 py-0.5 rounded bg-[var(--surface-subtle)] border border-[var(--border-subtle)] leading-none">
+                  G {mod.chord.toUpperCase()}
+                </kbd>
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <div className="px-4 py-3 border-t border-[var(--border-subtle)] text-[11.5px] text-[var(--ink-subtle)] shrink-0 space-y-1">
         <div className="flex items-center justify-between gap-2">
@@ -879,7 +1036,7 @@ export function App() {
       : view === 'projects'
         ? 'flex-1 w-full max-w-[1400px] mx-auto px-4 sm:px-6 py-5'
         : view === 'agents'
-          ? 'flex-1 w-full max-w-[960px] mx-auto px-4 sm:px-6 py-4 flex flex-col'
+          ? 'flex-1 w-full max-w-[1280px] mx-auto px-4 sm:px-6 py-4 flex flex-col'
           : 'flex-1 w-full max-w-[1200px] mx-auto px-4 sm:px-8 py-6 sm:py-8';
 
   return (
@@ -951,7 +1108,7 @@ export function App() {
                 )}
                 <div className="flex items-center gap-2 min-w-0 text-[13px] select-none">
                   <span className="hidden sm:inline text-[var(--ink-subtle)] whitespace-nowrap">
-                    {isHarnessView ? activeDomainTitle : '系统与运维'}
+                    {activeDomainTitle}
                   </span>
                   <span className="hidden sm:inline text-[var(--ink-subtle)]/50" aria-hidden="true">/</span>
                   <span className="font-medium text-[var(--ink)] truncate whitespace-nowrap">
@@ -1146,7 +1303,10 @@ export function App() {
                       readOnly={readOnly}
                       activeTaskId={activeAgentTaskId}
                       onSelectTask={setActiveAgentTaskId}
+                      searchQuery={agentSearchQuery}
+                      onSearchQueryChange={setAgentSearchQuery}
                       onTasksUpdated={() => void loadRecentAgentTasks()}
+                      onOpenSettings={() => handleSelectView('agent-settings')}
                       onToast={pushToast}
                     />
                   )}
@@ -1171,6 +1331,7 @@ export function App() {
                   {view === 'github' && (
                     <GithubView
                       readOnly={readOnly}
+                      onOpenAgentTask={handleOpenAgentThread}
                       onToast={pushToast}
                     />
                   )}
@@ -1178,6 +1339,8 @@ export function App() {
                     <AgentSettingsView
                       snapshot={snapshot}
                       readOnly={readOnly}
+                      theme={theme}
+                      onToggleTheme={toggleTheme}
                       selectedCategory={agentCategory}
                       selectedPid={agentPid}
                       onSelectCategory={(cat) => {

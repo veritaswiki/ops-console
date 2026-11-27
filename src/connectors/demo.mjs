@@ -1,3 +1,5 @@
+import { enrichServiceAdminMeta } from '../service-proxy.mjs';
+
 export function createDemoProvider() {
   const state = {
     services: [
@@ -131,7 +133,10 @@ export function createDemoProvider() {
   }
 
   function getSnapshot(config) {
-    const items = state.services;
+    const items = state.services.map((svc) => ({
+      ...svc,
+      ...enrichServiceAdminMeta(svc),
+    }));
     const summary = {
       total: items.length,
       active: items.filter((s) => s.activeState === 'active').length,

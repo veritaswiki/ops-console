@@ -1,5 +1,6 @@
 import { httpProbe, runCmd } from '../exec.mjs';
 import { redactCommand } from '../redact.mjs';
+import { enrichServiceAdminMeta } from '../service-proxy.mjs';
 
 export function parseSystemctlShowBlocks(stdout) {
   const map = new Map();
@@ -78,8 +79,10 @@ export async function collectSystemdServices(config) {
         status = 'standby';
       }
 
+      const adminMeta = enrichServiceAdminMeta(svc);
       return {
         ...svc,
+        ...adminMeta,
         loadState: raw.LoadState || 'unknown',
         activeState,
         subState,

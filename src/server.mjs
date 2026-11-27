@@ -5,6 +5,13 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { ActionController } from './actions.mjs';
 import { A2AOrchestrator } from './a2a-orchestrator.mjs';
+import {
+  buildHubAgentCard,
+  buildNodeConnectProfiles,
+  getA2ASigningSecret,
+  handleA2AJsonRpc,
+  verifyA2ASignature,
+} from './a2a-protocol.mjs';
 import { buildAiOpsContext, evaluateAiPreflight } from './ai-ops-governance.mjs';
 import { AlertEngine } from './alerts.mjs';
 import { BotFleetManager } from './bot-fleet.mjs';
@@ -13,6 +20,7 @@ import { APP_VERSION, PACKAGE_ROOT, validateConfig } from './config.mjs';
 import { createDemoProvider } from './connectors/demo.mjs';
 import { ConnectorHub } from './connectors/index.mjs';
 import { ControlPlaneEventBus } from './events.mjs';
+import { GithubHub } from './github-hub.mjs';
 import { LinearCommanderManager } from './linear-commander.mjs';
 import { StructuredLogger } from './logger.mjs';
 import { LogService } from './logs.mjs';
@@ -21,6 +29,7 @@ import { isTailscaleOrLoopbackIp, ProbeRegistry, validateNodeId } from './probes
 import { PluginManager } from './plugins/manager.mjs';
 import { maskClientIp } from './redact.mjs';
 import { RunbookEngine } from './runbooks.mjs';
+import { handleServiceEmbedProxy } from './service-proxy.mjs';
 import { TelemetryStore } from './store.mjs';
 import { TimeSeriesStore } from './timeseries.mjs';
 import {
@@ -98,6 +107,30 @@ function isHttpsRequest(req, trustProxy = false) {
     return true;
   }
   return false;
+}
+
+function computeRequestOrigin(req, isHttps, trustProxy = false) {
+  const proto = isHttps ? 'https' : 'http';
+  const forwardedHost = trustProxy
+    ? String(req.headers['x-forwarded-host'] || '').split(',')[0].trim()
+    : '';
+  const hostHeader = forwardedHost || String(req.headers.host || '127.0.0.1:4320').trim();
+  return `${proto}://${hostHeader}`;
+}
+
+async function readRawText(req, maxBytes = MAX_BODY_BYTES) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > maxBytes) {
+      const err = new Error('Request payload too large');
+      err.statusCode = 413;
+      throw err;
+    }
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 function sendJsonWithHeaders(res, statusCode, payload, extraHeaders = {}, req = null, securityHeaders = {}) {
@@ -251,6 +284,7 @@ export function createOpsConsole(options = {}) {
   });
   const linearCommander = options.linearCommander || new LinearCommanderManager(config, logger);
   const botFleet = options.botFleet || new BotFleetManager(config, logger);
+  const githubHub = options.githubHub || new GithubHub({ config, linearCommander, logger });
   const runbookEngine = options.runbookEngine || new RunbookEngine({
     config,
     connectors: hub,
@@ -434,6 +468,98 @@ export function createOpsConsole(options = {}) {
         return;
       }
 
+      if (method === 'GET' && (pathname === '/.well-known/agent-card.json' || pathname === '/.well-known/agent.json')) {
+        const state = a2aOrchestrator.getState([]);
+        const origin = computeRequestOrigin(req, isHttps, Boolean(config.security.trustProxy));
+        const card = buildHubAgentCard({
+          origin,
+          appName: config.console.title,
+          version: APP_VERSION,
+          agents: state.agents,
+          leadAgentId: state.leadAgentId,
+        });
+        sendJson(res, 200, card, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/a2a') {
+        const a2aRate = generalLimiter.allow(clientIp);
+        if (!a2aRate.allowed) {
+          sendJson(res, 429, {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32029, message: 'Rate limit exceeded' },
+          }, { 'Retry-After': String(a2aRate.retryAfterSec) });
+          return;
+        }
+        const rawBody = await readRawText(req, MAX_BODY_BYTES);
+        const signing = getA2ASigningSecret();
+        const hasSigHeaders = Boolean(req.headers['x-a2a-signature'] || req.headers['x-a2a-timestamp']);
+        const sigCheck = hasSigHeaders
+          ? verifyA2ASignature({
+              rawBody,
+              signature: req.headers['x-a2a-signature'],
+              timestampSec: req.headers['x-a2a-timestamp'],
+              secret: signing.secret,
+            })
+          : { valid: false, reason: 'Missing X-A2A-Signature or X-A2A-Timestamp header' };
+        const webAuth = config.auth.webKey
+          ? checkRequestAuth(req, url, config.auth.webKey)
+          : { authorized: false, method: 'none' };
+        const authRequired = Boolean(config.auth.webKey || signing.configuredViaEnv);
+
+        if (hasSigHeaders && !sigCheck.valid) {
+          sendJson(res, 401, {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32000, message: sigCheck.reason },
+          });
+          return;
+        }
+        if (authRequired && !sigCheck.valid && !webAuth.authorized) {
+          sendJson(res, 401, {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32000, message: 'Unauthorized A2A request: valid HMAC signature or Bearer token required' },
+          });
+          return;
+        }
+
+        let rpcPayload;
+        try {
+          rpcPayload = JSON.parse(rawBody || '{}');
+        } catch {
+          sendJson(res, 400, {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32700, message: 'Parse error: invalid JSON body' },
+          });
+          return;
+        }
+
+        const state = a2aOrchestrator.getState([]);
+        const origin = computeRequestOrigin(req, isHttps, Boolean(config.security.trustProxy));
+        const card = buildHubAgentCard({
+          origin,
+          appName: config.console.title,
+          version: APP_VERSION,
+          agents: state.agents,
+          leadAgentId: state.leadAgentId,
+        });
+        const rpcResult = await handleA2AJsonRpc({
+          payload: rpcPayload,
+          orchestrator: a2aOrchestrator,
+          card,
+          readOnly: Boolean(config.console.readOnly),
+          actor: sigCheck.valid ? 'a2a-hmac' : 'a2a-rpc',
+        });
+        if (rpcResult.status < 400 && (rpcPayload?.method === 'message/send' || rpcPayload?.method === 'tasks/send' || rpcPayload?.method === 'tasks/cancel')) {
+          eventBus.emit('a2a_updated', { action: rpcPayload.method, taskId: rpcResult.body?.result?.id || null });
+        }
+        sendJson(res, rpcResult.status, rpcResult.body, {}, req);
+        return;
+      }
+
       if (method === 'POST' && pathname === '/api/probes/ingest') {
         if (config.fleet?.requireTailscaleCidr && !isTailscaleOrLoopbackIp(clientIp)) {
           logger.warn('probe_cidr_rejected', { requestId, ip: clientIp });
@@ -561,6 +687,18 @@ export function createOpsConsole(options = {}) {
           }
           return;
         }
+      }
+
+      if (pathname === '/embed' || pathname.startsWith('/embed/')) {
+        await handleServiceEmbedProxy({
+          req,
+          res,
+          pathname,
+          search: url.search,
+          config,
+          authChecked: true,
+        });
+        return;
       }
 
       if (method === 'GET' && pathname === '/api/ready') {
@@ -1304,6 +1442,33 @@ export function createOpsConsole(options = {}) {
         return;
       }
 
+      if (method === 'GET' && pathname === '/api/a2a/connect-profiles') {
+        const origin = computeRequestOrigin(req, isHttps, Boolean(config.security.trustProxy));
+        const nodeId = url.searchParams.get('nodeId') || 'edge-node-01';
+        const deviceType = url.searchParams.get('deviceType') || 'server';
+        const tailscaleHost = url.searchParams.get('tailscaleHost')
+          || config.fleet?.localNode?.tailscaleIp
+          || 'ops-hub.tailnet.ts.net';
+        const cloudflareDomain = url.searchParams.get('cloudflareDomain') || 'ops-hub.example.com';
+        const profiles = buildNodeConnectProfiles({
+          origin,
+          nodeId,
+          deviceType,
+          tailscaleHost,
+          cloudflareDomain,
+        });
+        sendJson(res, 200, {
+          ok: true,
+          protocol: 'Google A2A (Agent2Agent)',
+          specVersion: '0.3.0',
+          hubAgentCardUrl: `${origin}/.well-known/agent-card.json`,
+          hubRpcUrl: `${origin}/a2a`,
+          signingConfigured: getA2ASigningSecret().configuredViaEnv,
+          profiles,
+        }, {}, req);
+        return;
+      }
+
       if (method === 'POST' && pathname === '/api/a2a/lead') {
         if (config.console.readOnly) {
           sendJson(res, 403, { ok: false, error: 'Read-only mode disables Lead Agent changes' }, {}, req);
@@ -1393,6 +1558,14 @@ export function createOpsConsole(options = {}) {
         return;
       }
 
+      const a2aPingMatch = pathname.match(/^\/api\/a2a\/agents\/([A-Za-z0-9._:-]+)\/ping$/);
+      if (method === 'POST' && a2aPingMatch) {
+        const result = await a2aOrchestrator.pingAgent(a2aPingMatch[1]);
+        eventBus.emit('a2a_updated', { action: 'ping_agent', id: a2aPingMatch[1], reachable: result.reachable });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
       if (method === 'POST' && pathname === '/api/a2a/tasks') {
         if (config.console.readOnly) {
           sendJson(res, 403, { ok: false, error: 'Read-only mode disables dispatching A2A tasks' }, {}, req);
@@ -1430,6 +1603,30 @@ export function createOpsConsole(options = {}) {
         });
         eventBus.emit('a2a_updated', { action: 'cancel_task', taskId: task.id });
         sendJson(res, 200, { ok: true, task }, {}, req);
+        return;
+      }
+
+      const a2aTaskStateMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/state$/);
+      if (method === 'PATCH' && a2aTaskStateMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables updating A2A task state' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.updateTaskState(a2aTaskStateMatch[1], data?.state, {
+          actor: 'web',
+          reason: data?.reason || '',
+        });
+        await logger.appendAudit({
+          action: 'a2a:update-task-state',
+          target: result.task.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `state=${result.task.state}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'update_task_state', taskId: result.task.id, state: result.task.state });
+        sendJson(res, 200, result, {}, req);
         return;
       }
 
@@ -2072,6 +2269,47 @@ export function createOpsConsole(options = {}) {
         return;
       }
 
+      // ─── GitHub Integration Hub (Orca / T3-style) ────────────────────────────
+      if (method === 'GET' && pathname === '/api/github/overview') {
+        const force = url.searchParams.get('refresh') === '1';
+        const overview = await githubHub.getOverview({ force });
+        sendJson(res, 200, overview, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/github/dispatch-agent') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables dispatching GitHub agent tasks' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const dispatchPayload = githubHub.buildDispatchPayload(data);
+        if (!a2aOrchestrator.leadAgentId) {
+          const registeredAgents = [...a2aOrchestrator.agents.values()];
+          if (registeredAgents.length === 0) {
+            sendJson(res, 400, {
+              ok: false,
+              error: '尚未注册任何 A2A Agent，请先在 Agent 工作台注册或自动发现本机 Agent。',
+            }, {}, req);
+            return;
+          }
+          const candidate = registeredAgents.find((agent) => agent.status !== 'offline') || registeredAgents[0];
+          await a2aOrchestrator.setLeadAgent(candidate.id);
+        }
+        const task = await a2aOrchestrator.dispatchTask(dispatchPayload, { actor: 'github-hub' });
+        await logger.appendAudit({
+          action: 'github:dispatch-agent',
+          target: `${data?.kind || 'issue'}#${data?.number || 'new'}`,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: task.state !== 'failed',
+          detail: `taskId=${task.id}, action=${dispatchPayload.slashCommand || '/implement'}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'github_dispatch', taskId: task.id, state: task.state });
+        sendJson(res, 201, { ok: true, task }, {}, req);
+        return;
+      }
+
       // ─── Bot Fleet & Multi-Channel Automation System ─────────────────────────
       if (method === 'GET' && pathname === '/api/bots') {
         sendJson(res, 200, botFleet.list(), {}, req);
@@ -2474,6 +2712,7 @@ export function createOpsConsole(options = {}) {
     alertEngine,
     mcpFleet,
     a2aOrchestrator,
+    githubHub,
     runbookEngine,
     hub,
     logs,

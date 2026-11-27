@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 import { execFile } from 'node:child_process';
+import crypto from 'node:crypto';
 import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
+import http from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,6 +20,21 @@ const MAX_BACKOFF_MS = 5 * 60 * 1000;
 const DEFAULT_CPU_SAMPLE_MS = 250;
 const WATCH_SERVICE_RE = /^[A-Za-z0-9@._:-]{1,128}$/;
 const DEVICE_TYPES = new Set(['hub', 'server', 'edge', 'laptop', 'mobile', 'auto']);
+const A2A_PROTOCOL_VERSION = '0.3.0';
+const DEFAULT_A2A_PORT = 9104;
+const A2A_MAX_REPLAY_SKEW_SEC = 300;
+const A2A_MAX_BODY_BYTES = 256 * 1024;
+const A2A_MAX_STORED_TASKS = 128;
+const LOCAL_CLI_CACHE_TTL_MS = 60_000;
+
+const ALLOWLISTED_CLIS = [
+  { id: 'codex', binary: 'codex', label: 'Codex CLI', harness: 'codex-cli', args: ['--version'] },
+  { id: 'claude', binary: 'claude', label: 'Claude Code', harness: 'claude-code', args: ['--version'] },
+  { id: 'pi', binary: 'pi', label: 'Pi Agent', harness: 'pi-agent', args: ['--version'] },
+  { id: 'agy', binary: 'agy', label: 'AGY CLI', harness: 'agy-cli', args: ['--version'] },
+  { id: 'opencode', binary: 'opencode', label: 'OpenCode', harness: 'opencode', args: ['--version'] },
+  { id: 'dsh', binary: 'dsh', label: 'DSH Review CLI', harness: 'dsh-expert', args: ['--version'] },
+];
 
 const TAILSCALE_BINARIES = [
   'tailscale',
@@ -67,11 +84,14 @@ function sleep(delayMs, signal = null) {
 function runExecFile(command, args = [], options = {}) {
   const timeout = options.timeout ?? 3000;
   const maxBuffer = options.maxBuffer ?? 1024 * 1024;
+  const execOpts = { timeout, maxBuffer, windowsHide: true };
+  if (options.cwd) execOpts.cwd = options.cwd;
+  if (options.env) execOpts.env = options.env;
   return new Promise((resolve) => {
     execFile(
       command,
       args,
-      { timeout, maxBuffer, windowsHide: true },
+      execOpts,
       (error, stdout, stderr) => {
         resolve({
           ok: !error,
@@ -707,6 +727,681 @@ async function collectAgents(enabled = true) {
   return { count, categories };
 }
 
+function parseOptionalBool(value) {
+  if (typeof value === 'boolean') return value;
+  if (value === undefined || value === null || value === '') return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return null;
+}
+
+function isTailscaleIpv4(ip) {
+  if (typeof ip !== 'string') return false;
+  const parts = ip.trim().split('.');
+  if (parts.length !== 4) return false;
+  const octets = parts.map((segment) => Number(segment));
+  if (octets.some((num) => !Number.isInteger(num) || num < 0 || num > 255)) return false;
+  return octets[0] === 100 && octets[1] >= 64 && octets[1] <= 127;
+}
+
+function detectLocalTailscaleIp() {
+  try {
+    const interfaces = os.networkInterfaces();
+    for (const entries of Object.values(interfaces)) {
+      for (const entry of entries || []) {
+        if (entry && !entry.internal && entry.family === 'IPv4' && isTailscaleIpv4(entry.address)) {
+          return entry.address;
+        }
+      }
+    }
+  } catch {
+    // Fall back to loopback when network interfaces cannot be inspected.
+  }
+  return null;
+}
+
+function isWildcardBindHost(host) {
+  const normalized = String(host || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+  return normalized === '0.0.0.0' || normalized === '::' || normalized === '*';
+}
+
+function timingSafeEqualStr(left, right) {
+  const a = Buffer.from(String(left ?? ''), 'utf8');
+  const b = Buffer.from(String(right ?? ''), 'utf8');
+  if (a.length === 0 || a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+
+function signA2APeerBody(rawBody, timestampSec, secret) {
+  const digest = crypto
+    .createHmac('sha256', String(secret))
+    .update(`${String(timestampSec)}.${String(rawBody)}`)
+    .digest('hex');
+  return `sha256=${digest}`;
+}
+
+function verifyPeerRequestAuth(req, rawBody, { sharedSecret = '', token = '' } = {}) {
+  const effectiveSecret = String(sharedSecret || token || '').trim();
+  const secondaryToken = String(token || '').trim();
+  if (!effectiveSecret) {
+    return { authorized: false, reason: 'A2A peer authentication secret is not configured' };
+  }
+
+  const sigHeader = String(req.headers['x-a2a-signature'] || '').trim();
+  const tsHeader = String(req.headers['x-a2a-timestamp'] || '').trim();
+  const hasSigHeaders = Boolean(sigHeader || tsHeader);
+
+  let hmacReason = 'Missing X-A2A-Signature or X-A2A-Timestamp header';
+  if (hasSigHeaders) {
+    const tsNum = Number(tsHeader);
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (!sigHeader || !Number.isFinite(tsNum) || tsNum <= 0) {
+      hmacReason = 'Missing X-A2A-Signature or X-A2A-Timestamp header';
+    } else if (Math.abs(nowSec - tsNum) > A2A_MAX_REPLAY_SKEW_SEC) {
+      hmacReason = `Timestamp outside allowed replay window (±${A2A_MAX_REPLAY_SKEW_SEC}s)`;
+    } else {
+      const expectedPrimary = signA2APeerBody(rawBody, tsNum, effectiveSecret);
+      const primaryMatch = timingSafeEqualStr(sigHeader, expectedPrimary);
+      const secondaryMatch = !primaryMatch && secondaryToken && secondaryToken !== effectiveSecret
+        ? timingSafeEqualStr(sigHeader, signA2APeerBody(rawBody, tsNum, secondaryToken))
+        : false;
+      if (primaryMatch || secondaryMatch) {
+        return { authorized: true, method: 'hmac' };
+      }
+      hmacReason = 'Invalid HMAC-SHA256 signature';
+    }
+  }
+
+  const authHeader = String(req.headers.authorization || '').trim();
+  if (/^Bearer\s+/i.test(authHeader)) {
+    const presented = authHeader.replace(/^Bearer\s+/i, '').trim();
+    if (
+      timingSafeEqualStr(presented, effectiveSecret)
+      || (secondaryToken && secondaryToken !== effectiveSecret && timingSafeEqualStr(presented, secondaryToken))
+    ) {
+      return { authorized: true, method: 'bearer' };
+    }
+  }
+
+  return {
+    authorized: false,
+    reason: hasSigHeaders
+      ? hmacReason
+      : 'Unauthorized A2A request: valid HMAC-SHA256 signature or Bearer token required',
+  };
+}
+
+function buildExpandedEnv(baseEnv = process.env) {
+  const homeDir = os.homedir();
+  const extraDirs = [
+    '/opt/homebrew/bin',
+    path.join(homeDir, '.local', 'bin'),
+    path.join(homeDir, '.npm-global', 'bin'),
+    '/usr/local/bin',
+  ];
+  const existing = String(baseEnv.PATH || '')
+    .split(path.delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const merged = [...new Set([...existing, ...extraDirs])];
+  return { ...baseEnv, PATH: merged.join(path.delimiter) };
+}
+
+let cliDiscoveryCache = {
+  expiresAt: 0,
+  items: [],
+};
+
+export async function discoverLocalCliHarnesses(options = {}) {
+  const nowMs = Date.now();
+  if (!options.force && cliDiscoveryCache.expiresAt > nowMs) {
+    return cliDiscoveryCache.items;
+  }
+
+  const env = buildExpandedEnv(options.env || process.env);
+  const checks = await Promise.all(
+    ALLOWLISTED_CLIS.map(async (cli) => {
+      const res = await runExecFile(cli.binary, cli.args, { timeout: 2500, env });
+      if (res.errorCode === 'ENOENT' || res.errorCode === 'EACCES') {
+        return null;
+      }
+      if (!res.ok) {
+        return null;
+      }
+      const rawLine = (res.stdout || res.stderr || '').trim().split('\n')[0] || 'detected';
+      const version = rawLine.replace(/\s+/g, ' ').trim().slice(0, 64) || 'detected';
+      return {
+        id: cli.id,
+        binary: cli.binary,
+        label: cli.label,
+        harness: cli.harness,
+        version,
+      };
+    }),
+  );
+
+  const discovered = checks.filter(Boolean);
+  cliDiscoveryCache = {
+    expiresAt: nowMs + LOCAL_CLI_CACHE_TTL_MS,
+    items: discovered,
+  };
+  return discovered;
+}
+
+function extractTextFromA2AMessage(message) {
+  if (!message || typeof message !== 'object') return '';
+  if (typeof message.text === 'string' && message.text.trim()) return message.text.trim();
+  if (Array.isArray(message.parts)) {
+    const texts = [];
+    for (const part of message.parts) {
+      if (part && typeof part === 'object' && typeof part.text === 'string' && part.text.trim()) {
+        texts.push(part.text.trim());
+      }
+    }
+    return texts.join('\n').trim();
+  }
+  return '';
+}
+
+function readHttpRawBody(req, maxBytes = A2A_MAX_BODY_BYTES) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let total = 0;
+    let settled = false;
+
+    req.on('data', (chunk) => {
+      if (settled) return;
+      total += chunk.length;
+      if (total > maxBytes) {
+        settled = true;
+        const err = new Error('Request body exceeds maximum allowed size');
+        err.statusCode = 413;
+        reject(err);
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(chunks).toString('utf8'));
+    });
+    req.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
+  });
+}
+
+function sendPeerJson(res, status, payload) {
+  const body = JSON.stringify(payload);
+  res.writeHead(status, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Length': Buffer.byteLength(body),
+    'X-Content-Type-Options': 'nosniff',
+    'Cache-Control': 'no-store',
+  });
+  res.end(body);
+}
+
+async function collectWorkspaceGitStatus(workspaceRoot) {
+  if (!workspaceRoot || typeof workspaceRoot !== 'string') return null;
+  const resolved = path.resolve(workspaceRoot);
+  try {
+    const stat = await fs.stat(resolved);
+    if (!stat.isDirectory()) return null;
+  } catch {
+    return null;
+  }
+  const gitRes = await runExecFile('git', ['-C', resolved, 'status', '--short', '--branch'], {
+    timeout: 3000,
+    maxBuffer: 256 * 1024,
+  });
+  if (!gitRes.ok) {
+    return { available: false, error: (gitRes.stderr || 'Not a git repository').trim().slice(0, 160) };
+  }
+  const lines = gitRes.stdout.split('\n').map((line) => line.trimEnd()).filter(Boolean);
+  const branchLine = lines[0]?.startsWith('## ') ? lines[0].slice(3).trim() : null;
+  const changes = lines.slice(branchLine ? 1 : 0).slice(0, 40);
+  return {
+    available: true,
+    branch: branchLine,
+    dirtyCount: changes.length,
+    changes,
+  };
+}
+
+function buildPeerAgentCard({ nodeId, hostname, baseUrl, rpcUrl, tailscaleIp, execMode, workspaceRoot, discoveredClis }) {
+  const skills = [
+    {
+      id: 'node-diagnostics',
+      name: 'Node Diagnostics',
+      description: 'Collect real-time CPU, memory, disk, Tailscale, and watched service telemetry on this node.',
+      tags: ['diagnostics', 'telemetry', process.platform],
+      inputModes: ['text/plain', 'application/json'],
+      outputModes: ['text/plain', 'application/json'],
+    },
+    {
+      id: 'workspace-inspect',
+      name: 'Workspace Inspect',
+      description: 'Read-only Git branch and working tree inspection for the configured workspace root.',
+      tags: ['git', 'workspace', 'readonly'],
+      inputModes: ['text/plain', 'application/json'],
+      outputModes: ['text/plain', 'application/json'],
+    },
+    {
+      id: 'agent-relay',
+      name: 'Agent Relay',
+      description: 'Accept signed Google A2A v0.3 JSON-RPC 2.0 tasks and report local CLI harness readiness.',
+      tags: ['a2a', 'relay', nodeId],
+      inputModes: ['text/plain', 'application/json'],
+      outputModes: ['text/plain', 'application/json'],
+    },
+    ...discoveredClis.map((cli) => ({
+      id: `cli-${cli.id}`,
+      name: cli.label,
+      description: `Local ${cli.label} (${cli.version}) detected on ${nodeId}.`,
+      tags: ['cli', cli.harness, nodeId],
+      inputModes: ['text/plain', 'application/json'],
+      outputModes: ['text/plain', 'application/json'],
+    })),
+  ];
+
+  return {
+    protocolVersion: A2A_PROTOCOL_VERSION,
+    name: `Ops Probe · ${nodeId}`,
+    description: `Ops Console A2A v0.3 peer node on ${hostname} (${process.platform}/${process.arch})`,
+    url: rpcUrl,
+    version: PROBE_VERSION,
+    provider: {
+      organization: 'Ops Console',
+      url: baseUrl,
+    },
+    capabilities: {
+      streaming: false,
+      pushNotifications: false,
+      stateTransitionHistory: true,
+    },
+    securitySchemes: {
+      bearerAuth: {
+        type: 'http',
+        scheme: 'bearer',
+        description: 'Per-node probe Bearer token or A2A shared secret',
+      },
+      hmacSignature: {
+        type: 'apiKey',
+        in: 'header',
+        name: 'X-A2A-Signature',
+        description: 'HMAC-SHA256 over "<X-A2A-Timestamp>.<rawBody>" with ±300s replay guard',
+      },
+    },
+    security: [{ hmacSignature: [] }, { bearerAuth: [] }],
+    defaultInputModes: ['text/plain', 'application/json'],
+    defaultOutputModes: ['text/plain', 'application/json'],
+    skills,
+    metadata: {
+      nodeId,
+      hostname,
+      platform: process.platform,
+      arch: process.arch,
+      tailscaleIp,
+      execMode,
+      workspaceConfigured: Boolean(workspaceRoot),
+      discoveredClis: discoveredClis.map((cli) => ({
+        id: cli.id,
+        label: cli.label,
+        harness: cli.harness,
+        version: cli.version,
+      })),
+    },
+  };
+}
+
+export async function startA2APeerServer(config = {}, options = {}) {
+  const a2aCfg = config.a2a && typeof config.a2a === 'object' ? config.a2a : {};
+  const allowAny = Boolean(options.allowAny ?? a2aCfg.allowAny);
+  const detectedTsIp = detectLocalTailscaleIp();
+  const rawHost = options.host ?? a2aCfg.host;
+  const bindHost = String(rawHost || detectedTsIp || '127.0.0.1').trim();
+
+  if (isWildcardBindHost(bindHost) && !allowAny) {
+    throw new Error(`Refusing to bind A2A peer server to wildcard host "${bindHost}" without --a2a-allow-any`);
+  }
+
+  const rawPort = options.port ?? a2aCfg.port ?? DEFAULT_A2A_PORT;
+  const bindPort = Number.isInteger(rawPort) && rawPort >= 0 && rawPort <= 65535
+    ? rawPort
+    : DEFAULT_A2A_PORT;
+  const sharedSecret = String(options.sharedSecret ?? a2aCfg.sharedSecret ?? '').trim();
+  const token = String(options.token ?? config.token ?? '').trim();
+  const execMode = (options.execMode ?? a2aCfg.execMode) === 'cli' ? 'cli' : 'safe';
+  const workspaceRoot = options.workspaceRoot ?? a2aCfg.workspaceRoot ?? null;
+  const nodeId = String(config.nodeId || os.hostname().toLowerCase());
+  const hostname = os.hostname();
+
+  const tasks = new Map();
+  const peerMetricsState = { prevCpu: null, prevNet: null, lastHubRttMs: null };
+  const initialClis = await discoverLocalCliHarnesses();
+
+  let boundHost = bindHost;
+  let boundPort = bindPort;
+  let baseUrl = '';
+  let agentCardUrl = '';
+  let rpcUrl = '';
+
+  const recordTask = (task) => {
+    tasks.set(task.id, task);
+    while (tasks.size > A2A_MAX_STORED_TASKS) {
+      const oldestKey = tasks.keys().next().value;
+      tasks.delete(oldestKey);
+    }
+  };
+
+  const server = http.createServer(async (req, res) => {
+    try {
+      const reqUrl = new URL(req.url || '/', baseUrl || 'http://127.0.0.1');
+      const pathname = reqUrl.pathname;
+      const method = String(req.method || 'GET').toUpperCase();
+
+      if (method === 'GET' && (pathname === '/.well-known/agent-card.json' || pathname === '/.well-known/agent.json')) {
+        const discoveredClis = await discoverLocalCliHarnesses();
+        const card = buildPeerAgentCard({
+          nodeId,
+          hostname,
+          baseUrl,
+          rpcUrl,
+          tailscaleIp: detectedTsIp,
+          execMode,
+          workspaceRoot,
+          discoveredClis,
+        });
+        sendPeerJson(res, 200, card);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/a2a') {
+        let rawBody;
+        try {
+          rawBody = await readHttpRawBody(req, A2A_MAX_BODY_BYTES);
+        } catch (err) {
+          sendPeerJson(res, err.statusCode || 400, {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32600, message: err.message || 'Invalid request body' },
+          });
+          return;
+        }
+
+        const authCheck = verifyPeerRequestAuth(req, rawBody, { sharedSecret, token });
+        if (!authCheck.authorized) {
+          sendPeerJson(res, 401, {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32000, message: authCheck.reason },
+          });
+          return;
+        }
+
+        let payload;
+        try {
+          payload = JSON.parse(rawBody || '{}');
+        } catch {
+          sendPeerJson(res, 400, {
+            jsonrpc: '2.0',
+            id: null,
+            error: { code: -32700, message: 'Parse error: invalid JSON body' },
+          });
+          return;
+        }
+
+        const reqId = payload?.id ?? null;
+        if (!payload || typeof payload !== 'object' || payload.jsonrpc !== '2.0' || typeof payload.method !== 'string') {
+          sendPeerJson(res, 400, {
+            jsonrpc: '2.0',
+            id: reqId,
+            error: { code: -32600, message: 'Invalid JSON-RPC 2.0 request' },
+          });
+          return;
+        }
+
+        const rpcMethod = payload.method;
+        const params = payload.params && typeof payload.params === 'object' ? payload.params : {};
+
+        if (rpcMethod === 'agent/card' || rpcMethod === 'agent/authenticatedExtendedCard') {
+          const discoveredClis = await discoverLocalCliHarnesses();
+          const card = buildPeerAgentCard({
+            nodeId,
+            hostname,
+            baseUrl,
+            rpcUrl,
+            tailscaleIp: detectedTsIp,
+            execMode,
+            workspaceRoot,
+            discoveredClis,
+          });
+          sendPeerJson(res, 200, { jsonrpc: '2.0', id: reqId, result: card });
+          return;
+        }
+
+        if (rpcMethod === 'agent/ping') {
+          const discoveredClis = await discoverLocalCliHarnesses();
+          sendPeerJson(res, 200, {
+            jsonrpc: '2.0',
+            id: reqId,
+            result: {
+              pong: true,
+              protocolVersion: A2A_PROTOCOL_VERSION,
+              nodeId,
+              hostname,
+              platform: process.platform,
+              arch: process.arch,
+              probeVersion: PROBE_VERSION,
+              discoveredClis: discoveredClis.length,
+              timestamp: new Date().toISOString(),
+            },
+          });
+          return;
+        }
+
+        if (rpcMethod === 'message/send' || rpcMethod === 'tasks/send') {
+          const prompt = extractTextFromA2AMessage(params.message) || String(params.prompt || '').trim();
+          if (!prompt) {
+            sendPeerJson(res, 400, {
+              jsonrpc: '2.0',
+              id: reqId,
+              error: { code: -32602, message: 'Missing message text in params.message.parts' },
+            });
+            return;
+          }
+
+          const startedMs = Date.now();
+          const createdAt = new Date(startedMs).toISOString();
+          const taskId = typeof params.id === 'string' && params.id.trim()
+            ? params.id.trim().slice(0, 64)
+            : `peer-task-${crypto.randomBytes(4).toString('hex')}`;
+          const contextId = typeof params.contextId === 'string' && params.contextId.trim()
+            ? params.contextId.trim().slice(0, 64)
+            : `ctx-${crypto.randomBytes(4).toString('hex')}`;
+
+          const [telemetry, discoveredClis, gitStatus] = await Promise.all([
+            collectProbeMetrics({ ...config, cpuSampleDelayMs: 0 }, peerMetricsState),
+            discoverLocalCliHarnesses(),
+            collectWorkspaceGitStatus(workspaceRoot),
+          ]);
+
+          const completedAt = new Date().toISOString();
+          const cliNames = discoveredClis.length > 0
+            ? discoveredClis.map((cli) => cli.id).join(', ')
+            : 'none';
+          const memPct = telemetry.memory?.usedPct ?? 'n/a';
+          const cpuPct = telemetry.cpu?.usagePct ?? 'n/a';
+          const gitSummary = gitStatus?.available
+            ? `git=${gitStatus.branch || 'detached'} (dirty=${gitStatus.dirtyCount})`
+            : 'git=unconfigured';
+          const summaryText = `[A2A Peer ${nodeId} · ${execMode}] Processed "${prompt.slice(0, 120)}" · CPU ${cpuPct}% · Mem ${memPct}% · CLIs: ${cliNames} · ${gitSummary}`;
+
+          const task = {
+            kind: 'task',
+            id: taskId,
+            contextId,
+            status: {
+              state: 'completed',
+              timestamp: completedAt,
+              message: {
+                kind: 'message',
+                role: 'agent',
+                parts: [{ kind: 'text', text: summaryText }],
+              },
+            },
+            history: [
+              { state: 'submitted', timestamp: createdAt },
+              { state: 'working', timestamp: createdAt },
+              { state: 'completed', timestamp: completedAt },
+            ],
+            artifacts: [
+              {
+                artifactId: `art-${taskId}`,
+                name: 'peer-diagnostics-report',
+                parts: [
+                  { kind: 'text', text: summaryText },
+                  {
+                    kind: 'data',
+                    data: {
+                      nodeId,
+                      hostname,
+                      platform: process.platform,
+                      arch: process.arch,
+                      cpu: telemetry.cpu,
+                      memory: telemetry.memory,
+                      tailscale: telemetry.tailscale,
+                      discoveredClis,
+                      gitStatus,
+                    },
+                  },
+                ],
+              },
+            ],
+            metadata: {
+              nodeId,
+              hostname,
+              execMode,
+              prompt: prompt.slice(0, 240),
+              delegatorAgentId: params.metadata?.delegatorAgentId || null,
+              worktreeBranch: params.metadata?.worktreeBranch || null,
+              durationMs: Math.max(1, Date.now() - startedMs),
+            },
+          };
+
+          recordTask(task);
+          sendPeerJson(res, 200, { jsonrpc: '2.0', id: reqId, result: task });
+          return;
+        }
+
+        if (rpcMethod === 'tasks/get') {
+          const taskId = String(params.id || params.taskId || '').trim();
+          const task = taskId ? tasks.get(taskId) : null;
+          if (!task) {
+            sendPeerJson(res, 404, {
+              jsonrpc: '2.0',
+              id: reqId,
+              error: { code: -32004, message: 'Task not found' },
+            });
+            return;
+          }
+          sendPeerJson(res, 200, { jsonrpc: '2.0', id: reqId, result: task });
+          return;
+        }
+
+        if (rpcMethod === 'tasks/cancel') {
+          const taskId = String(params.id || params.taskId || '').trim();
+          const task = taskId ? tasks.get(taskId) : null;
+          if (!task) {
+            sendPeerJson(res, 404, {
+              jsonrpc: '2.0',
+              id: reqId,
+              error: { code: -32004, message: 'Task not found' },
+            });
+            return;
+          }
+          const nowIso = new Date().toISOString();
+          task.status = {
+            state: 'canceled',
+            timestamp: nowIso,
+            message: {
+              kind: 'message',
+              role: 'agent',
+              parts: [{ kind: 'text', text: `Task ${task.id} canceled on ${nodeId}` }],
+            },
+          };
+          task.history.push({ state: 'canceled', timestamp: nowIso });
+          sendPeerJson(res, 200, { jsonrpc: '2.0', id: reqId, result: task });
+          return;
+        }
+
+        sendPeerJson(res, 404, {
+          jsonrpc: '2.0',
+          id: reqId,
+          error: { code: -32601, message: `Method not found: ${rpcMethod}` },
+        });
+        return;
+      }
+
+      sendPeerJson(res, 404, { ok: false, error: 'Not Found' });
+    } catch (error) {
+      sendPeerJson(res, 500, {
+        jsonrpc: '2.0',
+        id: null,
+        error: { code: -32603, message: error?.message || 'Internal peer error' },
+      });
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    const onError = (err) => {
+      server.off('listening', onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      server.off('error', onError);
+      const addr = server.address();
+      if (addr && typeof addr === 'object') {
+        boundHost = addr.address || bindHost;
+        boundPort = addr.port;
+      }
+      const urlHost = boundHost.includes(':') ? `[${boundHost}]` : boundHost;
+      baseUrl = `http://${urlHost}:${boundPort}`;
+      agentCardUrl = `${baseUrl}/.well-known/agent-card.json`;
+      rpcUrl = `${baseUrl}/a2a`;
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+    server.listen(bindPort, bindHost);
+  });
+
+  const close = () => new Promise((resolve) => {
+    if (typeof server.closeAllConnections === 'function') {
+      server.closeAllConnections();
+    }
+    server.close(() => resolve());
+  });
+
+  return {
+    server,
+    host: boundHost,
+    port: boundPort,
+    baseUrl,
+    agentCardUrl,
+    rpcUrl,
+    nodeId,
+    discoveredClis: initialClis,
+    close,
+  };
+}
+
 export async function collectProbeMetrics(config = {}, state = {}) {
   const sampleDelayMs = Number.isFinite(config.cpuSampleDelayMs)
     ? Math.max(0, config.cpuSampleDelayMs)
@@ -767,10 +1462,52 @@ export async function collectProbeMetrics(config = {}, state = {}) {
     ? Math.max(0, Math.round(state.lastHubRttMs))
     : null;
 
+  const resolvedNodeId = String(config.nodeId || os.hostname().toLowerCase());
+  const configuredHarnesses = Array.isArray(config.harnesses) ? config.harnesses : [];
+  let mergedHarnesses = configuredHarnesses.slice(0, 16);
+
+  if (state.a2aPeer && state.a2aPeer.agentCardUrl && state.a2aPeer.rpcUrl) {
+    const peerClis = Array.isArray(state.a2aPeer.discoveredClis)
+      ? state.a2aPeer.discoveredClis
+      : await discoverLocalCliHarnesses();
+    const peerHarnesses = [
+      {
+        id: `a2a-peer-${resolvedNodeId}`,
+        name: `Ops Probe A2A (${resolvedNodeId})`,
+        harness: 'custom-a2a',
+        version: PROBE_VERSION,
+        status: 'healthy',
+        agentCardUrl: state.a2aPeer.agentCardUrl,
+        rpcUrl: state.a2aPeer.rpcUrl,
+        skills: [
+          { id: 'node-diagnostics', name: 'Node Diagnostics' },
+          { id: 'workspace-inspect', name: 'Workspace Inspect' },
+          { id: 'agent-relay', name: 'Agent Relay' },
+        ],
+      },
+      ...peerClis.map((cli) => ({
+        id: `${resolvedNodeId}-${cli.id}`,
+        name: `${cli.label} (${resolvedNodeId})`,
+        harness: cli.harness,
+        version: cli.version,
+        status: 'healthy',
+        agentCardUrl: state.a2aPeer.agentCardUrl,
+        rpcUrl: state.a2aPeer.rpcUrl,
+        skills: [
+          { id: `cli-${cli.id}`, name: cli.label },
+          { id: 'node-diagnostics', name: 'Node Diagnostics' },
+        ],
+      })),
+    ];
+    const seenIds = new Set(peerHarnesses.map((item) => item.id));
+    const extras = configuredHarnesses.filter((item) => item && !seenIds.has(item.id));
+    mergedHarnesses = [...peerHarnesses, ...extras].slice(0, 16);
+  }
+
   return {
     schemaVersion: SCHEMA_VERSION,
     probeVersion: PROBE_VERSION,
-    nodeId: String(config.nodeId || os.hostname().toLowerCase()),
+    nodeId: resolvedNodeId,
     sentAt: new Date(nowMs).toISOString(),
     deviceType: resolvedDeviceType,
     platform: process.platform,
@@ -793,7 +1530,7 @@ export async function collectProbeMetrics(config = {}, state = {}) {
     services,
     agents,
     mcps: Array.isArray(config.mcps) ? config.mcps.slice(0, 32) : [],
-    harnesses: Array.isArray(config.harnesses) ? config.harnesses.slice(0, 16) : [],
+    harnesses: mergedHarnesses,
     hubRttMs,
   };
 }
@@ -806,15 +1543,29 @@ export function parseCliArgs(argv = []) {
     intervalSec: null,
     showVersion: false,
     showHelp: false,
+    hubUrl: null,
+    nodeId: null,
+    deviceType: null,
+    a2aEnabled: false,
+    a2aHost: null,
+    a2aPort: null,
+    a2aSecret: null,
+    a2aAllowAny: false,
+    a2aWorkspace: null,
+    a2aExecMode: null,
+  };
+
+  const readValue = (flag, index) => {
+    if (index + 1 >= argv.length) {
+      throw new Error(`Missing value for ${flag}`);
+    }
+    return argv[index + 1];
   };
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--config' || arg === '-c') {
-      if (index + 1 >= argv.length) {
-        throw new Error(`Missing value for ${arg}`);
-      }
-      parsed.configPath = argv[index + 1];
+      parsed.configPath = readValue(arg, index);
       index += 1;
     } else if (arg.startsWith('--config=')) {
       parsed.configPath = arg.slice('--config='.length);
@@ -823,13 +1574,54 @@ export function parseCliArgs(argv = []) {
     } else if (arg === '--dry-run') {
       parsed.dryRun = true;
     } else if (arg === '--interval') {
-      if (index + 1 >= argv.length) {
-        throw new Error('Missing value for --interval');
-      }
-      parsed.intervalSec = Number(argv[index + 1]);
+      parsed.intervalSec = Number(readValue(arg, index));
       index += 1;
     } else if (arg.startsWith('--interval=')) {
       parsed.intervalSec = Number(arg.slice('--interval='.length));
+    } else if (arg === '--hub-url') {
+      parsed.hubUrl = readValue(arg, index);
+      index += 1;
+    } else if (arg.startsWith('--hub-url=')) {
+      parsed.hubUrl = arg.slice('--hub-url='.length);
+    } else if (arg === '--node-id') {
+      parsed.nodeId = readValue(arg, index);
+      index += 1;
+    } else if (arg.startsWith('--node-id=')) {
+      parsed.nodeId = arg.slice('--node-id='.length);
+    } else if (arg === '--device-type') {
+      parsed.deviceType = readValue(arg, index);
+      index += 1;
+    } else if (arg.startsWith('--device-type=')) {
+      parsed.deviceType = arg.slice('--device-type='.length);
+    } else if (arg === '--a2a' || arg === '--a2a-enabled') {
+      parsed.a2aEnabled = true;
+    } else if (arg === '--a2a-port') {
+      parsed.a2aPort = Number(readValue(arg, index));
+      index += 1;
+    } else if (arg.startsWith('--a2a-port=')) {
+      parsed.a2aPort = Number(arg.slice('--a2a-port='.length));
+    } else if (arg === '--a2a-host') {
+      parsed.a2aHost = readValue(arg, index);
+      index += 1;
+    } else if (arg.startsWith('--a2a-host=')) {
+      parsed.a2aHost = arg.slice('--a2a-host='.length);
+    } else if (arg === '--a2a-secret') {
+      parsed.a2aSecret = readValue(arg, index);
+      index += 1;
+    } else if (arg.startsWith('--a2a-secret=')) {
+      parsed.a2aSecret = arg.slice('--a2a-secret='.length);
+    } else if (arg === '--a2a-allow-any') {
+      parsed.a2aAllowAny = true;
+    } else if (arg === '--a2a-workspace') {
+      parsed.a2aWorkspace = readValue(arg, index);
+      index += 1;
+    } else if (arg.startsWith('--a2a-workspace=')) {
+      parsed.a2aWorkspace = arg.slice('--a2a-workspace='.length);
+    } else if (arg === '--a2a-exec-mode') {
+      parsed.a2aExecMode = readValue(arg, index);
+      index += 1;
+    } else if (arg.startsWith('--a2a-exec-mode=')) {
+      parsed.a2aExecMode = arg.slice('--a2a-exec-mode='.length);
     } else if (arg === '--version' || arg === '-v') {
       parsed.showVersion = true;
     } else if (arg === '--help' || arg === '-h') {
@@ -849,19 +1641,34 @@ Usage:
   ops-probe [options]
 
 Options:
-  -c, --config <path>   Path to JSON configuration file
-  --interval <sec>      Push interval in seconds (${MIN_INTERVAL_SEC}-${MAX_INTERVAL_SEC}, default ${DEFAULT_INTERVAL_SEC})
-  --once                Collect and send one snapshot, then exit
-  --dry-run             Print JSON payload to stdout without contacting the hub
-  --version             Print probe version
-  -h, --help            Show this help message
+  -c, --config <path>         Path to JSON configuration file
+  --hub-url <url>             Hub base URL override
+  --node-id <id>              Node identifier override
+  --device-type <type>        Device type (hub|server|edge|laptop|mobile|auto)
+  --interval <sec>            Push interval in seconds (${MIN_INTERVAL_SEC}-${MAX_INTERVAL_SEC}, default ${DEFAULT_INTERVAL_SEC})
+  --a2a-enabled               Start Google A2A v0.3 peer HTTP server
+  --a2a-host <host>           A2A peer bind host (defaults to Tailscale IP or 127.0.0.1)
+  --a2a-port <port>           A2A peer bind port (default ${DEFAULT_A2A_PORT})
+  --a2a-secret <secret>       A2A HMAC-SHA256 shared secret (falls back to probe token)
+  --a2a-workspace <dir>       Read-only Git workspace root for workspace-inspect skill
+  --a2a-exec-mode <safe|cli>  A2A peer execution mode (default safe)
+  --a2a-allow-any             Explicitly allow binding A2A peer to 0.0.0.0 or ::
+  --once                      Collect and send one snapshot, then exit
+  --dry-run                   Print JSON payload to stdout without contacting the hub
+  --version                   Print probe version
+  -h, --help                  Show this help message
 
 Environment variables:
-  OPS_PROBE_CONFIG      Config file path
-  OPS_PROBE_HUB_URL     Hub base URL (e.g. https://hub.example.ts.net)
-  OPS_PROBE_NODE_ID     Node identifier (e.g. edge-node-01)
-  OPS_PROBE_TOKEN       Per-node Bearer token
-  OPS_PROBE_INTERVAL    Push interval in seconds
+  OPS_PROBE_CONFIG            Config file path
+  OPS_PROBE_HUB_URL           Hub base URL (e.g. https://hub.example.ts.net)
+  OPS_PROBE_NODE_ID           Node identifier (e.g. edge-node-01)
+  OPS_PROBE_TOKEN             Per-node Bearer token
+  OPS_PROBE_INTERVAL          Push interval in seconds
+  OPS_PROBE_A2A_ENABLED       Enable A2A peer server (true/false)
+  OPS_PROBE_A2A_HOST          A2A peer bind host
+  OPS_PROBE_A2A_PORT          A2A peer port (default ${DEFAULT_A2A_PORT})
+  OPS_PROBE_A2A_SECRET        A2A HMAC-SHA256 shared secret
+  OPS_PROBE_A2A_WORKSPACE     Workspace root for Git inspection
 `);
 }
 
@@ -919,11 +1726,11 @@ export async function loadProbeConfig(options = {}) {
     ? Math.max(MIN_INTERVAL_SEC, Math.min(MAX_INTERVAL_SEC, Math.round(rawInterval)))
     : DEFAULT_INTERVAL_SEC;
 
-  const hubUrl = String(env.OPS_PROBE_HUB_URL || fileConfig.hubUrl || '').trim();
+  const hubUrl = String(cli.hubUrl || env.OPS_PROBE_HUB_URL || fileConfig.hubUrl || '').trim();
   const defaultNodeId = os.hostname().toLowerCase();
-  const nodeId = String(env.OPS_PROBE_NODE_ID || fileConfig.nodeId || defaultNodeId).trim() || defaultNodeId;
+  const nodeId = String(cli.nodeId || env.OPS_PROBE_NODE_ID || fileConfig.nodeId || defaultNodeId).trim() || defaultNodeId;
   const token = String(env.OPS_PROBE_TOKEN || fileConfig.token || '').trim();
-  const rawDeviceType = String(fileConfig.deviceType || 'auto').trim().toLowerCase();
+  const rawDeviceType = String(cli.deviceType || fileConfig.deviceType || 'auto').trim().toLowerCase();
   const deviceType = DEVICE_TYPES.has(rawDeviceType) ? rawDeviceType : 'auto';
   const mounts = Array.isArray(fileConfig.mounts) && fileConfig.mounts.length > 0
     ? fileConfig.mounts.filter((mount) => typeof mount === 'string' && mount.startsWith('/') && !mount.includes('\0'))
@@ -932,6 +1739,37 @@ export async function loadProbeConfig(options = {}) {
   const detectAgents = fileConfig.detectAgents !== false;
   const mcps = Array.isArray(fileConfig.mcps) ? fileConfig.mcps.slice(0, 32) : [];
   const harnesses = Array.isArray(fileConfig.harnesses) ? fileConfig.harnesses.slice(0, 16) : [];
+
+  const fileA2A = fileConfig.a2a && typeof fileConfig.a2a === 'object' ? fileConfig.a2a : {};
+  const envA2AEnabled = parseOptionalBool(env.OPS_PROBE_A2A_ENABLED);
+  const cliA2AImplied = Boolean(
+    cli.a2aEnabled
+    || cli.a2aHost
+    || (cli.a2aPort !== null && cli.a2aPort !== undefined)
+    || cli.a2aSecret
+    || cli.a2aWorkspace
+    || cli.a2aExecMode
+    || cli.a2aAllowAny,
+  );
+  const a2aEnabled = cliA2AImplied
+    ? true
+    : (envA2AEnabled !== null ? envA2AEnabled : Boolean(fileA2A.enabled));
+  const envA2APort = env.OPS_PROBE_A2A_PORT !== undefined && String(env.OPS_PROBE_A2A_PORT).trim() !== ''
+    ? Number(env.OPS_PROBE_A2A_PORT)
+    : undefined;
+  const rawA2APort = cli.a2aPort ?? envA2APort ?? fileA2A.port ?? DEFAULT_A2A_PORT;
+  const a2aPort = Number.isInteger(rawA2APort) && rawA2APort >= 0 && rawA2APort <= 65535
+    ? rawA2APort
+    : DEFAULT_A2A_PORT;
+  const a2aHost = String(cli.a2aHost || env.OPS_PROBE_A2A_HOST || fileA2A.host || '').trim() || null;
+  const a2aSharedSecret = String(
+    cli.a2aSecret || env.OPS_PROBE_A2A_SECRET || env.OPS_A2A_SHARED_SECRET || fileA2A.sharedSecret || '',
+  ).trim();
+  const rawExecMode = String(cli.a2aExecMode || fileA2A.execMode || 'safe').trim().toLowerCase();
+  const a2aExecMode = rawExecMode === 'cli' ? 'cli' : 'safe';
+  const rawWorkspace = String(cli.a2aWorkspace || env.OPS_PROBE_A2A_WORKSPACE || fileA2A.workspaceRoot || '').trim();
+  const a2aWorkspaceRoot = rawWorkspace ? path.resolve(rawWorkspace) : null;
+  const a2aAllowAny = Boolean(cli.a2aAllowAny || fileA2A.allowAny);
 
   return {
     configPath: resolvedConfigPath,
@@ -945,6 +1783,15 @@ export async function loadProbeConfig(options = {}) {
     detectAgents,
     mcps,
     harnesses,
+    a2a: {
+      enabled: a2aEnabled,
+      host: a2aHost,
+      port: a2aPort,
+      sharedSecret: a2aSharedSecret,
+      execMode: a2aExecMode,
+      workspaceRoot: a2aWorkspaceRoot,
+      allowAny: a2aAllowAny,
+    },
     once: Boolean(cli.once),
     dryRun: Boolean(cli.dryRun),
   };
@@ -1102,43 +1949,63 @@ async function runCli(argv) {
     prevCpu: null,
     prevNet: null,
     lastHubRttMs: null,
+    a2aPeer: null,
   };
+
+  if (config.a2a?.enabled) {
+    try {
+      state.a2aPeer = await startA2APeerServer(config);
+      process.stderr.write(
+        `[ops-probe] A2A v${A2A_PROTOCOL_VERSION} peer listening on ${state.a2aPeer.baseUrl} (card: ${state.a2aPeer.agentCardUrl})\n`,
+      );
+    } catch (error) {
+      process.stderr.write(`[ops-probe] Failed to start A2A peer server: ${error.message}\n`);
+      process.exitCode = 1;
+      return;
+    }
+  }
 
   let consecutiveFailures = 0;
 
-  while (!shutdownController.signal.aborted) {
-    if (!config.dryRun && state.lastHubRttMs === null) {
-      state.lastHubRttMs = await probeHubTcpRtt(config.hubUrl);
-    }
-
-    const payload = await collectProbeMetrics(config, state);
-
-    if (config.dryRun) {
-      process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
-      if (config.once) return;
-      await sleep(config.intervalSec * 1000, shutdownController.signal);
-      continue;
-    }
-
-    const result = await pushTelemetry(config, payload, {
-      signal: shutdownController.signal,
-    });
-
-    if (result.ok) {
-      consecutiveFailures = 0;
-      state.lastHubRttMs = result.rttMs;
-      if (config.once) return;
-      await sleep(config.intervalSec * 1000, shutdownController.signal);
-    } else {
-      consecutiveFailures += 1;
-      process.stderr.write(`[ops-probe] Push failed (attempt ${consecutiveFailures}): ${result.error}\n`);
-      if (config.once) {
-        process.exitCode = 1;
-        return;
+  try {
+    while (!shutdownController.signal.aborted) {
+      if (!config.dryRun && state.lastHubRttMs === null) {
+        state.lastHubRttMs = await probeHubTcpRtt(config.hubUrl);
       }
-      const backoffMs = computeBackoffMs(config.intervalSec, consecutiveFailures);
-      process.stderr.write(`[ops-probe] Retrying in ${Math.round(backoffMs / 1000)}s.\n`);
-      await sleep(backoffMs, shutdownController.signal);
+
+      const payload = await collectProbeMetrics(config, state);
+
+      if (config.dryRun) {
+        process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`);
+        if (config.once) return;
+        await sleep(config.intervalSec * 1000, shutdownController.signal);
+        continue;
+      }
+
+      const result = await pushTelemetry(config, payload, {
+        signal: shutdownController.signal,
+      });
+
+      if (result.ok) {
+        consecutiveFailures = 0;
+        state.lastHubRttMs = result.rttMs;
+        if (config.once) return;
+        await sleep(config.intervalSec * 1000, shutdownController.signal);
+      } else {
+        consecutiveFailures += 1;
+        process.stderr.write(`[ops-probe] Push failed (attempt ${consecutiveFailures}): ${result.error}\n`);
+        if (config.once) {
+          process.exitCode = 1;
+          return;
+        }
+        const backoffMs = computeBackoffMs(config.intervalSec, consecutiveFailures);
+        process.stderr.write(`[ops-probe] Retrying in ${Math.round(backoffMs / 1000)}s.\n`);
+        await sleep(backoffMs, shutdownController.signal);
+      }
+    }
+  } finally {
+    if (state.a2aPeer) {
+      await state.a2aPeer.close();
     }
   }
 }

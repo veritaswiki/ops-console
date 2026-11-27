@@ -128,6 +128,7 @@ export function getSecurityHeaders(opts = {}) {
       "img-src 'self' data:",
       "connect-src 'self'",
       "base-uri 'self'",
+      "frame-src 'self' https: http:",
     ];
     if (!allowIframe) {
       directives.push("frame-ancestors 'none'");

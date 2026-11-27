@@ -45,16 +45,17 @@ export interface ConsoleModule {
   icon: React.ComponentType<{ className?: string; strokeWidth?: number }>;
   dataDeps: ModuleDataDep[];
   badgeKey?: 'alerts' | 'failedServices';
+  placement?: 'nav' | 'footer';
   eager?: boolean;
   prefetch?: () => Promise<unknown>;
   benchmarks: ModuleBenchmarkSpec;
 }
 
 export const MODULE_DOMAINS: readonly ModuleDomainConfig[] = [
-  { id: 'agent', title: 'Harness', description: '极简 Agent 入口、Linear 任务看板、n8n 分配图谱、Bot、GitHub 与设置', primary: true },
-  { id: 'observe', title: '监控与节点', description: '全栈态势、告警事件与全球节点' },
+  { id: 'agent', title: 'Harness', description: 'Agent 对话与执行、任务看板、分配图谱、GitHub 与 Bot', primary: true },
+  { id: 'observe', title: '监控与观测', description: '系统总览、节点与探针及告警中心' },
   { id: 'infra', title: '基础设施', description: '受管服务、插件接入、全节点 MCP、记忆引擎与网络' },
-  { id: 'operate', title: '运维', description: '结构化日志追踪、定时任务、Runbook 与审计' },
+  { id: 'operate', title: '运维与审计', description: '统一日志追踪、定时任务、Runbook 与操作审计' },
 ] as const;
 
 export const loadAlertsView = () => import('../views/AlertsView');
@@ -122,21 +123,6 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     },
   },
   {
-    id: 'bots',
-    domain: 'agent',
-    label: 'Bot',
-    shortDesc: '创建与管理飞书、Telegram、Discord、Slack 等多渠道自动化 Bot',
-    chord: 'b',
-    keywords: ['bots', 'bot', 'feishu', 'telegram', 'discord', 'slack', 'webhook', '机器人'],
-    icon: Bot,
-    dataDeps: ['snapshot'],
-    prefetch: loadBotsView,
-    benchmarks: {
-      references: ['Linear Agents & Bots', 'Slack Apps'],
-      migratedCapabilities: ['独立多渠道 Bot 编排与事件模拟触发'],
-    },
-  },
-  {
     id: 'github',
     domain: 'agent',
     label: 'GitHub',
@@ -152,14 +138,30 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     },
   },
   {
+    id: 'bots',
+    domain: 'agent',
+    label: 'Bot',
+    shortDesc: '创建与管理飞书、Telegram、Discord、Slack 等多渠道自动化 Bot',
+    chord: 'b',
+    keywords: ['bots', 'bot', 'feishu', 'telegram', 'discord', 'slack', 'webhook', '机器人'],
+    icon: Bot,
+    dataDeps: ['snapshot'],
+    prefetch: loadBotsView,
+    benchmarks: {
+      references: ['Linear Agents & Bots', 'Slack Apps'],
+      migratedCapabilities: ['独立多渠道 Bot 编排与事件模拟触发'],
+    },
+  },
+  {
     id: 'agent-settings',
     domain: 'agent',
     label: '设置',
-    shortDesc: 'Harness 高级设置：总指挥分工、迭代路线图、A2A 路由、集群拓扑、蜂群引擎、安全护栏与网关',
+    shortDesc: '外观偏好、多机 Agent 与 A2A 互联、编排拓扑、安全护栏及网关设置',
     chord: 'e',
     keywords: ['settings', 'config', 'a2a', 'swarm', 'governance', 'gateway', '设置', '分工', '高级', '护栏'],
     icon: SlidersHorizontal,
     dataDeps: ['snapshot'],
+    placement: 'footer',
     prefetch: loadAgentSettingsView,
     benchmarks: {
       references: ['Codex Settings', 'Google A2A Protocol'],
@@ -184,12 +186,27 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     },
   },
   {
+    id: 'fleet',
+    domain: 'observe',
+    label: '节点与探针',
+    shortDesc: '世界地图拓扑、多维排序对比矩阵、RTT 延迟条与远程指令队列',
+    chord: 'f',
+    keywords: ['fleet', 'map', 'probe', '节点', '全球节点', '地图', '探针', '手机'],
+    icon: Globe,
+    dataDeps: ['snapshot', 'probes'],
+    prefetch: loadFleetView,
+    benchmarks: {
+      references: ['Tailscale Admin', 'Teleport', 'Uptime Kuma'],
+      migratedCapabilities: ['多节点状态/CPU/内存/RTT 排序对比矩阵', '行内延迟可视化色条与 IP 快复制', '一次性令牌注册与 Pull-only 指令队列'],
+    },
+  },
+  {
     id: 'alerts',
     domain: 'observe',
-    label: '告警与事件',
+    label: '告警中心',
     shortDesc: '多档静默倒计时、批量 Ack、规则搜索过滤、30 天 SLA 与复盘',
     chord: 'a',
-    keywords: ['alerts', 'sla', 'incident', 'postmortem', '告警', '事件', '复盘', '规则'],
+    keywords: ['alerts', 'sla', 'incident', 'postmortem', '告警', '告警与事件', '事件', '复盘', '规则'],
     icon: Bell,
     dataDeps: ['snapshot', 'ops'],
     badgeKey: 'alerts',
@@ -197,21 +214,6 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     benchmarks: {
       references: ['PagerDuty', 'Alertmanager', 'Sentry'],
       migratedCapabilities: ['多档维护静默与实时倒计时条', '告警队列筛选与批量确认', '声明式规则搜索与状态快筛'],
-    },
-  },
-  {
-    id: 'fleet',
-    domain: 'observe',
-    label: '全球节点',
-    shortDesc: '世界地图拓扑、多维排序对比矩阵、RTT 延迟条与远程指令队列',
-    chord: 'f',
-    keywords: ['fleet', 'map', 'probe', '节点', '地图', '探针', '手机'],
-    icon: Globe,
-    dataDeps: ['snapshot', 'probes'],
-    prefetch: loadFleetView,
-    benchmarks: {
-      references: ['Tailscale Admin', 'Teleport', 'Uptime Kuma'],
-      migratedCapabilities: ['多节点状态/CPU/内存/RTT 排序对比矩阵', '行内延迟可视化色条与 IP 快复制', '一次性令牌注册与 Pull-only 指令队列'],
     },
   },
 
@@ -341,14 +343,21 @@ export function getModuleByChord(key: string): ViewId | null {
   return CHORD_MAP.get(String(key || '').toLowerCase()) || null;
 }
 
-export function getModulesGroupedByDomain(): Array<{
+export function getModulesGroupedByDomain(options?: { includeFooter?: boolean }): Array<{
   domain: ModuleDomainConfig;
   modules: ConsoleModule[];
 }> {
+  const includeFooter = Boolean(options?.includeFooter);
   return MODULE_DOMAINS.map((domain) => ({
     domain,
-    modules: CONSOLE_MODULES.filter((m) => m.domain === domain.id),
+    modules: CONSOLE_MODULES.filter(
+      (m) => m.domain === domain.id && (includeFooter || m.placement !== 'footer'),
+    ),
   }));
+}
+
+export function getFooterModules(): ConsoleModule[] {
+  return CONSOLE_MODULES.filter((m) => m.placement === 'footer');
 }
 
 export function prefetchModule(id: ViewId): void {

@@ -137,6 +137,8 @@
         "127.0.0.1:14242"
       ],
       "healthUrl": "http://127.0.0.1:14242/health",
+      "adminUrl": "http://127.0.0.1:14242/app",
+      "adminLabel": "Nowledge Mem Web",
       "risk": "standard"
     },
     {
@@ -151,6 +153,8 @@
       ],
       "healthUrl": "http://127.0.0.1:1933/health",
       "tailnetUrl": "https://node.example.ts.net:10000",
+      "adminUrl": "http://127.0.0.1:1933/studio/",
+      "adminLabel": "OpenViking Studio",
       "dependsOn": [
         "rerank-gateway",
         "emb-gateway"

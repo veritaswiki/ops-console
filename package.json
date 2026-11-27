@@ -52,7 +52,8 @@
     "test": "node --test test/*.test.mjs",
     "check": "node scripts/check.mjs"
   },
-  "dependencies": {
+  "dependencies": {},
+  "devDependencies": {
     "@fontsource-variable/jetbrains-mono": "^5.3.0",
     "@fontsource-variable/plus-jakarta-sans": "^5.3.0",
     "@number-flow/react": "^0.6.2",
