@@ -5,6 +5,7 @@ import path from 'node:path';
 import zlib from 'node:zlib';
 import { ActionController } from './actions.mjs';
 import { A2AOrchestrator } from './a2a-orchestrator.mjs';
+import { AgentModuleHost } from './agent-module-host.mjs';
 import {
   buildHubAgentCard,
   buildNodeConnectProfiles,
@@ -35,8 +36,10 @@ import { LogService } from './logs.mjs';
 import { McpFleetManager } from './mcp-fleet.mjs';
 import { isTailscaleOrLoopbackIp, ProbeRegistry, validateNodeId } from './probes.mjs';
 import { PluginManager } from './plugins/manager.mjs';
+import { validatePluginId } from './plugins/sdk.mjs';
 import { maskClientIp } from './redact.mjs';
 import { RunbookEngine } from './runbooks.mjs';
+import { SelfEvolutionEngine } from './self-evolution.mjs';
 import { handleServiceEmbedProxy } from './service-proxy.mjs';
 import { TelemetryStore } from './store.mjs';
 import { TimeSeriesStore } from './timeseries.mjs';
@@ -286,7 +289,7 @@ export function createOpsConsole(options = {}) {
   });
   const probeRegistry = options.probeRegistry || new ProbeRegistry({ config, logger, timeseries });
   const eventBus = options.eventBus || new ControlPlaneEventBus({ maxStreams: config.security?.maxSseStreams || 8 });
-  const pluginManager = options.pluginManager || new PluginManager({ config, logger });
+  const pluginManager = options.pluginManager || new PluginManager({ config, logger, eventBus });
   const hub = options.hub || new ConnectorHub({ config, cache, demoProvider, probeRegistry, store, pluginManager });
   const logs = options.logs || new LogService({ config, logger, demoProvider });
   const actions = options.actions || new ActionController({ config, logger, cache, demoProvider });
@@ -330,19 +333,31 @@ export function createOpsConsole(options = {}) {
   });
   const staticCache = new Map();
   const staticInflight = new Map();
+  const repoDir = options.repoDir || PACKAGE_ROOT;
+  const agentModuleHost = options.agentModuleHost || new AgentModuleHost({
+    config,
+    repoDir,
+    a2aOrchestrator,
+    logger,
+    eventBus,
+  });
   const updater = options.updater || new IncrementalUpdater({
     config,
     logger,
     cache,
     pluginManager,
     eventBus,
-    repoDir: options.repoDir || PACKAGE_ROOT,
+    repoDir,
     publicDir,
     supervised: Boolean(options.supervised),
     onAssetsInvalidated: () => {
       staticCache.clear();
       staticInflight.clear();
     },
+    onDeclarativeReload: ({ force, reason, actor, prMeta }) =>
+      agentModuleHost.syncDeclarativeAgents({ force, reason, actor, prMeta, emitEvent: false }),
+    onModuleReload: ({ moduleId, force, reason, actor, prMeta }) =>
+      agentModuleHost.reloadAllModules({ moduleId, force, reason, actor, prMeta, emitEvent: false }),
     onConfigReloaded: (diff, nextCfg) => {
       logger.setLevel(nextCfg.logging?.level || 'info', {
         maxBytes: nextCfg.logging?.maxBytes,
@@ -358,6 +373,17 @@ export function createOpsConsole(options = {}) {
       }
     },
     onRestartRequested: options.onRestartRequested || null,
+  });
+  const selfEvolution = options.selfEvolution || new SelfEvolutionEngine({
+    config,
+    repoDir,
+    a2aOrchestrator,
+    moduleHost: agentModuleHost,
+    updater,
+    logger,
+    eventBus,
+    verifyRunner: options.evolutionVerifyRunner || null,
+    prPublisher: options.evolutionPrPublisher || null,
   });
   const allowIframe = Boolean(config.security?.allowIframe);
   const secHeaders = (isHtml = false) => getSecurityHeaders({ isHtml, allowIframe });
@@ -3088,6 +3114,248 @@ export function createOpsConsole(options = {}) {
         return;
       }
 
+      // ─── Hot-Swap Agent Modules & Declarative Sync (/api/agents/modules/*) ──
+      if (method === 'GET' && pathname === '/api/agents/modules') {
+        sendJson(res, 200, agentModuleHost.getState(), {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/agents/modules/reload') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const scopes = ['module-hot-swap'];
+        if (data.syncDeclarative !== false) scopes.push('agent-declarative');
+        const reload = await updater.hotReload({
+          scopes,
+          force: Boolean(data.force),
+          reason: String(data.reason || 'manual-module-reload'),
+          actor: 'web',
+          moduleId: data.moduleId ? String(data.moduleId) : null,
+        });
+        sendJson(res, 200, { ok: true, reload, state: agentModuleHost.getState() }, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/agents/modules/declarative/sync') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const reload = await updater.hotReload({
+          scopes: ['agent-declarative'],
+          force: Boolean(data.force),
+          reason: String(data.reason || 'manual-declarative-sync'),
+          actor: 'web',
+        });
+        sendJson(res, 200, { ok: true, reload, state: agentModuleHost.getState() }, {}, req);
+        return;
+      }
+
+      const moduleActionMatch = pathname.match(/^\/api\/agents\/modules\/([^/]+)\/(reload|rollback|invoke)$/);
+      if (method === 'POST' && moduleActionMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const moduleId = decodeURIComponent(moduleActionMatch[1]);
+        const action = moduleActionMatch[2];
+        const { data } = await readBody(req);
+        if (action === 'reload') {
+          const result = await agentModuleHost.reloadModule(moduleId, {
+            force: data.force !== false,
+            reason: String(data.reason || 'manual-module-swap'),
+            actor: 'web',
+          });
+          sendJson(res, 200, result, {}, req);
+          return;
+        }
+        if (action === 'rollback') {
+          const result = await agentModuleHost.rollbackModule(moduleId, {
+            actor: 'web',
+            reason: String(data.reason || 'manual-slot-rollback'),
+          });
+          sendJson(res, 200, result, {}, req);
+          return;
+        }
+        if (action === 'invoke') {
+          const input = data.input && typeof data.input === 'object' ? data.input : {};
+          const result = await agentModuleHost.invokeModule(moduleId, input, { actor: 'web' });
+          sendJson(res, 200, result, {}, req);
+          return;
+        }
+      }
+
+      // ─── Pluggable Isolated Module Sub-Routes (/api/modules/<id>/*) ────────
+      if (method === 'GET' && pathname === '/api/modules') {
+        sendJson(res, 200, {
+          ok: true,
+          pluginModules: pluginManager.listModuleRoutes(),
+          agentModules: agentModuleHost.getState().modules,
+        }, {}, req);
+        return;
+      }
+
+      const moduleConfirmMatch = pathname.match(/^\/api\/modules\/([^/]+)\/confirm-token$/);
+      if (method === 'POST' && moduleConfirmMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const pluginId = decodeURIComponent(moduleConfirmMatch[1]);
+        const { data } = await readBody(req);
+        const issued = pluginManager.issueModuleConfirmToken(pluginId, data.method || 'POST', data.path || '/');
+        sendJson(res, 200, issued, {}, req);
+        return;
+      }
+
+      const pluggableModuleMatch = pathname.match(/^\/api\/modules\/([^/]+)(\/.*)?$/);
+      if (pluggableModuleMatch) {
+        const pluginId = decodeURIComponent(pluggableModuleMatch[1]);
+        const subPath = pluggableModuleMatch[2] || '/';
+        if (!validatePluginId(pluginId)) {
+          sendJson(res, 400, { ok: false, error: `Invalid module id: ${pluginId}` });
+          return;
+        }
+        const matched = pluginManager.matchModuleRoute(pluginId, method, subPath);
+        if (!matched) {
+          sendJson(res, 404, { ok: false, error: `Unknown module route: ${method} ${pathname}` });
+          return;
+        }
+        if (!matched.route.readOnly && config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        let body = {};
+        if (method === 'POST' || method === 'PUT' || method === 'PATCH') {
+          const parsed = await readBody(req);
+          body = parsed.data || {};
+        }
+        if (matched.route.requireConfirm) {
+          const confirmToken = String(body.confirmToken || req.headers['x-confirm-token'] || '');
+          if (!pluginManager.consumeModuleConfirmToken(confirmToken, pluginId, method, subPath)) {
+            sendJson(res, 409, { ok: false, error: 'Module route requires a valid one-time confirmToken', confirmRequired: true });
+            return;
+          }
+        }
+        const query = Object.fromEntries(url.searchParams.entries());
+        const dispatched = await pluginManager.dispatchModuleRoute(pluginId, method, subPath, { query, body, actor: 'web' });
+        sendJson(res, dispatched.statusCode, dispatched.body, {}, req);
+        return;
+      }
+
+      // ─── PR-Driven Self-Evolution Engine (/api/evolution/*) ─────────────────
+      if (method === 'GET' && pathname === '/api/evolution/proposals') {
+        const status = url.searchParams.get('status') || null;
+        const targetLayer = url.searchParams.get('targetLayer') || null;
+        const btwThreadId = url.searchParams.get('btwThreadId') || null;
+        const state = selfEvolution.getState();
+        const proposals = (status || targetLayer || btwThreadId)
+          ? selfEvolution.listProposals({ status, targetLayer, btwThreadId })
+          : state.proposals;
+        sendJson(res, 200, { ...state, proposals }, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/evolution/confirm') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const issued = selfEvolution.issueConfirmToken(String(data.action || 'apply'));
+        sendJson(res, 200, issued, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/evolution/proposals') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const snapshot = await hub.collectSnapshot(false).catch(() => null);
+        const fleetNodes = snapshot?.fleet?.nodes || [];
+        const mcpSummary = mcpFleet.list(fleetNodes)?.summary || null;
+        const result = await selfEvolution.createProposal(data, {
+          actor: 'web',
+          snapshot,
+          mcpSummary,
+        });
+        sendJson(res, 201, result, {}, req);
+        return;
+      }
+
+      const evoDetailMatch = pathname.match(/^\/api\/evolution\/proposals\/([^/]+)$/);
+      if (method === 'GET' && evoDetailMatch) {
+        const proposalId = decodeURIComponent(evoDetailMatch[1]);
+        const proposal = selfEvolution._serializeProposal(selfEvolution.getProposal(proposalId));
+        sendJson(res, 200, { ok: true, proposal }, {}, req);
+        return;
+      }
+
+      const evoActionMatch = pathname.match(/^\/api\/evolution\/proposals\/([^/]+)\/(sandbox|verify|publish-pr|apply|rollback|cleanup)$/);
+      if (evoActionMatch && (method === 'POST' || (method === 'DELETE' && evoActionMatch[2] === 'sandbox'))) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const proposalId = decodeURIComponent(evoActionMatch[1]);
+        const action = evoActionMatch[2];
+        if (method === 'DELETE' || action === 'cleanup') {
+          const result = await selfEvolution.cleanupSandbox(proposalId, { actor: 'web' });
+          sendJson(res, 200, result, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        if (action === 'sandbox') {
+          const result = await selfEvolution.prepareSandbox(proposalId, { actor: 'web' });
+          sendJson(res, 200, result, {}, req);
+          return;
+        }
+        if (action === 'verify') {
+          const result = await selfEvolution.verifyProposal(proposalId, {
+            actor: 'web',
+            runRepoCheck: Boolean(data.runRepoCheck),
+          });
+          sendJson(res, 200, result, {}, req);
+          return;
+        }
+        if (action === 'publish-pr') {
+          const result = await selfEvolution.publishProposalPr(proposalId, {
+            confirmToken: String(data.confirmToken || ''),
+            pushRemote: data.pushRemote !== false,
+            createPr: data.createPr !== false,
+            draft: Boolean(data.draft),
+            remote: data.remote ? String(data.remote) : null,
+            actor: 'web',
+          });
+          sendJson(res, 200, result, {}, req);
+          return;
+        }
+        if (action === 'apply') {
+          const result = await selfEvolution.applyProposal(proposalId, {
+            confirmToken: String(data.confirmToken || ''),
+            applyMode: String(data.applyMode || 'auto'),
+            autoRestart: Boolean(data.autoRestart),
+            actor: 'web',
+          });
+          sendJson(res, 200, result, {}, req);
+          return;
+        }
+        if (action === 'rollback') {
+          const result = await selfEvolution.rollbackProposal(proposalId, {
+            confirmToken: String(data.confirmToken || ''),
+            actor: 'web',
+          });
+          sendJson(res, 200, result, {}, req);
+          return;
+        }
+      }
+
       if (pathname.startsWith('/api/')) {
         sendJson(res, 404, { ok: false, error: `Unknown API route: ${method} ${pathname}` });
         return;
@@ -3110,6 +3378,9 @@ export function createOpsConsole(options = {}) {
           error: err.message || 'Internal server error',
           ...(err.requiresConfirm ? { requiresConfirm: true } : {}),
           ...(Array.isArray(err.dirtyFiles) ? { dirtyFiles: err.dirtyFiles } : {}),
+          ...(err.preservedSlot ? { preservedSlot: err.preservedSlot } : {}),
+          ...(err.rolledBack ? { rolledBack: true } : {}),
+          ...(err.autoRolledBack ? { autoRolledBack: true } : {}),
         }, {}, req);
       } else if (!res.writableEnded) {
         res.end();
@@ -3137,6 +3408,9 @@ export function createOpsConsole(options = {}) {
       await linearCommander.init();
       await botFleet.init();
       await pluginManager.loadExternalPlugins();
+      await pluginManager.activateRuntimes();
+      await agentModuleHost.init();
+      await selfEvolution.init();
       await updater.init();
       await store.hydrateTimeSeries(timeseries, { limitPerSeries: config.fleet?.historyPoints || 60 });
       for (const host of hosts) {
@@ -3176,6 +3450,8 @@ export function createOpsConsole(options = {}) {
 
   async function stop() {
     updater.stopWatchers();
+    await agentModuleHost.dispose();
+    await pluginManager.disposeAll('shutdown');
     logs.closeAllStreams();
     eventBus.closeAll();
     await probeRegistry.flush();
@@ -3216,6 +3492,8 @@ export function createOpsConsole(options = {}) {
     logs,
     actions,
     updater,
+    agentModuleHost,
+    selfEvolution,
     servers,
     addresses,
     start,

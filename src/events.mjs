@@ -22,6 +22,34 @@ export class ControlPlaneEventBus {
     return event;
   }
 
+  subscribe(eventTypes, listener) {
+    if (typeof listener !== 'function') {
+      throw new Error('ControlPlaneEventBus.subscribe requires a listener function');
+    }
+    const filterAll = eventTypes === '*' || eventTypes == null;
+    const allowed = filterAll
+      ? null
+      : new Set((Array.isArray(eventTypes) ? eventTypes : [eventTypes]).map((item) => String(item)));
+    const wrapped = (evt) => {
+      if (allowed && !allowed.has(evt.type)) return;
+      try {
+        const maybePromise = listener(evt);
+        if (maybePromise && typeof maybePromise.catch === 'function') {
+          maybePromise.catch(() => {});
+        }
+      } catch {
+        // isolate subscriber errors from the control-plane bus
+      }
+    };
+    this.emitter.on('event', wrapped);
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      this.emitter.off('event', wrapped);
+    };
+  }
+
   getActiveCount() {
     return this.activeStreams.size;
   }

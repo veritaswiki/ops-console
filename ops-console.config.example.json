@@ -508,6 +508,8 @@
     "watchConfig": true,
     "watchPlugins": true,
     "watchPublic": true,
+    "watchModules": true,
+    "watchAgents": true,
     "watchDebounceMs": 500,
     "autoCheckIntervalSec": 0,
     "allowSelfRestart": true

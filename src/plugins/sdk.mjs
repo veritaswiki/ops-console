@@ -13,9 +13,21 @@ export const PLUGIN_CATEGORIES = [
 const VALID_CATEGORIES = new Set(PLUGIN_CATEGORIES.map((c) => c.id));
 const PLUGIN_ID_RE = /^[a-z0-9][a-z0-9-]{1,47}$/;
 const CLI_BIN_RE = /^[A-Za-z0-9._/-]{1,128}$/;
+const MODULE_SUBPATH_RE = /^\/[A-Za-z0-9/_:-]{0,128}$/;
+const ALLOWED_ROUTE_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
 export function validatePluginId(id) {
   return typeof id === 'string' && PLUGIN_ID_RE.test(id);
+}
+
+export function validateModuleSubpath(rawPath) {
+  const str = String(rawPath ?? '').trim();
+  if (!str) return { ok: false, error: 'Module route path must not be empty' };
+  const normalized = str === '/' ? '/' : str.replace(/\/+$/, '');
+  if (!MODULE_SUBPATH_RE.test(normalized) || normalized.includes('..') || normalized.includes('//')) {
+    return { ok: false, error: `Invalid module route path: ${str}` };
+  }
+  return { ok: true, value: normalized };
 }
 
 export function validateHttpUrl(rawUrl) {
@@ -163,6 +175,52 @@ export function definePlugin(spec) {
   if (typeof spec.collect !== 'function') {
     throw new Error(`Plugin "${spec.id}" must implement an async collect(cfg, ctx) function`);
   }
+  const routes = [];
+  if (Array.isArray(spec.routes)) {
+    for (const route of spec.routes) {
+      if (!route || typeof route !== 'object') {
+        throw new Error(`Plugin "${spec.id}" route entry must be an object`);
+      }
+      const method = String(route.method || 'GET').trim().toUpperCase();
+      if (!ALLOWED_ROUTE_METHODS.has(method)) {
+        throw new Error(`Plugin "${spec.id}" route has unsupported method: ${method}`);
+      }
+      const pathCheck = validateModuleSubpath(route.path);
+      if (!pathCheck.ok) {
+        throw new Error(`Plugin "${spec.id}" ${pathCheck.error}`);
+      }
+      if (typeof route.handler !== 'function') {
+        throw new Error(`Plugin "${spec.id}" route ${method} ${pathCheck.value} requires a handler function`);
+      }
+      const readOnly = route.readOnly === true || method === 'GET';
+      routes.push(Object.freeze({
+        method,
+        path: pathCheck.value,
+        readOnly,
+        requireConfirm: Boolean(route.requireConfirm),
+        description: String(route.description || '').slice(0, 160),
+        handler: route.handler,
+      }));
+    }
+  }
+  const subscriptions = [];
+  if (Array.isArray(spec.subscriptions)) {
+    for (const sub of spec.subscriptions) {
+      if (!sub || typeof sub !== 'object' || typeof sub.handler !== 'function') {
+        throw new Error(`Plugin "${spec.id}" subscription requires a handler function`);
+      }
+      const types = sub.type == null
+        ? '*'
+        : (Array.isArray(sub.type) ? sub.type.map((item) => String(item)) : [String(sub.type)]);
+      subscriptions.push(Object.freeze({ type: types, handler: sub.handler }));
+    }
+  }
+  if (typeof spec.onEvent === 'function') {
+    subscriptions.push(Object.freeze({ type: '*', handler: spec.onEvent }));
+  }
+  const baseCapabilities = Array.isArray(spec.capabilities) ? spec.capabilities.map(String) : ['health'];
+  if (routes.length > 0 && !baseCapabilities.includes('routes')) baseCapabilities.push('routes');
+  if (subscriptions.length > 0 && !baseCapabilities.includes('events')) baseCapabilities.push('events');
 
   return Object.freeze({
     id: spec.id,
@@ -179,10 +237,14 @@ export function definePlugin(spec) {
       endpoints: Array.isArray(spec.officialSpec?.endpoints) ? spec.officialSpec.endpoints.map(String) : [],
       auth: String(spec.officialSpec?.auth || 'None'),
     },
-    capabilities: Array.isArray(spec.capabilities) ? spec.capabilities.map(String) : ['health'],
+    capabilities: baseCapabilities,
     configSchema: Array.isArray(spec.configSchema) ? spec.configSchema : [],
     defaultConfig: { enabled: false, ...(spec.defaultConfig || {}) },
     agentMatchers: Array.isArray(spec.agentMatchers) ? spec.agentMatchers : [],
+    routes: Object.freeze(routes),
+    subscriptions: Object.freeze(subscriptions),
+    init: typeof spec.init === 'function' ? spec.init : null,
+    dispose: typeof spec.dispose === 'function' ? spec.dispose : null,
     collect: spec.collect,
     testConnection: typeof spec.testConnection === 'function' ? spec.testConnection : null,
     search: typeof spec.search === 'function' ? spec.search : null,

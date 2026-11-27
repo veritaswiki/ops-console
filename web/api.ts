@@ -16,6 +16,10 @@ import type {
   A2ASwarmMetrics,
   A2ATaskRecord,
   A2ATriggerEvent,
+  AgentModuleInvokeResponse,
+  AgentModuleReloadResponse,
+  AgentModuleRollbackResponse,
+  AgentModulesStateResponse,
   AiOpsContextResponse,
   AiPreflightRequest,
   AiPreflightResponse,
@@ -28,6 +32,11 @@ import type {
   BotItem,
   CloudflareSnapshot,
   ConfigStudioResponse,
+  EvolutionConfirmAction,
+  EvolutionConfirmResponse,
+  EvolutionFilePatchInput,
+  EvolutionProposalActionResponse,
+  EvolutionStateResponse,
   FleetMcpServer,
   GatewayTelemetryResponse,
   GithubOverviewResponse,
@@ -1412,6 +1421,148 @@ export const triggerGracefulRestart = (payload: {
     body: JSON.stringify(payload),
   });
 
+export const fetchAgentModules = () =>
+  apiRequest<AgentModulesStateResponse>('/api/agents/modules');
+
+export const reloadAgentModules = (payload: {
+  moduleId?: string;
+  force?: boolean;
+  syncDeclarative?: boolean;
+  reason?: string;
+} = {}) =>
+  apiRequest<AgentModuleReloadResponse>('/api/agents/modules/reload', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const syncDeclarativeAgents = (payload: {
+  force?: boolean;
+  reason?: string;
+} = {}) =>
+  apiRequest<AgentModuleReloadResponse>('/api/agents/modules/declarative/sync', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const reloadSingleAgentModule = (
+  moduleId: string,
+  payload: { force?: boolean; reason?: string } = {},
+) =>
+  apiRequest<AgentModuleReloadResponse>(`/api/agents/modules/${encodeURIComponent(moduleId)}/reload`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const rollbackSingleAgentModule = (
+  moduleId: string,
+  payload: { reason?: string } = {},
+) =>
+  apiRequest<AgentModuleRollbackResponse>(`/api/agents/modules/${encodeURIComponent(moduleId)}/rollback`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const invokeAgentModule = (
+  moduleId: string,
+  input: Record<string, unknown> = {},
+) =>
+  apiRequest<AgentModuleInvokeResponse>(`/api/agents/modules/${encodeURIComponent(moduleId)}/invoke`, {
+    method: 'POST',
+    body: JSON.stringify({ input }),
+  });
+
+export const fetchEvolutionProposals = (params: {
+  status?: string;
+  targetLayer?: string;
+  btwThreadId?: string;
+} = {}) => {
+  const query = new URLSearchParams();
+  if (params.status) query.set('status', params.status);
+  if (params.targetLayer) query.set('targetLayer', params.targetLayer);
+  if (params.btwThreadId) query.set('btwThreadId', params.btwThreadId);
+  const qs = query.toString();
+  return apiRequest<EvolutionStateResponse>(`/api/evolution/proposals${qs ? `?${qs}` : ''}`);
+};
+
+export const issueEvolutionConfirmToken = (action: EvolutionConfirmAction) =>
+  apiRequest<EvolutionConfirmResponse>('/api/evolution/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ action }),
+  });
+
+export const createEvolutionProposal = (payload: {
+  title?: string;
+  goal?: string;
+  branch?: string;
+  baseBranch?: string;
+  btwThreadId?: string;
+  sessionId?: string;
+  taskId?: string;
+  targetFiles?: string[];
+  filePatches?: EvolutionFilePatchInput[];
+}) =>
+  apiRequest<EvolutionProposalActionResponse>('/api/evolution/proposals', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const prepareEvolutionSandbox = (proposalId: string) =>
+  apiRequest<EvolutionProposalActionResponse>(`/api/evolution/proposals/${encodeURIComponent(proposalId)}/sandbox`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+
+export const verifyEvolutionProposal = (
+  proposalId: string,
+  payload: { runRepoCheck?: boolean } = {},
+) =>
+  apiRequest<EvolutionProposalActionResponse>(`/api/evolution/proposals/${encodeURIComponent(proposalId)}/verify`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const publishEvolutionProposalPr = (
+  proposalId: string,
+  payload: {
+    confirmToken?: string;
+    pushRemote?: boolean;
+    createPr?: boolean;
+    draft?: boolean;
+    remote?: string;
+  } = {},
+) =>
+  apiRequest<EvolutionProposalActionResponse>(`/api/evolution/proposals/${encodeURIComponent(proposalId)}/publish-pr`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const applyEvolutionProposal = (
+  proposalId: string,
+  payload: {
+    confirmToken?: string;
+    applyMode?: 'auto' | 'hot-swap' | 'git-pull';
+    autoRestart?: boolean;
+  } = {},
+) =>
+  apiRequest<EvolutionProposalActionResponse>(`/api/evolution/proposals/${encodeURIComponent(proposalId)}/apply`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const rollbackEvolutionProposal = (
+  proposalId: string,
+  payload: { confirmToken?: string } = {},
+) =>
+  apiRequest<EvolutionProposalActionResponse>(`/api/evolution/proposals/${encodeURIComponent(proposalId)}/rollback`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const cleanupEvolutionSandbox = (proposalId: string) =>
+  apiRequest<EvolutionProposalActionResponse>(`/api/evolution/proposals/${encodeURIComponent(proposalId)}/cleanup`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
 export async function copyToClipboard(text: string): Promise<boolean> {
   try {
     if (navigator.clipboard?.writeText) {

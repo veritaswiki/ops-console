@@ -68,6 +68,7 @@ import {
   StatusIndicator,
   type ConfirmModalState,
 } from '../components/ui';
+import { SelfEvolutionSection } from '../components/SelfEvolutionSection';
 
 const AUDIT_OUTCOME_OPTIONS = [
   { value: 'all', label: '全部' },
@@ -1026,7 +1027,7 @@ export function OpsView({
         <div className="space-y-6" data-testid="ops-updates-panel">
           <Panel
             title="实时热重载与运行态"
-            description="配置、外部插件与前端构建资源支持零停机热更新；修改文件后由内置 Watcher 自动触发并经 SSE 推送客户端。"
+            description="配置、外部插件、热切模块、声明式 Agent 与前端资源支持零停机热更新；修改文件后由内置 Watcher 自动触发并经 SSE 推送客户端。"
             actions={
               <div className="flex flex-wrap items-center gap-2">
                 <Button
@@ -1057,10 +1058,32 @@ export function OpsView({
                   刷新静态资源
                 </Button>
                 <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={readOnly || updateBusy !== null}
+                  onClick={() => void handleHotReload(['module-hot-swap'], 'Agent 模块热切')}
+                >
+                  <Zap className="size-3.5" strokeWidth={1.75} />
+                  热切模块
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={readOnly || updateBusy !== null}
+                  onClick={() => void handleHotReload(['agent-declarative'], '声明式 Agent 同步')}
+                >
+                  <Sparkles className="size-3.5" strokeWidth={1.75} />
+                  同步声明式
+                </Button>
+                <Button
                   variant="primary"
                   size="sm"
                   disabled={readOnly || updateBusy !== null}
-                  onClick={() => void handleHotReload(['config', 'plugins', 'assets'], '全量零停机热重载')}
+                  onClick={() =>
+                    void handleHotReload(
+                      ['config', 'plugins', 'assets', 'agent-declarative', 'module-hot-swap'],
+                      '全量零停机热重载',
+                    )}
                 >
                   <Zap className="size-3.5" strokeWidth={1.75} />
                   一键全量热重载
@@ -1097,8 +1120,9 @@ export function OpsView({
                 <div className="font-mono text-[12px] text-[var(--ink)] tabular-nums">
                   配置 {updateStatus?.watchers.config ? 'ON' : 'OFF'} · 插件 {updateStatus?.watchers.plugins ? 'ON' : 'OFF'} · 资源 {updateStatus?.watchers.public ? 'ON' : 'OFF'}
                 </div>
-                <div className="text-[11.5px] text-[var(--ink-muted)] tabular-nums">
-                  防抖 {updateStatus?.watchers.debounceMs ?? 500}ms · 守护模式 {updateStatus?.supervised ? 'Supervised' : 'Standard'}
+                <div className="font-mono text-[11.5px] text-[var(--ink-muted)] tabular-nums">
+                  模块 {updateStatus?.watchers.modules ? 'ON' : 'OFF'} · 声明式 {updateStatus?.watchers.agents ? 'ON' : 'OFF'} · 防抖 {updateStatus?.watchers.debounceMs ?? 500}ms ·{' '}
+                  {updateStatus?.supervised ? 'Supervised' : 'Standard'}
                 </div>
               </div>
 
@@ -1254,6 +1278,8 @@ export function OpsView({
               </div>
             )}
           </Panel>
+
+          <SelfEvolutionSection readOnly={readOnly} onToast={onToast} />
 
           <Panel
             title="更新历史与原子回滚"
