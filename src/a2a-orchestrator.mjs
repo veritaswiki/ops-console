@@ -1317,6 +1317,7 @@ export class A2AOrchestrator {
   }
 
   getState(fleetNodes = [], options = {}) {
+    this.syncProbeHarnesses(fleetNodes);
     const magpieBindings = Array.isArray(options?.magpieBindings) ? options.magpieBindings : [];
     const nodeNameMap = new Map((fleetNodes || []).map((n) => [n.id, n.name || n.id]));
     const agentList = [...this.agents.values()].map((agent, idx) => {
@@ -1342,61 +1343,6 @@ export class A2AOrchestrator {
           : { x: agent.id === this.leadAgentId ? 40 : 380, y: 40 + idx * 140 },
       };
     });
-
-    // Merge probe-reported harnesses not yet explicitly registered
-    for (const node of fleetNodes || []) {
-      if (!Array.isArray(node?.harnesses)) continue;
-      for (const raw of node.harnesses) {
-        if (!raw?.name) continue;
-        const id = raw.id || `probe-a2a-${node.id}-${sanitizeId(raw.name, 'agent')}`;
-        const existingPeer = agentList.find(
-          (agent) =>
-            agent.id === id
-            || (agent.nodeId === node.id && raw.rpcUrl && agent.rpcUrl === raw.rpcUrl)
-            || (agent.nodeId === node.id && raw.harness && agent.harness === raw.harness),
-        );
-        if (existingPeer) {
-          const probeStatus = node.status === 'offline' ? 'offline' : String(raw.status || 'healthy').slice(0, 24);
-          existingPeer.status = probeStatus;
-          if (node.lastHeartbeatAt || raw.lastVerifiedAt) {
-            existingPeer.lastHeartbeatAt = node.lastHeartbeatAt || raw.lastVerifiedAt;
-            existingPeer.lastVerifiedAt = node.lastHeartbeatAt || raw.lastVerifiedAt;
-          }
-          if (!existingPeer.agentCardUrl && raw.agentCardUrl) existingPeer.agentCardUrl = raw.agentCardUrl;
-          if (!existingPeer.rpcUrl && raw.rpcUrl) existingPeer.rpcUrl = raw.rpcUrl;
-          continue;
-        }
-        agentList.push({
-          id,
-          name: String(raw.name).slice(0, 80),
-          harness: VALID_HARNESS_KINDS.has(raw.harness) ? raw.harness : 'custom-a2a',
-          nodeId: node.id,
-          nodeName: node.name || node.id,
-          role: id === this.leadAgentId ? 'lead' : 'worker',
-          delegatable: raw.delegatable !== false,
-          status: node.status === 'offline' ? 'offline' : String(raw.status || 'healthy').slice(0, 24),
-          protocolVersion: String(raw.protocolVersion || '0.3').slice(0, 24),
-          version: String(raw.version || '0.1.0').slice(0, 32),
-          latestVersion: String(raw.latestVersion || raw.version || '0.1.0').slice(0, 32),
-          updateAvailable: false,
-          installPath: raw.installPath || null,
-          autoDetected: true,
-          pluginKind: raw.harness === 'dsh-expert' ? 'dsh-review-plugin' : 'harness',
-          agentCardUrl: raw.agentCardUrl || null,
-          rpcUrl: raw.rpcUrl || null,
-          modelHint: raw.modelHint || null,
-          reasoningEffort: sanitizeEffort(raw.reasoningEffort, 'medium'),
-          position: { x: 380, y: 40 + agentList.length * 135 },
-          capabilities: raw.capabilities || { streaming: true, pushNotifications: false, stateTransitionHistory: true },
-          skills: sanitizeSkills(raw.skills),
-          boundMcpIds: Array.isArray(raw.boundMcpIds) ? raw.boundMcpIds.slice(0, 16) : [],
-          latencyMs: Number.isFinite(raw.latencyMs) ? Math.round(raw.latencyMs) : null,
-          lastHeartbeatAt: node.lastHeartbeatAt || raw.lastVerifiedAt || new Date().toISOString(),
-          lastVerifiedAt: raw.lastVerifiedAt || node.lastHeartbeatAt || new Date().toISOString(),
-          description: redactText(String(raw.description || `由节点 ${node.name || node.id} 自动发现的外部 Agent Harness`)).slice(0, 180),
-        });
-      }
-    }
 
     const leadAgent = agentList.find((a) => a.id === this.leadAgentId) || null;
     const workers = agentList.filter((a) => a.id !== this.leadAgentId);
@@ -1449,6 +1395,91 @@ export class A2AOrchestrator {
       swarmMetrics: this.getSwarmMetrics(agentList),
       recentLogsCount: this.collaborationLogs.length,
     };
+  }
+
+  syncProbeHarnesses(fleetNodes = []) {
+    if (!Array.isArray(fleetNodes) || fleetNodes.length === 0) return 0;
+    let syncedCount = 0;
+    const existingAgents = () => [...this.agents.values()];
+    for (const node of fleetNodes) {
+      if (!node?.id || !Array.isArray(node?.harnesses)) continue;
+      for (const raw of node.harnesses) {
+        if (!raw?.name) continue;
+        const id = sanitizeId(raw.id || `probe-a2a-${node.id}-${sanitizeId(raw.name, 'agent')}`, 'probe-a2a');
+        const rawCardCheck = raw.agentCardUrl ? validateSafeEndpointUrl(String(raw.agentCardUrl)) : { ok: false, url: null };
+        const rawRpcCheck = raw.rpcUrl ? validateSafeEndpointUrl(String(raw.rpcUrl)) : { ok: false, url: null };
+        const safeCardUrl = rawCardCheck.ok ? rawCardCheck.url : null;
+        const safeRpcUrl = rawRpcCheck.ok ? rawRpcCheck.url : null;
+        const existingPeer = this.agents.get(id) || existingAgents().find(
+          (agent) =>
+            (agent.nodeId === node.id && safeRpcUrl && agent.rpcUrl === safeRpcUrl)
+            || (agent.nodeId === node.id && !safeRpcUrl && raw.harness && agent.harness === raw.harness),
+        );
+        const probeStatus = node.status === 'offline' ? 'offline' : String(raw.status || 'healthy').slice(0, 24);
+        const heartbeatIso = node.lastHeartbeatAt || raw.lastVerifiedAt || new Date().toISOString();
+        if (existingPeer) {
+          existingPeer.status = probeStatus;
+          if (node.name) existingPeer.nodeName = node.name;
+          if (node.lastHeartbeatAt || raw.lastVerifiedAt) {
+            existingPeer.lastHeartbeatAt = heartbeatIso;
+            if (!existingPeer.lastVerifiedAt) existingPeer.lastVerifiedAt = heartbeatIso;
+          }
+          if (safeCardUrl && (!existingPeer.agentCardUrl || existingPeer.probeDiscovered)) {
+            existingPeer.agentCardUrl = safeCardUrl;
+          }
+          if (safeRpcUrl && (!existingPeer.rpcUrl || existingPeer.probeDiscovered)) {
+            existingPeer.rpcUrl = safeRpcUrl;
+          }
+          if ((!Array.isArray(existingPeer.skills) || existingPeer.skills.length === 0) && Array.isArray(raw.skills) && raw.skills.length > 0) {
+            existingPeer.skills = sanitizeSkills(raw.skills);
+          }
+          if (existingPeer.latencyMs === null && Number.isFinite(raw.latencyMs)) {
+            existingPeer.latencyMs = Math.round(raw.latencyMs);
+          }
+          syncedCount += 1;
+          continue;
+        }
+        const entry = {
+          id,
+          name: redactText(String(raw.name)).slice(0, 80),
+          harness: VALID_HARNESS_KINDS.has(raw.harness) ? raw.harness : 'custom-a2a',
+          nodeId: node.id,
+          nodeName: node.name || node.id,
+          role: id === this.leadAgentId ? 'lead' : 'worker',
+          delegatable: raw.delegatable !== false,
+          status: probeStatus,
+          protocolVersion: String(raw.protocolVersion || '0.3').slice(0, 24),
+          version: redactText(String(raw.version || '0.1.0')).slice(0, 32),
+          latestVersion: redactText(String(raw.latestVersion || raw.version || '0.1.0')).slice(0, 32),
+          updateAvailable: false,
+          installPath: raw.installPath ? redactText(String(raw.installPath)).slice(0, 120) : null,
+          autoDetected: true,
+          probeDiscovered: true,
+          pluginKind: raw.harness === 'dsh-expert' ? 'dsh-review-plugin' : 'harness',
+          agentCardUrl: safeCardUrl,
+          rpcUrl: safeRpcUrl,
+          modelHint: raw.modelHint ? redactText(String(raw.modelHint)).slice(0, 64) : null,
+          reasoningEffort: sanitizeEffort(raw.reasoningEffort, 'medium'),
+          position: { x: 380, y: 40 + this.agents.size * 135 },
+          capabilities: raw.capabilities && typeof raw.capabilities === 'object'
+            ? {
+                streaming: Boolean(raw.capabilities.streaming),
+                pushNotifications: Boolean(raw.capabilities.pushNotifications),
+                stateTransitionHistory: Boolean(raw.capabilities.stateTransitionHistory),
+              }
+            : { streaming: true, pushNotifications: false, stateTransitionHistory: true },
+          skills: sanitizeSkills(raw.skills),
+          boundMcpIds: Array.isArray(raw.boundMcpIds) ? raw.boundMcpIds.slice(0, 16) : [],
+          latencyMs: Number.isFinite(raw.latencyMs) ? Math.round(raw.latencyMs) : null,
+          lastHeartbeatAt: heartbeatIso,
+          lastVerifiedAt: raw.lastVerifiedAt || heartbeatIso,
+          description: redactText(String(raw.description || `由节点 ${node.name || node.id} 自动发现的外部 Agent Harness`)).slice(0, 180),
+        };
+        this.agents.set(id, entry);
+        syncedCount += 1;
+      }
+    }
+    return syncedCount;
   }
 
   getCollaborationLogs({ agentId = '', eventType = '', level = '', q = '', limit = 80 } = {}) {

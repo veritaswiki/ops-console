@@ -73,7 +73,11 @@ test('BotFleetManager in live mode (demo=false) starts empty, purges legacy mock
       await fs.writeFile(
         path.join(legacyDir, 'bots.json'),
         JSON.stringify({
-          bots: [{ id: 'bot-github-commander', name: 'Fake' }],
+          bots: [
+            { id: 'bot-github-commander', name: 'Fake' },
+            { id: 'bot-feishu-triage', name: 'Legacy Feishu Seed', channel: 'feishu' },
+            { id: 'bot-ops-watchdog', name: 'Fake Watchdog', channel: 'webhook' },
+          ],
           activities: [{ id: 'botact-1', message: 'PR #418 收到 /plan 指令，已同步至 OPS-101' }],
         }),
       );

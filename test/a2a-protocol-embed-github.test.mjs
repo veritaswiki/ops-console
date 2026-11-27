@@ -6,6 +6,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { loadConfig } from '../src/config.mjs';
 import { buildSignedA2AHeaders } from '../src/a2a-protocol.mjs';
+import { A2AOrchestrator } from '../src/a2a-orchestrator.mjs';
 import {
   resolveServiceAdminUrl,
   rewriteEmbeddedHtml,
@@ -715,5 +716,103 @@ test('ops-probe A2A v0.3 peer server enforces bind safety, signed RPC, and telem
     assert.equal(primaryHarness.rpcUrl, peer.rpcUrl);
   } finally {
     await peer.close();
+  }
+});
+
+test('A2AOrchestrator syncProbeHarnesses materializes probe peers for discover, signed ping, and signed message/send dispatch', async () => {
+  const secret = 'probe-sync-shared-secret-2026';
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ops-a2a-probe-sync-'));
+  const peer = await startA2APeerServer({
+    nodeId: 'probe-sync-mac',
+    a2a: {
+      enabled: true,
+      host: '127.0.0.1',
+      port: 0,
+      sharedSecret: secret,
+      execMode: 'safe',
+      workspaceRoot: process.cwd(),
+    },
+  });
+  try {
+    const metrics = await collectProbeMetrics(
+      { nodeId: 'probe-sync-mac', cpuSampleDelayMs: 0 },
+      { a2aPeer: peer },
+    );
+    const orchestrator = new A2AOrchestrator(
+      {
+        demo: false,
+        console: { dataDir },
+        a2a: { sharedSecret: secret },
+      },
+      null,
+    );
+    await orchestrator.init();
+    await orchestrator.registerAgent({
+      id: 'a2a-hub-primary-lead',
+      name: 'Hub Lead',
+      harness: 'codex-cli',
+      nodeId: 'hub-primary',
+      agentCardUrl: 'http://127.0.0.1:4320/.well-known/agent-card.json',
+      rpcUrl: 'http://127.0.0.1:4320/a2a',
+      setAsLead: true,
+    });
+
+    const fleetNodes = [
+      {
+        id: 'probe-sync-mac',
+        name: 'MacBook Sync Test',
+        status: 'healthy',
+        lastHeartbeatAt: new Date().toISOString(),
+        harnesses: [
+          ...metrics.harnesses,
+          {
+            id: 'unsafe-meta-peer',
+            name: 'Unsafe Peer',
+            agentCardUrl: 'http://169.254.169.254/latest/meta-data',
+            rpcUrl: 'http://169.254.169.254/a2a',
+          },
+        ],
+      },
+    ];
+    const state = orchestrator.getState(fleetNodes);
+    const peerAgent = state.agents.find((agent) => agent.id === 'a2a-peer-probe-sync-mac');
+    assert.ok(peerAgent);
+    assert.equal(peerAgent.rpcUrl, peer.rpcUrl);
+
+    const unsafePeer = state.agents.find((agent) => agent.id === 'unsafe-meta-peer');
+    assert.ok(unsafePeer);
+    assert.equal(unsafePeer.agentCardUrl, null);
+    assert.equal(unsafePeer.rpcUrl, null);
+
+    const discovered = await orchestrator.discoverAgentCard('a2a-peer-probe-sync-mac');
+    assert.equal(discovered.ok, true);
+    assert.equal(discovered.protocolVersion, '0.3.0');
+    assert.ok((discovered.agentCard?.skills || []).length >= 3);
+
+    const pinged = await orchestrator.pingAgent('a2a-peer-probe-sync-mac');
+    assert.equal(pinged.ok, true);
+    assert.equal(pinged.reachable, true);
+    assert.equal(pinged.pong?.pong, true);
+
+    const dispatched = await orchestrator.dispatchTask(
+      {
+        targetAgentId: 'a2a-peer-probe-sync-mac',
+        prompt: 'Inspect MacBook diagnostics via signed A2A v0.3',
+      },
+      { actor: 'test' },
+    );
+    assert.equal(dispatched.workerAgentId, 'a2a-peer-probe-sync-mac');
+    assert.equal(dispatched.state, 'completed');
+    assert.match(dispatched.artifact || '', /A2A Peer probe-sync-mac/);
+
+    // Subsequent heartbeat sync preserves richer discovered skills & measured latency
+    const skillsBefore = orchestrator.agents.get('a2a-peer-probe-sync-mac').skills.length;
+    const latencyBefore = orchestrator.agents.get('a2a-peer-probe-sync-mac').latencyMs;
+    orchestrator.syncProbeHarnesses(fleetNodes);
+    assert.equal(orchestrator.agents.get('a2a-peer-probe-sync-mac').skills.length, skillsBefore);
+    assert.equal(orchestrator.agents.get('a2a-peer-probe-sync-mac').latencyMs, latencyBefore);
+  } finally {
+    await peer.close();
+    await fs.rm(dataDir, { recursive: true, force: true });
   }
 });
