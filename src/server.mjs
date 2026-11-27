@@ -315,6 +315,14 @@ export function createOpsConsole(options = {}) {
     windowMs: 60_000,
     maxRequests: config.security.mutatingRateLimitPerMinute || 30,
   });
+  const embedLimiter = new SlidingWindowRateLimiter({
+    windowMs: 60_000,
+    maxRequests: Math.max(1200, (config.security.rateLimitPerMinute || 240) * 5),
+  });
+  const embedMutatingLimiter = new SlidingWindowRateLimiter({
+    windowMs: 60_000,
+    maxRequests: Math.max(180, (config.security.mutatingRateLimitPerMinute || 30) * 6),
+  });
   const probeLimiter = new SlidingWindowRateLimiter({
     windowMs: 60_000,
     maxRequests: 30,
@@ -614,7 +622,8 @@ export function createOpsConsole(options = {}) {
         return;
       }
 
-      const rate = generalLimiter.allow(clientIp);
+      const isEmbedRoute = pathname === '/embed' || pathname.startsWith('/embed/');
+      const rate = (isEmbedRoute ? embedLimiter : generalLimiter).allow(clientIp);
       if (!rate.allowed) {
         sendJson(res, 429, { ok: false, error: 'Rate limit exceeded' }, { 'Retry-After': String(rate.retryAfterSec) });
         return;
@@ -626,7 +635,7 @@ export function createOpsConsole(options = {}) {
           sendJson(res, 403, { ok: false, error: 'Cross-origin request rejected' });
           return;
         }
-        const mutateRate = mutatingLimiter.allow(clientIp);
+        const mutateRate = (isEmbedRoute ? embedMutatingLimiter : mutatingLimiter).allow(clientIp);
         if (!mutateRate.allowed) {
           sendJson(res, 429, { ok: false, error: 'Too many control actions' }, { 'Retry-After': String(mutateRate.retryAfterSec) });
           return;

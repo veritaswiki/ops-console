@@ -22,6 +22,8 @@ const STRIPPED_RESPONSE_HEADERS = new Set([
   'x-frame-options',
   'content-security-policy',
   'content-security-policy-report-only',
+  'access-control-allow-origin',
+  'access-control-allow-credentials',
   'transfer-encoding',
   'content-encoding',
   'content-length',
@@ -179,7 +181,25 @@ export function rewriteLocationHeader(location, embedBase, targetOrigin = '') {
   return trimmed;
 }
 
-function buildEmbedRuntimeShim(prefix) {
+export function rewriteUpstreamReferer(rawReferer, embedBase, targetOrigin) {
+  if (!rawReferer || !targetOrigin) return '';
+  const prefix = normalizeEmbedBase(embedBase).slice(0, -1);
+  try {
+    const parsed = new URL(String(rawReferer).trim());
+    const originNorm = new URL(targetOrigin).origin;
+    let pathname = parsed.pathname || '/';
+    if (pathname === prefix) {
+      pathname = '/';
+    } else if (pathname.startsWith(`${prefix}/`)) {
+      pathname = pathname.slice(prefix.length) || '/';
+    }
+    return `${originNorm}${pathname}${parsed.search || ''}`;
+  } catch {
+    return '';
+  }
+}
+
+export function buildEmbedRuntimeShim(prefix) {
   const serializedPrefix = JSON.stringify(prefix).replace(/</g, '\\u003c');
   return (
     '<script data-ops-embed-shim="1">(function(){'
@@ -204,6 +224,16 @@ function buildEmbedRuntimeShim(prefix) {
     + 'var _E=window.EventSource;'
     + 'window.EventSource=function(u,c){return new _E(typeof u==="string"?rw(u):u,c);};'
     + 'window.EventSource.prototype=_E.prototype;}'
+    + 'function patchProp(C,prop){try{if(!C||!C.prototype)return;var d=Object.getOwnPropertyDescriptor(C.prototype,prop);if(d&&d.set&&d.configurable){Object.defineProperty(C.prototype,prop,{configurable:true,enumerable:d.enumerable,get:d.get,set:function(v){return d.set.call(this,typeof v==="string"?rw(v):v);}});}}catch(_){}}'
+    + 'patchProp(window.HTMLLinkElement,"href");'
+    + 'patchProp(window.HTMLScriptElement,"src");'
+    + 'try{if(window.Element&&window.Element.prototype&&typeof window.Element.prototype.setAttribute==="function"){'
+    + 'var _sa=window.Element.prototype.setAttribute;'
+    + 'window.Element.prototype.setAttribute=function(k,v){'
+    + 'if(typeof k==="string"&&typeof v==="string"){'
+    + 'var lk=k.toLowerCase();var tn=this&&this.tagName?String(this.tagName).toUpperCase():"";'
+    + 'if((tn==="LINK"&&lk==="href")||(tn==="SCRIPT"&&lk==="src")){v=rw(v);}}'
+    + 'return _sa.call(this,k,v);};}}catch(_){}'
     + '})();</script>'
   );
 }
@@ -446,12 +476,22 @@ export async function handleServiceEmbedProxy({ req, res, pathname, search = '',
     const lower = key.toLowerCase();
     if (HOP_BY_HOP_REQUEST_HEADERS.has(lower)) continue;
     if (rawVal === undefined) continue;
+    const strVal = Array.isArray(rawVal) ? rawVal.join(', ') : String(rawVal);
     if (lower === 'cookie') {
       const filtered = filterOutgoingCookies(Array.isArray(rawVal) ? rawVal.join('; ') : String(rawVal));
       if (filtered) outHeaders.set('cookie', filtered);
       continue;
     }
-    outHeaders.set(lower, Array.isArray(rawVal) ? rawVal.join(', ') : String(rawVal));
+    if (lower === 'origin') {
+      if (strVal.trim()) outHeaders.set('origin', baseTarget.origin);
+      continue;
+    }
+    if (lower === 'referer') {
+      const rewrittenRef = rewriteUpstreamReferer(strVal, embedBase, baseTarget.origin);
+      if (rewrittenRef) outHeaders.set('referer', rewrittenRef);
+      continue;
+    }
+    outHeaders.set(lower, strVal);
   }
   outHeaders.set('accept-encoding', 'identity');
   outHeaders.set('x-forwarded-prefix', embedBase.slice(0, -1));
