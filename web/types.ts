@@ -249,6 +249,71 @@ export interface MemorySnapshot {
   };
 }
 
+export interface MagpieModelItem {
+  id: string;
+  displayName: string;
+  label: string;
+  provider: string;
+  group: string;
+  isRoutingGroup: boolean;
+  reasoning: boolean;
+  reasoningLevels: string[];
+  contextWindow: number | null;
+  maxOutputTokens: number | null;
+  toolCall: boolean;
+}
+
+export interface MagpieAgentBinding {
+  name: string;
+  harness: string;
+  rawModel: string;
+  model: string;
+  canonicalModel: string;
+  mode: 'pinned' | 'provider' | 'default' | string;
+  effort: string | null;
+  configSource: string;
+  detail?: string;
+}
+
+export interface MagpieCatalogResponse {
+  ok?: boolean;
+  enabled: boolean;
+  reachable: boolean;
+  apiUrl: string;
+  webUrl?: string;
+  protocol: string;
+  latencyMs: number | null;
+  totalModels: number;
+  reasoningModels: number;
+  providers: Array<{ name: string; count: number }>;
+  models: MagpieModelItem[];
+  agentBindings: MagpieAgentBinding[];
+  cliCachedAt?: string | null;
+  error?: string | null;
+}
+
+export interface A2ASigningMetadata {
+  enabled: boolean;
+  configured: boolean;
+  configuredViaEnv?: boolean;
+  algorithm: string;
+  header: string;
+  timestampHeader: string;
+  replayWindowSec: number;
+  keyId: string;
+  keySource: 'file' | 'env' | 'config' | 'ephemeral' | string;
+}
+
+export interface A2ASigningVerifyResponse {
+  ok: boolean;
+  mode: 'self-test' | 'verify' | string;
+  valid: boolean;
+  reason?: string | null;
+  verifiedTimestampSec?: number;
+  sampleSignaturePrefix?: string;
+  signing: A2ASigningMetadata;
+}
+
 export interface MagpieSnapshot {
   enabled?: boolean;
   reachable?: boolean;
@@ -257,17 +322,26 @@ export interface MagpieSnapshot {
   protocol?: string;
   baseUrl?: string;
   totalModels?: number;
+  reasoningModels?: number;
   error?: string;
   providers?: Array<{ name: string; count: number; models?: string[] }>;
   agents?: Array<{
     name?: string;
     id?: string;
     type?: string;
+    harness?: string;
     status?: string;
+    rawModel?: string;
     model?: string;
+    canonicalModel?: string;
+    mode?: string;
+    effort?: string | null;
+    configSource?: string;
+    detail?: string;
     bridge?: string;
     active?: boolean;
   }>;
+  agentBindings?: MagpieAgentBinding[];
   bridges?: Array<{ name?: string; active?: boolean; target?: string; status?: string }>;
   library?: {
     mcpCount?: number;
@@ -1273,6 +1347,11 @@ export interface A2AAgentPeer {
   installPath?: string | null;
   autoDetected?: boolean;
   pluginKind?: 'harness' | 'dsh-review-plugin' | string;
+  magpieModel?: string | null;
+  magpieEffort?: string | null;
+  magpieMode?: string | null;
+  magpieBindingName?: string | null;
+  magpieConfigSource?: string | null;
   agentCardUrl?: string | null;
   rpcUrl?: string | null;
   modelHint?: string | null;
@@ -1395,6 +1474,10 @@ export interface A2ATaskRecord {
   matchedRuleName?: string | null;
   matchedSkill?: string;
   appliedModel?: string;
+  selectedModel?: string;
+  modelSource?: 'manual' | 'magpie-agent' | 'rule' | 'agent-hint' | 'orchestrator' | string;
+  signed?: boolean;
+  signatureKeyId?: string | null;
   appliedEffort?: ReasoningEffort | string;
   worktreeBranch?: string | null;
   mcpScope?: string[];
@@ -1553,6 +1636,7 @@ export interface A2AStateResponse {
   };
   leadAgentId: string | null;
   leadAgent: A2AAgentPeer | null;
+  signing?: A2ASigningMetadata;
   orchestrationConfig: A2AOrchestrationConfig;
   summary: {
     totalAgents: number;
@@ -1939,6 +2023,9 @@ export interface A2AConnectProfilesResponse {
   hubAgentCardUrl: string;
   hubRpcUrl: string;
   signingConfigured: boolean;
+  signingKeyId?: string;
+  signingKeySource?: string;
+  signing?: A2ASigningMetadata;
   profiles: A2AConnectProfile[];
 }
 

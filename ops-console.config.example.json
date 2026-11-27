@@ -12,6 +12,9 @@
   "auth": {
     "webKey": ""
   },
+  "a2a": {
+    "sharedSecret": "env://OPS_A2A_SHARED_SECRET"
+  },
   "security": {
     "allowedOrigins": [
       "http://127.0.0.1:4320",
