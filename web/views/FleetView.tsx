@@ -65,6 +65,8 @@ export function FleetView({
   snapshot,
   probes,
   readOnly,
+  activeFilter,
+  onFilterChange,
   onRefresh,
   onRefreshProbes,
   onOpenNodeMcps,
@@ -75,6 +77,8 @@ export function FleetView({
   snapshot: SnapshotResponse | null;
   probes: ProbesResponse | null;
   readOnly: boolean;
+  activeFilter?: string | null;
+  onFilterChange?: (filter: DeviceFilter) => void;
   onRefresh: () => Promise<void>;
   onRefreshProbes: () => Promise<void>;
   onOpenNodeMcps?: (nodeId: string) => void;
@@ -87,7 +91,18 @@ export function FleetView({
   const summary = snapshot?.fleet?.summary;
 
   const [selectedId, setSelectedId] = React.useState('');
-  const [typeFilter, setTypeFilter] = React.useState<DeviceFilter>('all');
+  const normalizeDeviceFilter = (raw?: string | null): DeviceFilter =>
+    raw === 'server' || raw === 'laptop' || raw === 'mobile' ? raw : 'all';
+  const [typeFilter, setTypeFilterState] = React.useState<DeviceFilter>(() => normalizeDeviceFilter(activeFilter));
+  React.useEffect(() => {
+    if (activeFilter) {
+      setTypeFilterState(normalizeDeviceFilter(activeFilter));
+    }
+  }, [activeFilter]);
+  const setTypeFilter = (next: DeviceFilter) => {
+    setTypeFilterState(next);
+    onFilterChange?.(next);
+  };
   const [nodeQuery, setNodeQuery] = React.useState('');
   const [sortField, setSortField] = React.useState<FleetSortField>('status');
   const [sortDir, setSortDir] = React.useState<SortDir>('asc');

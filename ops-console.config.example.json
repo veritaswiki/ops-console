@@ -358,7 +358,16 @@
     },
     "tailscale": {
       "enabled": true,
-      "cliBin": "tailscale"
+      "cliBin": "tailscale",
+      "adminConsoleUrl": "https://login.tailscale.com/admin/machines"
+    },
+    "cloudflare": {
+      "enabled": true,
+      "cliBin": "cloudflared",
+      "warpBin": "warp-cli",
+      "tunnelName": "",
+      "dashboardUrl": "https://one.dash.cloudflare.com/",
+      "lanRoutes": []
     },
     "mihomo": {
       "enabled": false,

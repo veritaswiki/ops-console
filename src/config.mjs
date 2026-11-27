@@ -392,6 +392,27 @@ export function loadConfig(options = {}) {
       tailscale: {
         enabled: raw.connectors?.tailscale?.enabled !== undefined ? Boolean(raw.connectors.tailscale.enabled) : true,
         cliBin: raw.connectors?.tailscale?.cliBin || 'tailscale',
+        adminConsoleUrl: String(raw.connectors?.tailscale?.adminConsoleUrl || 'https://login.tailscale.com/admin/machines'),
+      },
+      cloudflare: {
+        enabled: raw.connectors?.cloudflare?.enabled !== undefined ? Boolean(raw.connectors.cloudflare.enabled) : true,
+        cliBin: raw.connectors?.cloudflare?.cliBin || 'cloudflared',
+        warpBin: raw.connectors?.cloudflare?.warpBin || 'warp-cli',
+        configPath: String(raw.connectors?.cloudflare?.configPath || ''),
+        tunnelName: String(raw.connectors?.cloudflare?.tunnelName || ''),
+        dashboardUrl: String(raw.connectors?.cloudflare?.dashboardUrl || 'https://one.dash.cloudflare.com/'),
+        lanRoutes: Array.isArray(raw.connectors?.cloudflare?.lanRoutes)
+          ? raw.connectors.cloudflare.lanRoutes
+              .filter((r) => r && typeof r === 'object')
+              .map((r) => ({
+                id: String(r.id || r.cidr || r.hostname || ''),
+                name: String(r.name || r.cidr || r.hostname || 'LAN Route'),
+                cidr: String(r.cidr || ''),
+                hostname: String(r.hostname || ''),
+                target: String(r.target || ''),
+                comment: String(r.comment || ''),
+              }))
+          : [],
       },
       mihomo: {
         enabled: Boolean(raw.connectors?.mihomo?.enabled),

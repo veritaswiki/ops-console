@@ -69,6 +69,7 @@ import {
   loadServicesView,
   MODULE_DOMAINS,
   type ModuleDomainId,
+  parseSubTabFromHash,
   parseViewFromHash,
   prefetchModule,
 } from './modules/registry';
@@ -97,12 +98,18 @@ const FOOTER_MODULES = getFooterModules();
 const THEME_STORAGE_KEY = 'ops-console-theme';
 const SIDEBAR_STORAGE_KEY = 'ops-console-sidebar-collapsed';
 const NAV_GROUPS_STORAGE_KEY = 'ops-console-nav-groups';
+const NAV_SUBMENUS_STORAGE_KEY = 'ops-console-nav-submenus';
 
 const DEFAULT_NAV_GROUPS: Record<ModuleDomainId, boolean> = {
   agent: true,
   observe: true,
   infra: true,
   operate: true,
+};
+
+const DEFAULT_NAV_SUBMENUS: Record<string, boolean> = {
+  network: true,
+  services: true,
 };
 
 function readInitialNavGroups(): Record<ModuleDomainId, boolean> {
@@ -118,6 +125,25 @@ function readInitialNavGroups(): Record<ModuleDomainId, boolean> {
     };
   } catch {
     return { ...DEFAULT_NAV_GROUPS };
+  }
+}
+
+function readInitialNavSubMenus(): Record<string, boolean> {
+  try {
+    const raw = window.localStorage.getItem(NAV_SUBMENUS_STORAGE_KEY);
+    if (!raw) return { ...DEFAULT_NAV_SUBMENUS };
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const merged: Record<string, boolean> = { ...DEFAULT_NAV_SUBMENUS };
+    if (parsed && typeof parsed === 'object') {
+      for (const [key, value] of Object.entries(parsed)) {
+        if (typeof value === 'boolean') {
+          merged[key] = value;
+        }
+      }
+    }
+    return merged;
+  } catch {
+    return { ...DEFAULT_NAV_SUBMENUS };
   }
 }
 
@@ -174,9 +200,17 @@ function applyTheme(theme: 'light' | 'dark') {
 
 export function App() {
   const [view, setView] = React.useState<ViewId>(() => parseViewFromHash(window.location.hash) || 'agents');
+  const [viewSubTabs, setViewSubTabs] = React.useState<Partial<Record<ViewId, string>>>(() => {
+    const initialView = parseViewFromHash(window.location.hash) || 'agents';
+    const initialSub = parseSubTabFromHash(window.location.hash);
+    return initialSub ? { [initialView]: initialSub } : {};
+  });
   const [sidebarCollapsed, setSidebarCollapsed] = React.useState<boolean>(() => readInitialSidebarCollapsed());
   const [navGroups, setNavGroups] = React.useState<Record<ModuleDomainId, boolean>>(() =>
     readInitialNavGroups(),
+  );
+  const [navSubMenus, setNavSubMenus] = React.useState<Record<string, boolean>>(() =>
+    readInitialNavSubMenus(),
   );
   const [theme, setTheme] = React.useState<'light' | 'dark'>(() => readInitialTheme());
   const [mobileNavOpen, setMobileNavOpen] = React.useState(false);
@@ -270,8 +304,24 @@ export function App() {
     }
   }, [navGroups]);
 
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem(NAV_SUBMENUS_STORAGE_KEY, JSON.stringify(navSubMenus));
+    } catch {
+      // Ignore storage access errors
+    }
+  }, [navSubMenus]);
+
   const toggleNavGroup = React.useCallback((domainId: ModuleDomainId) => {
     setNavGroups((prev) => ({ ...prev, [domainId]: !prev[domainId] }));
+  }, []);
+
+  const toggleNavSubMenu = React.useCallback((moduleId: ViewId) => {
+    setNavSubMenus((prev) => ({ ...prev, [moduleId]: !prev[moduleId] }));
+  }, []);
+
+  const setViewSubTab = React.useCallback((targetView: ViewId, subTab: string) => {
+    setViewSubTabs((prev) => (prev[targetView] === subTab ? prev : { ...prev, [targetView]: subTab }));
   }, []);
 
   const loadRecentAgentTasks = React.useCallback(async () => {
@@ -328,16 +378,30 @@ export function App() {
 
   // URL Hash deep-link sync (Grafana / Tailscale Admin style shareable routes)
   React.useEffect(() => {
-    const nextHash = `#${view}`;
+    const mod = getModuleById(view);
+    const activeSub = viewSubTabs[view];
+    const defaultSub = mod.children?.[0]?.subTab;
+    const hasValidNonDefaultSub =
+      Boolean(activeSub) &&
+      Boolean(mod.children?.some((child) => child.subTab === activeSub)) &&
+      activeSub !== defaultSub;
+    const nextHash = hasValidNonDefaultSub ? `#${view}/${activeSub}` : `#${view}`;
     if (window.location.hash !== nextHash) {
       window.history.replaceState(null, '', nextHash);
     }
-  }, [view]);
+  }, [view, viewSubTabs]);
 
   React.useEffect(() => {
     const onHashChange = () => {
       const parsed = parseViewFromHash(window.location.hash);
-      if (parsed) setView(parsed);
+      const parsedSub = parseSubTabFromHash(window.location.hash);
+      if (parsed) {
+        setView(parsed);
+        if (parsedSub) {
+          setViewSubTabs((prev) => ({ ...prev, [parsed]: parsedSub }));
+          setNavSubMenus((prev) => (prev[parsed] ? prev : { ...prev, [parsed]: true }));
+        }
+      }
     };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
@@ -504,18 +568,22 @@ export function App() {
     }
   };
 
-  const handleSelectView = (next: ViewId) => {
+  const handleSelectView = React.useCallback((next: ViewId, subTab?: string) => {
     setView(next);
     const mod = getModuleById(next);
     if (next === 'agents') {
       setActiveAgentTaskId(null);
+    }
+    if (subTab) {
+      setViewSubTabs((prev) => ({ ...prev, [next]: subTab }));
+      setNavSubMenus((prev) => (prev[next] ? prev : { ...prev, [next]: true }));
     }
     if (mod.placement !== 'footer') {
       setNavGroups((prev) => (prev[mod.domain] ? prev : { ...prev, [mod.domain]: true }));
     }
     setMobileNavOpen(false);
     window.scrollTo({ top: 0 });
-  };
+  }, []);
 
   const handleOpenAgentThread = (taskId: string) => {
     setActiveAgentTaskId(taskId);
@@ -538,6 +606,18 @@ export function App() {
         shortcut: `G ${mod.chord.toUpperCase()}`,
         onSelect: () => handleSelectView(mod.id),
       });
+      if (mod.children && mod.children.length > 0) {
+        for (const child of mod.children) {
+          list.push({
+            id: `nav:${child.id}`,
+            label: `${mod.label} · ${child.label}`,
+            group: '子视图导航',
+            keywords: [...mod.keywords, ...child.keywords, child.subTab],
+            meta: mod.label,
+            onSelect: () => handleSelectView(mod.id, child.subTab),
+          });
+        }
+      }
     }
 
     const services = snapshot?.services?.items || [];
@@ -661,6 +741,7 @@ export function App() {
     toggleTheme,
     handleOpenLogs,
     handleSelectAgentPid,
+    handleSelectView,
   ]);
 
   const readOnly = Boolean(meta?.readOnly);
@@ -707,6 +788,9 @@ export function App() {
     const Icon = mod.icon;
     const isAgentHome = mod.id === 'agents';
     const isActive = isAgentHome ? view === 'agents' && !activeAgentTaskId : view === mod.id;
+    const hasChildren = Boolean(mod.children && mod.children.length > 0);
+    const subMenuExpanded = Boolean(navSubMenus[mod.id]);
+    const activeSubTab = viewSubTabs[mod.id] || mod.children?.[0]?.subTab || '';
     return (
       <div key={mod.id} className="space-y-0.5">
         <div className="flex items-center gap-0.5">
@@ -747,6 +831,26 @@ export function App() {
               </span>
             )}
           </button>
+          {hasChildren && (
+            <button
+              type="button"
+              onClick={() => toggleNavSubMenu(mod.id)}
+              title={subMenuExpanded ? `收起${mod.label}子菜单` : `展开${mod.label}子菜单`}
+              aria-label={subMenuExpanded ? `收起${mod.label}子菜单` : `展开${mod.label}子菜单`}
+              aria-expanded={subMenuExpanded}
+              data-testid={`sidebar-submenu-toggle-${mod.id}`}
+              className={cn(
+                'h-8 w-7 shrink-0 inline-flex items-center justify-center rounded-lg text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] transition-colors duration-150 ease-out cursor-pointer',
+                FOCUS_RING,
+              )}
+            >
+              {subMenuExpanded ? (
+                <ChevronDown className="size-3.5" strokeWidth={1.75} />
+              ) : (
+                <ChevronRight className="size-3.5" strokeWidth={1.75} />
+              )}
+            </button>
+          )}
           {isAgentHome && (
             <div className="flex items-center gap-0.5 shrink-0">
               <button
@@ -898,6 +1002,36 @@ export function App() {
                 无匹配任务
               </div>
             ) : null}
+          </div>
+        )}
+        {hasChildren && subMenuExpanded && mod.children && (
+          <div
+            data-testid={`sidebar-submenu-${mod.id}`}
+            className="ml-3.5 pl-2.5 border-l border-[var(--border-subtle)] space-y-0.5 py-0.5"
+          >
+            {mod.children.map((child) => {
+              const childActive = view === mod.id && activeSubTab === child.subTab;
+              return (
+                <button
+                  key={child.id}
+                  type="button"
+                  data-testid={`sidebar-subitem-${child.id}`}
+                  aria-current={childActive ? 'page' : undefined}
+                  onClick={() => handleSelectView(mod.id, child.subTab)}
+                  onMouseEnter={() => prefetchModule(mod.id)}
+                  onFocus={() => prefetchModule(mod.id)}
+                  className={cn(
+                    'w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-md text-[12.5px] text-left cursor-pointer select-none whitespace-nowrap transition-colors duration-150 ease-out',
+                    FOCUS_RING,
+                    childActive
+                      ? 'bg-[var(--surface-active)] text-[var(--ink)] font-medium'
+                      : 'text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
+                  )}
+                >
+                  <span className="truncate">{child.label}</span>
+                </button>
+              );
+            })}
           </div>
         )}
       </div>
@@ -1307,6 +1441,8 @@ export function App() {
                       snapshot={snapshot}
                       probes={probes}
                       readOnly={readOnly}
+                      activeFilter={viewSubTabs.fleet}
+                      onFilterChange={(next) => setViewSubTab('fleet', next)}
                       onRefresh={() => loadSnapshot(true)}
                       onRefreshProbes={loadProbes}
                       onOpenNodeMcps={(nodeId) => {
@@ -1322,6 +1458,8 @@ export function App() {
                     <ServicesView
                       snapshot={snapshot}
                       readOnly={readOnly}
+                      activeLayer={viewSubTabs.services}
+                      onLayerChange={(next) => setViewSubTab('services', next)}
                       onRefresh={() => loadSnapshot(true)}
                       onOpenLogs={handleOpenLogs}
                       onToast={pushToast}
@@ -1347,7 +1485,13 @@ export function App() {
                     />
                   )}
                   {view === 'memory' && (
-                    <MemoryView snapshot={snapshot} readOnly={readOnly} onToast={pushToast} />
+                    <MemoryView
+                      snapshot={snapshot}
+                      readOnly={readOnly}
+                      activeProvider={viewSubTabs.memory}
+                      onProviderChange={(next) => setViewSubTab('memory', next)}
+                      onToast={pushToast}
+                    />
                   )}
                   {view === 'agents' && (
                     <AgentsView
@@ -1405,7 +1549,13 @@ export function App() {
                     />
                   )}
                   {view === 'network' && (
-                    <NetworkView snapshot={snapshot} meta={meta} onToast={pushToast} />
+                    <NetworkView
+                      snapshot={snapshot}
+                      meta={meta}
+                      activeTab={viewSubTabs.network}
+                      onTabChange={(next) => setViewSubTab('network', next)}
+                      onToast={pushToast}
+                    />
                   )}
                   {view === 'logs' && (
                     <LogsView
@@ -1423,6 +1573,8 @@ export function App() {
                       incidents={incidents}
                       audit={audit}
                       readOnly={readOnly}
+                      activeTab={viewSubTabs.ops}
+                      onTabChange={(next) => setViewSubTab('ops', next)}
                       onRefresh={() => loadSnapshot(true)}
                       onRefreshOps={loadOpsData}
                       onToast={pushToast}

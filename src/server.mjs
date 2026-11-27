@@ -19,6 +19,8 @@ import { SingleFlightCache } from './cache.mjs';
 import { APP_VERSION, PACKAGE_ROOT, validateConfig } from './config.mjs';
 import { createDemoProvider } from './connectors/demo.mjs';
 import { ConnectorHub } from './connectors/index.mjs';
+import { collectCloudflare } from './connectors/network-cloudflare.mjs';
+import { runTailscaleNetcheck, runTailscalePing } from './connectors/network-tailscale.mjs';
 import { ControlPlaneEventBus } from './events.mjs';
 import { GithubHub } from './github-hub.mjs';
 import { LinearCommanderManager } from './linear-commander.mjs';
@@ -2431,6 +2433,76 @@ export function createOpsConsole(options = {}) {
         const force = url.searchParams.get('refresh') === '1';
         const firewall = await hub.collectFirewall(force);
         sendJson(res, 200, { ok: true, firewall }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/network/cloudflare') {
+        if (config.demo && demoProvider) {
+          const snap = demoProvider.getSnapshot(config);
+          sendJson(res, 200, { ok: true, cloudflare: snap.network?.cloudflare || null }, {}, req);
+          return;
+        }
+        const cloudflare = await collectCloudflare(config.connectors?.cloudflare || {});
+        sendJson(res, 200, { ok: true, cloudflare }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/network/tailscale/netcheck') {
+        if (config.demo) {
+          sendJson(res, 200, {
+            ok: true,
+            netcheck: {
+              ok: true,
+              udp: true,
+              ipv4: true,
+              ipv6: false,
+              mappingVariesByDestIp: false,
+              preferredDerp: 'hkg',
+              captivePortal: false,
+              derpRegions: [
+                { regionId: 'hkg', latencyMs: 28.4 },
+                { regionId: 'tok', latencyMs: 49.2 },
+                { regionId: 'sin', latencyMs: 63.7 },
+                { regionId: 'sjc', latencyMs: 148.1 },
+              ],
+              checkedAt: new Date().toISOString(),
+            },
+          }, {}, req);
+          return;
+        }
+        const netcheck = await runTailscaleNetcheck(config.connectors?.tailscale || {});
+        sendJson(res, 200, { ok: true, netcheck }, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/network/tailscale/ping') {
+        const { data } = await readBody(req);
+        const target = String(data?.target || '').trim();
+        if (!target) {
+          sendJson(res, 400, { ok: false, error: '缺少目标节点地址 target' }, {}, req);
+          return;
+        }
+        if (config.demo) {
+          sendJson(res, 200, {
+            ok: true,
+            ping: {
+              target,
+              ok: true,
+              latencyMs: 18.4,
+              direct: true,
+              relay: '',
+              via: '198.51.100.21:41641',
+              raw: `pong from ${target} via 198.51.100.21:41641 in 18.4ms`,
+            },
+          }, {}, req);
+          return;
+        }
+        try {
+          const ping = await runTailscalePing(config.connectors?.tailscale || {}, target);
+          sendJson(res, 200, { ok: true, ping }, {}, req);
+        } catch (err) {
+          sendJson(res, 400, { ok: false, error: err.message }, {}, req);
+        }
         return;
       }
 

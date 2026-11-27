@@ -5,6 +5,7 @@ import { collectOpenViking, doctorOpenViking, searchOpenViking } from '../../con
 import { collectRerank } from '../../connectors/memory-rerank.mjs';
 import { collectSymbiote } from '../../connectors/memory-symbiote.mjs';
 import { collectMihomo } from '../../connectors/network-mihomo.mjs';
+import { collectCloudflare } from '../../connectors/network-cloudflare.mjs';
 import { collectTailscale } from '../../connectors/network-tailscale.mjs';
 import { collectSyncthing } from '../../connectors/service-syncthing.mjs';
 import { definePlugin } from '../sdk.mjs';
@@ -185,14 +186,58 @@ export const tailscalePlugin = definePlugin({
   capabilities: ['health', 'inventory', 'network'],
   configSchema: [
     { key: 'cliBin', label: 'CLI 命令名', type: 'cli', default: 'tailscale', placeholder: 'tailscale' },
+    { key: 'adminConsoleUrl', label: 'Tailscale 管理控制台 URL', type: 'url', default: 'https://login.tailscale.com/admin/machines', placeholder: 'https://login.tailscale.com/admin/machines' },
   ],
   defaultConfig: {
     enabled: true,
     cliBin: 'tailscale',
+    adminConsoleUrl: 'https://login.tailscale.com/admin/machines',
   },
   collect: (cfg) => collectTailscale(cfg),
   testConnection: (cfg) => collectTailscale({ ...cfg, enabled: true }),
   summarize: (d) => (!d?.enabled ? '未启用' : d.reachable ? `${d.onlineCount ?? 0}/${d.devices?.length ?? 0} 设备在线` : d.error || '不可达'),
+});
+
+export const cloudflarePlugin = definePlugin({
+  id: 'network-cloudflare',
+  name: 'Cloudflare LAN & Tunnel',
+  version: '1.0.0',
+  category: 'network',
+  slot: 'network',
+  legacyKey: 'cloudflare',
+  description: '通过官方 cloudflared 与 warp-cli 只读检测 Cloudflare Tunnel 隧道、Zero Trust 私有局域网 CIDR 与 Ingress 入口。',
+  officialSpec: {
+    protocol: 'Official cloudflared CLI + warp-cli (Zero Trust Private Network)',
+    docsUrl: 'https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/',
+    endpoints: ['CLI: cloudflared tunnel list --output json', 'CLI: warp-cli status', 'Config: /etc/cloudflared/config.yml'],
+    auth: '本机 cloudflared 证书 / Zero Trust 组织登录（只读状态采集）',
+  },
+  capabilities: ['health', 'inventory', 'network'],
+  configSchema: [
+    { key: 'cliBin', label: 'cloudflared 命令名', type: 'cli', default: 'cloudflared', placeholder: 'cloudflared' },
+    { key: 'warpBin', label: 'warp-cli 命令名', type: 'cli', default: 'warp-cli', placeholder: 'warp-cli' },
+    { key: 'tunnelName', label: '隧道名称 (可选)', type: 'string', default: '', placeholder: 'ops-lan-hub' },
+    { key: 'dashboardUrl', label: 'Zero Trust 控制台地址', type: 'url', default: 'https://one.dash.cloudflare.com/', placeholder: 'https://one.dash.cloudflare.com/' },
+  ],
+  defaultConfig: {
+    enabled: true,
+    cliBin: 'cloudflared',
+    warpBin: 'warp-cli',
+    configPath: '',
+    tunnelName: '',
+    dashboardUrl: 'https://one.dash.cloudflare.com/',
+    lanRoutes: [],
+  },
+  collect: (cfg) => collectCloudflare(cfg),
+  testConnection: (cfg) => collectCloudflare({ ...cfg, enabled: true }),
+  summarize: (d) => {
+    if (!d?.enabled) return '未启用';
+    if (d.reachable) {
+      const tunnels = d.activeTunnelsCount ?? 0;
+      return d.warp?.connected ? `${tunnels} 隧道 · WARP 已连接` : `${tunnels} 活跃隧道`;
+    }
+    return d.cloudflared?.installed || d.warp?.installed ? '客户端已就绪 · 待接入' : '未部署 cloudflared / WARP';
+  },
 });
 
 export const mihomoPlugin = definePlugin({
@@ -289,6 +334,7 @@ export const OFFICIAL_CONNECTOR_PLUGINS = [
   symbiotePlugin,
   rerankPlugin,
   tailscalePlugin,
+  cloudflarePlugin,
   mihomoPlugin,
   syncthingPlugin,
   firewallPlugin,

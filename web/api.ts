@@ -20,6 +20,7 @@ import type {
   BotActivityItem,
   BotFleetResponse,
   BotItem,
+  CloudflareSnapshot,
   ConfigStudioResponse,
   FleetMcpServer,
   GatewayTelemetryResponse,
@@ -47,6 +48,8 @@ import type {
   RunbookExecution,
   RunbooksResponse,
   SnapshotResponse,
+  TailscaleNetcheckResult,
+  TailscalePingResult,
 } from './types';
 
 interface ApiRequestOptions extends RequestInit {
@@ -403,6 +406,21 @@ export const probeRemotes = () =>
   apiRequest<{ nodes?: RemoteHostStatus[]; items?: RemoteHostStatus[]; remotes?: RemoteHostStatus[] }>(
     '/api/remotes?refresh=1',
   );
+
+export const fetchTailscaleNetcheck = () =>
+  apiRequest<{ ok?: boolean; netcheck?: TailscaleNetcheckResult }>('/api/network/tailscale/netcheck');
+
+export const pingTailscalePeer = (target: string) =>
+  apiRequest<{ ok?: boolean; ping?: TailscalePingResult; error?: string }>(
+    '/api/network/tailscale/ping',
+    {
+      method: 'POST',
+      body: JSON.stringify({ target }),
+    },
+  );
+
+export const fetchCloudflareStatus = () =>
+  apiRequest<{ ok?: boolean; cloudflare?: CloudflareSnapshot }>('/api/network/cloudflare');
 
 export const submitMobileCheckin = (payload: {
   id: string;

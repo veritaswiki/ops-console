@@ -36,13 +36,28 @@ type ProviderKey = (typeof PROVIDERS)[number]['value'];
 export function MemoryView({
   snapshot,
   readOnly,
+  activeProvider,
+  onProviderChange,
   onToast,
 }: {
   snapshot: SnapshotResponse | null;
   readOnly: boolean;
+  activeProvider?: string | null;
+  onProviderChange?: (provider: ProviderKey) => void;
   onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
 }) {
-  const [provider, setProvider] = React.useState<ProviderKey>('all');
+  const normalizeProvider = (raw?: string | null): ProviderKey =>
+    raw === 'nmem' || raw === 'openviking' ? raw : 'all';
+  const [provider, setProviderState] = React.useState<ProviderKey>(() => normalizeProvider(activeProvider));
+  React.useEffect(() => {
+    if (activeProvider) {
+      setProviderState(normalizeProvider(activeProvider));
+    }
+  }, [activeProvider]);
+  const setProvider = (next: ProviderKey) => {
+    setProviderState(next);
+    onProviderChange?.(next);
+  };
   const [query, setQuery] = React.useState('');
   const [searching, setSearching] = React.useState(false);
   const [results, setResults] = React.useState<MemorySearchResultItem[] | null>(null);

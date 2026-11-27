@@ -66,6 +66,8 @@ export function OpsView({
   incidents,
   audit,
   readOnly,
+  activeTab,
+  onTabChange,
   onRefresh,
   onRefreshOps,
   onToast,
@@ -75,12 +77,25 @@ export function OpsView({
   incidents: IncidentItem[];
   audit: AuditEntry[];
   readOnly: boolean;
+  activeTab?: string | null;
+  onTabChange?: (tab: OpsTab) => void;
   onRefresh: () => Promise<void>;
   onRefreshOps: () => Promise<void>;
   onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
   onConfirm: (modal: ConfirmModalState) => void;
 }) {
-  const [tab, setTab] = React.useState<OpsTab>('tasks');
+  const normalizeOpsTab = (raw?: string | null): OpsTab =>
+    raw === 'runbooks' || raw === 'studio' ? raw : 'tasks';
+  const [tab, setTabState] = React.useState<OpsTab>(() => normalizeOpsTab(activeTab));
+  React.useEffect(() => {
+    if (activeTab) {
+      setTabState(normalizeOpsTab(activeTab));
+    }
+  }, [activeTab]);
+  const setTab = (next: OpsTab) => {
+    setTabState(next);
+    onTabChange?.(next);
+  };
   const [opsBusy, setOpsBusy] = React.useState<'health-check' | 'backup' | null>(null);
   const [opsOutput, setOpsOutput] = React.useState('');
 

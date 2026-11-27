@@ -284,7 +284,101 @@ export interface TailscaleDevice {
   rxBytes?: number;
   txBytes?: number;
   exitNode?: boolean;
+  exitNodeOption?: boolean;
+  expired?: boolean;
+  keyExpiry?: string | null;
+  primaryRoutes?: string[];
   isSelf?: boolean;
+}
+
+export interface TailscaleServeRule {
+  url?: string;
+  path?: string;
+  target?: string;
+  scope?: string;
+}
+
+export interface TailscaleNetcheckResult {
+  ok: boolean;
+  udp?: boolean;
+  ipv4?: boolean;
+  ipv6?: boolean;
+  mappingVariesByDestIp?: boolean;
+  preferredDerp?: string;
+  captivePortal?: boolean;
+  derpRegions?: Array<{ regionId: string; latencyMs: number | null }>;
+  checkedAt?: string;
+  error?: string;
+}
+
+export interface TailscalePingResult {
+  target: string;
+  ok: boolean;
+  latencyMs?: number | null;
+  direct?: boolean;
+  relay?: string;
+  via?: string;
+  raw?: string;
+  error?: string;
+}
+
+export interface CloudflareTunnelItem {
+  id: string;
+  name: string;
+  createdAt?: string | null;
+  connectionsCount: number;
+  edgeColos?: string[];
+  status: string;
+}
+
+export interface CloudflareIngressRule {
+  hostname: string;
+  path?: string;
+  service: string;
+  scope?: string;
+}
+
+export interface CloudflareLanRoute {
+  id?: string;
+  name: string;
+  cidr?: string;
+  hostname?: string;
+  target?: string;
+  comment?: string;
+  scope?: string;
+}
+
+export interface CloudflareSnapshot {
+  id?: string;
+  name?: string;
+  enabled?: boolean;
+  protocol?: string;
+  reachable?: boolean;
+  status?: string;
+  cloudflared?: {
+    installed?: boolean;
+    version?: string;
+    serviceActive?: boolean;
+    serviceScope?: string;
+    serviceState?: string;
+    configDetected?: boolean;
+  };
+  warp?: {
+    installed?: boolean;
+    version?: string;
+    connected?: boolean;
+    state?: string;
+    reason?: string;
+  };
+  warpRouting?: boolean;
+  tunnelName?: string;
+  tunnels?: CloudflareTunnelItem[];
+  activeTunnelsCount?: number;
+  ingress?: CloudflareIngressRule[];
+  lanRoutes?: CloudflareLanRoute[];
+  dashboardUrl?: string;
+  setupHints?: Array<{ id: string; title: string; command: string; note?: string }>;
+  error?: string;
 }
 
 export interface FirewallSnapshot {
@@ -341,15 +435,29 @@ export interface NetworkSnapshot {
     latencyMs?: number | null;
     protocol?: string;
     backendState?: string;
+    version?: string;
     selfName?: string;
     selfIp?: string;
+    selfIps?: string[];
+    selfDnsName?: string;
     tailnet?: string;
+    magicDnsSuffix?: string;
+    health?: string[];
+    funnelCapable?: boolean;
+    exitNodeStatus?: { id?: string; online?: boolean; tailscaleIps?: string[] } | null;
+    directCount?: number;
+    relayCount?: number;
+    derpSummary?: Array<{ region: string; count: number; onlineCount: number }>;
     onlineCount?: number;
     devices?: TailscaleDevice[];
+    serves?: TailscaleServeRule[];
+    funnels?: TailscaleServeRule[];
     serve?: Array<{ path?: string; target?: string; port?: string | number; raw?: string }> | string[];
     serveRules?: Array<{ source?: string; target?: string; protocol?: string }>;
+    adminConsoleUrl?: string;
     error?: string;
   };
+  cloudflare?: CloudflareSnapshot;
   mihomo?: {
     enabled?: boolean;
     reachable?: boolean;
@@ -578,6 +686,7 @@ export interface SnapshotResponse {
     total?: number;
   };
   network?: NetworkSnapshot;
+  cloudflare?: CloudflareSnapshot;
   firewall?: FirewallSnapshot;
   fleet?: FleetSnapshot;
   incidents?: IncidentItem[];

@@ -32,7 +32,7 @@
 | **基础设施** | `plugins` | 插件与接入 | `G P` | **Grafana Plugins / Backstage / Raycast** | 官方协议（MCP / A2A / OpenAI）目录化管理、批量并发巡检与脱敏清单导出 | **Wave 2 已迁移** |
 | **基础设施** | `mcp` | 全节点 MCP | `G C` | **MCP Inspector / Smithery / Teleport** | 跨设备统一纳管 MCP Server、握手拨测、工具清单检视与跨节点同步 | **Wave 3 新增固化** |
 | **基础设施** | `memory` | 记忆引擎 | `G M` | **Qdrant Dashboard / Milvus Attu / LangSmith Eval** | 跨引擎召回对照实验室、快捷评测 Query 预设与重排增益对比 | **Wave 1 已迁移** |
-| **基础设施** | `network` | 网络与防火墙 | `G N` | **Tailscale Admin / Metacubexd / OPNsense** | 节点搜索、直连/DERP 筛选、一键复制 IP 与防火墙暴露面收敛过滤 | **Wave 1 已迁移** |
+| **基础设施** | `network` | 网络与防火墙 | `G N` | **Tailscale Admin / Cloudflare Zero Trust / Metacubexd / OPNsense** | 内置 Tailscale 控制台（Netcheck/Ping/DERP/Serve）、Cloudflare Tunnel/WARP 局域网控制台、Mihomo 代理与防火墙暴露面过滤 | **Wave 12 升级**：内置 Tailscale & Cloudflare 局域网控制台 |
 | **运维与审计** | `logs` | 统一日志 | `G L` | **Grafana Loki / Datadog Logs / Dozzle** | 日志频次直方图 + 单元/级别快筛 + 虚拟滚动与 SSE 实时流 | **Wave 1 已迁移** |
 | **运维与审计** | `ops` | 运维与审计 | `G W` | **Rundeck / Ansible AWX / Cockpit** | Runbook 执行回溯、Systemd Timer、Config Studio 校验与审计 CSV 导出 | **Wave 2 已迁移** |
 
@@ -45,5 +45,6 @@
 3. **Wave 8（已完成）**：完整迁移 Linear 项目管理体系（分诊、迭代、路线图、依赖图谱、GitHub 双向同步）与多渠道自动化 Bot 体系。
 4. **Wave 9–10（已完成）**：全面收敛信息密度与视觉保真度——桌面侧栏可折叠，顶层双折叠组 `Harness` + 扁平 `系统与运维`；`Agent` 首页重构为 Antigravity/Codex 极简对话输入框（历史线程归入侧栏）；`Bot` 与 `GitHub` 彻底独立拆栏；`任务看板` 还原纯粹 Linear 看板/列表 + 详情抽屉；`分配图谱` 重构为 n8n 风格全画布节点工作流。
 5. **Wave 11（已完成）**：落地标准 **Google A2A v0.3** Hub/Peer 跨设备协议（含 `ops-probe` A2A Peer HTTP 服务与 Tailscale/Cloudflare/LAN 接入配置）、Agents 工作区四列拖拽生命周期看板 + 14 条 `/` 命令 + 侧栏任务检索、Orca/T3 风格 GitHub PR/Issue/CI/Worktree 联动中心、受管服务内置反向代理管理窗口（NMEM / OpenViking / Symbiote / Syncthing / T3 Code 等）、四大业务域可独立折叠侧栏以及 Linear/Codex 两栏式设置中心。
+6. **Wave 12（已完成）**：内置 **Tailscale 控制台**（Netcheck/DERP 延迟、节点 Ping、Serve/Funnel 状态）与 **Cloudflare 局域网控制台**（`cloudflared` Tunnel/Ingress 路由、WARP 状态与局域网路由清单）；左侧导航全面支持**手动折叠/展开的二级子菜单**（`网络与防火墙`、`受管服务`、`全球节点`、`记忆引擎`、`运维与审计` 均支持无自动折叠的独立展开与 `#view/subTab` 哈希直达）。
 
 

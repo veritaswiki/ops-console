@@ -8,6 +8,7 @@ import { collectSymbiote } from './memory-symbiote.mjs';
 import { collectRerank } from './memory-rerank.mjs';
 import { collectMagpie } from './gateway-magpie.mjs';
 import { collectTailscale } from './network-tailscale.mjs';
+import { collectCloudflare } from './network-cloudflare.mjs';
 import { collectMihomo } from './network-mihomo.mjs';
 import { collectSyncthing } from './service-syncthing.mjs';
 import { collectRemoteNodes } from './remote-ssh.mjs';
@@ -177,21 +178,23 @@ export class ConnectorHub {
       12_000,
       async () => {
         if (this.pluginManager) {
-          const [tailscale, mihomo, syncthing, firewall] = await Promise.all([
+          const [tailscale, cloudflare, mihomo, syncthing, firewall] = await Promise.all([
             this.pluginManager.collectPlugin('network-tailscale'),
+            this.pluginManager.collectPlugin('network-cloudflare'),
             this.pluginManager.collectPlugin('network-mihomo'),
             this.pluginManager.collectPlugin('service-syncthing'),
             this.collectFirewall(force),
           ]);
-          return { tailscale, mihomo, syncthing, firewall };
+          return { tailscale, cloudflare, mihomo, syncthing, firewall };
         }
-        const [tailscale, mihomo, syncthing, firewall] = await Promise.all([
+        const [tailscale, cloudflare, mihomo, syncthing, firewall] = await Promise.all([
           collectTailscale(this.config.connectors.tailscale),
+          collectCloudflare(this.config.connectors.cloudflare),
           collectMihomo(this.config.connectors.mihomo),
           collectSyncthing(this.config.connectors.syncthing),
           this.collectFirewall(force),
         ]);
-        return { tailscale, mihomo, syncthing, firewall };
+        return { tailscale, cloudflare, mihomo, syncthing, firewall };
       },
       { force, staleOnError: true },
     );
@@ -215,6 +218,7 @@ export class ConnectorHub {
       const filteredMemory = await this.collectMemory(force);
       const magpieEnabled = this._isLegacyEnabled('gateway-magpie', true);
       const tailscaleEnabled = this._isLegacyEnabled('network-tailscale', true);
+      const cloudflareEnabled = this._isLegacyEnabled('network-cloudflare', true);
       const mihomoEnabled = this._isLegacyEnabled('network-mihomo', true);
       const syncthingEnabled = this._isLegacyEnabled('service-syncthing', true);
       const patchedDemo = {
@@ -224,9 +228,11 @@ export class ConnectorHub {
         network: {
           ...baseDemo.network,
           tailscale: tailscaleEnabled ? baseDemo.network.tailscale : { ...baseDemo.network.tailscale, enabled: false, reachable: false, status: 'disabled' },
+          cloudflare: cloudflareEnabled ? baseDemo.network.cloudflare : { ...baseDemo.network.cloudflare, enabled: false, reachable: false, status: 'disabled' },
           mihomo: mihomoEnabled ? baseDemo.network.mihomo : { ...baseDemo.network.mihomo, enabled: false, reachable: false, status: 'disabled' },
           syncthing: syncthingEnabled ? baseDemo.network.syncthing : { ...baseDemo.network.syncthing, enabled: false, reachable: false, status: 'disabled' },
         },
+        cloudflare: cloudflareEnabled ? baseDemo.network.cloudflare : { ...baseDemo.network.cloudflare, enabled: false, reachable: false, status: 'disabled' },
         plugins: extraPlugins,
       };
       if (this.probeRegistry && this.probeRegistry.telemetry.size > 0) {
@@ -317,6 +323,7 @@ export class ConnectorHub {
           memory,
           network,
           tailscale: network.tailscale,
+          cloudflare: network.cloudflare,
           firewall: network.firewall,
           health: opsState.health,
           backup: opsState.backup,
