@@ -26,6 +26,10 @@ const A2A_MAX_REPLAY_SKEW_SEC = 300;
 const A2A_MAX_BODY_BYTES = 256 * 1024;
 const A2A_MAX_STORED_TASKS = 128;
 const LOCAL_CLI_CACHE_TTL_MS = 60_000;
+const LOCAL_MODEL_CACHE_TTL_MS = 60_000;
+const PROBE_EMAIL_RE = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+const PROBE_SECRET_RE = /(?:sk-|ghp_|gho_|github_pat_|xox[baprs]-|bearer\s+)[A-Za-z0-9._-]{8,}/gi;
+let localModelCatalogCache = { expiresAt: 0, data: null };
 
 const ALLOWLISTED_CLIS = [
   { id: 'codex', binary: 'codex', label: 'Codex CLI', harness: 'codex-cli', args: ['--version'] },
@@ -889,6 +893,224 @@ export async function discoverLocalCliHarnesses(options = {}) {
   return discovered;
 }
 
+function sanitizeProbeModelText(value, maxLen = 120) {
+  return String(value ?? '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(PROBE_EMAIL_RE, '[redacted-account]')
+    .replace(PROBE_SECRET_RE, '[redacted]')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLen);
+}
+
+function isLoopbackModelEndpoint(rawUrl) {
+  try {
+    const parsed = new URL(String(rawUrl || ''));
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    const host = parsed.hostname.toLowerCase();
+    return host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]';
+  } catch {
+    return false;
+  }
+}
+
+async function fetchLoopbackModelJson(urlStr, timeoutMs = 1500, fetchImpl = globalThis.fetch) {
+  if (!isLoopbackModelEndpoint(urlStr) || typeof fetchImpl !== 'function') {
+    return { ok: false, latencyMs: null, data: null };
+  }
+  const start = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetchImpl(urlStr, {
+      method: 'GET',
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    });
+    const latencyMs = Math.max(0, Date.now() - start);
+    if (!res.ok) return { ok: false, latencyMs, data: null };
+    const data = await res.json();
+    return { ok: true, latencyMs, data };
+  } catch {
+    return { ok: false, latencyMs: null, data: null };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function inferProbeHarnessFromName(name) {
+  const lower = String(name || '').trim().toLowerCase();
+  if (lower.includes('codex')) return 'codex-cli';
+  if (lower.includes('claude')) return 'claude-code';
+  if (lower === 'pi' || lower.startsWith('pi')) return 'pi-agent';
+  if (lower.includes('gemini') || lower.includes('agy')) return 'gemini-cli';
+  if (lower.includes('opencode')) return 'opencode';
+  if (lower.includes('dsh')) return 'dsh-expert';
+  if (lower.includes('t3')) return 't3-code';
+  if (lower.includes('alma')) return 'alma';
+  return 'custom-a2a';
+}
+
+export function parseProbeMagpieBindings(stdout = '') {
+  const lines = String(stdout || '').split(/\r?\n/);
+  const out = [];
+  const seen = new Set();
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith('NAME') || line.startsWith('─') || line.startsWith('-')) continue;
+    const cols = line.split(/\s{2,}/).map((c) => c.trim()).filter(Boolean);
+    if (cols.length < 2) continue;
+    const name = sanitizeProbeModelText(cols[0], 48);
+    if (!name || seen.has(name.toLowerCase())) continue;
+    const rawModel = sanitizeProbeModelText(cols[1] || '', 120);
+    const lowerModel = rawModel.toLowerCase();
+    const emptyModel = !rawModel || rawModel === '—' || rawModel === '-' || lowerModel === 'none' || lowerModel.startsWith('provider ');
+    const canonicalModel = emptyModel ? null : rawModel.replace(/^magpie\//i, '');
+    const mode = lowerModel.startsWith('provider ') ? 'provider' : (canonicalModel ? 'pinned' : 'default');
+    const effortCandidate = String(cols[2] || '').trim().toLowerCase();
+    const effort = ['off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(effortCandidate)
+      ? effortCandidate
+      : null;
+    seen.add(name.toLowerCase());
+    out.push({
+      name,
+      harness: inferProbeHarnessFromName(name),
+      model: canonicalModel,
+      canonicalModel,
+      mode,
+      effort,
+    });
+    if (out.length >= 32) break;
+  }
+  return out;
+}
+
+export async function discoverLocalModelCatalog(options = {}) {
+  const nowMs = Date.now();
+  if (!options.force && !options.fetchImpl && localModelCatalogCache.expiresAt > nowMs && localModelCatalogCache.data) {
+    return localModelCatalogCache.data;
+  }
+
+  const fetchImpl = options.fetchImpl || globalThis.fetch;
+  const timeoutMs = Number.isFinite(Number(options.timeoutMs)) ? Math.max(300, Math.min(5000, Number(options.timeoutMs))) : 1200;
+  const nodeId = sanitizeProbeModelText(options.nodeId || os.hostname().toLowerCase(), 48);
+  const endpoints = [
+    {
+      id: `${nodeId}-magpie`,
+      kind: 'magpie',
+      name: 'Magpie Gateway',
+      url: options.magpieUrl || 'http://127.0.0.1:3426/v1/models',
+    },
+    {
+      id: `${nodeId}-ollama`,
+      kind: 'ollama',
+      name: 'Ollama Local',
+      url: options.ollamaUrl || 'http://127.0.0.1:11434/api/tags',
+    },
+    {
+      id: `${nodeId}-mlx`,
+      kind: 'mlx',
+      name: 'MLX Local Server',
+      url: options.mlxUrl || 'http://127.0.0.1:8080/v1/models',
+    },
+    ...(Array.isArray(options.customSources)
+      ? options.customSources
+          .filter((src) => src && typeof src === 'object' && isLoopbackModelEndpoint(src.url))
+          .slice(0, 6)
+          .map((src, idx) => ({
+            id: sanitizeProbeModelText(src.id || `${nodeId}-custom-${idx + 1}`, 48),
+            kind: ['magpie', 'ollama', 'mlx', 'openai-compatible'].includes(src.kind) ? src.kind : 'openai-compatible',
+            name: sanitizeProbeModelText(src.name || `Local Source ${idx + 1}`, 48),
+            url: String(src.url),
+          }))
+      : []),
+  ];
+
+  const modelSources = [];
+  const models = [];
+  const seenModelKeys = new Set();
+
+  const probeResults = await Promise.all(
+    endpoints.map(async (ep) => {
+      const res = await fetchLoopbackModelJson(ep.url, timeoutMs, fetchImpl);
+      return { ep, res };
+    }),
+  );
+
+  for (const { ep, res } of probeResults) {
+    if (!res.ok || !res.data) continue;
+    const rawItems = ep.kind === 'ollama'
+      ? (Array.isArray(res.data?.models) ? res.data.models : [])
+      : (Array.isArray(res.data?.data) ? res.data.data : (Array.isArray(res.data?.models) ? res.data.models : []));
+    let countForSource = 0;
+    for (const item of rawItems) {
+      if (models.length >= 128) break;
+      const rawId = typeof item === 'string' ? item : String(item?.id || item?.name || item?.model || '').trim();
+      if (!rawId) continue;
+      PROBE_EMAIL_RE.lastIndex = 0;
+      PROBE_SECRET_RE.lastIndex = 0;
+      if (PROBE_EMAIL_RE.test(rawId) || PROBE_SECRET_RE.test(rawId)) continue;
+      const dedupeKey = `${ep.kind}:${rawId}`;
+      if (seenModelKeys.has(dedupeKey)) continue;
+      seenModelKeys.add(dedupeKey);
+      const isRoutingGroup = ep.kind === 'magpie' && (rawId.startsWith('auto/') || Boolean(item?.is_routing_group || item?.isRoutingGroup));
+      const provider = ep.kind === 'ollama'
+        ? 'ollama'
+        : (ep.kind === 'mlx' ? 'mlx' : sanitizeProbeModelText(item?.owned_by || item?.provider || (rawId.includes('/') ? rawId.split('/')[0] : ep.kind), 40));
+      const displayName = sanitizeProbeModelText(item?.display_name || item?.displayName || item?.name || rawId, 80);
+      const rawLevels = Array.isArray(item?.reasoning_levels) ? item.reasoning_levels : (Array.isArray(item?.reasoningLevels) ? item.reasoningLevels : []);
+      const reasoningLevels = rawLevels
+        .map((lvl) => String(lvl || '').trim().toLowerCase())
+        .filter((lvl) => ['off', 'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'].includes(lvl));
+      models.push({
+        id: rawId.slice(0, 140),
+        displayName,
+        provider,
+        sourceKind: ep.kind,
+        sourceId: ep.id,
+        isRoutingGroup,
+        reasoning: Boolean(item?.reasoning || reasoningLevels.length > 0),
+        reasoningLevels,
+        contextWindow: Number.isFinite(Number(item?.context_window || item?.contextWindow))
+          ? Math.round(Number(item?.context_window || item?.contextWindow))
+          : null,
+        maxOutputTokens: Number.isFinite(Number(item?.max_output_tokens || item?.maxOutputTokens))
+          ? Math.round(Number(item?.max_output_tokens || item?.maxOutputTokens))
+          : null,
+        toolCall: item?.tool_call !== false && item?.toolCall !== false,
+      });
+      countForSource += 1;
+    }
+    modelSources.push({
+      id: ep.id,
+      kind: ep.kind,
+      name: ep.name,
+      reachable: true,
+      latencyMs: res.latencyMs,
+      modelsCount: countForSource,
+      endpointScope: 'loopback',
+    });
+  }
+
+  let agentBindings = [];
+  if (options.collectBindings !== false && !options.fetchImpl) {
+    const env = buildExpandedEnv(options.env || process.env);
+    const lsRes = await runExecFile('magpie', ['ls'], { timeout: 2000, env });
+    if (lsRes.ok && lsRes.stdout) {
+      agentBindings = parseProbeMagpieBindings(lsRes.stdout);
+    }
+  }
+
+  const result = { modelSources, models, agentBindings };
+  if (!options.fetchImpl) {
+    localModelCatalogCache = {
+      expiresAt: nowMs + LOCAL_MODEL_CACHE_TTL_MS,
+      data: result,
+    };
+  }
+  return result;
+}
+
 function extractTextFromA2AMessage(message) {
   if (!message || typeof message !== 'object') return '';
   if (typeof message.text === 'string' && message.text.trim()) return message.text.trim();
@@ -1504,6 +1726,13 @@ export async function collectProbeMetrics(config = {}, state = {}) {
     mergedHarnesses = [...peerHarnesses, ...extras].slice(0, 16);
   }
 
+  const modelDiscovery = config.collectModels === false
+    ? { modelSources: [], models: [], agentBindings: [] }
+    : await discoverLocalModelCatalog({
+        ...(config.modelSources && typeof config.modelSources === 'object' ? config.modelSources : {}),
+        nodeId: resolvedNodeId,
+      });
+
   return {
     schemaVersion: SCHEMA_VERSION,
     probeVersion: PROBE_VERSION,
@@ -1531,6 +1760,9 @@ export async function collectProbeMetrics(config = {}, state = {}) {
     agents,
     mcps: Array.isArray(config.mcps) ? config.mcps.slice(0, 32) : [],
     harnesses: mergedHarnesses,
+    modelSources: modelDiscovery.modelSources,
+    models: modelDiscovery.models,
+    agentBindings: modelDiscovery.agentBindings,
     hubRttMs,
   };
 }

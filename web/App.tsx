@@ -464,6 +464,7 @@ export function App() {
       'plugins_updated',
       'mcps_updated',
       'a2a_updated',
+      'model_catalog_updated',
       'config_reloaded',
       'plugins_reloaded',
       'agent_declarative_reloaded',

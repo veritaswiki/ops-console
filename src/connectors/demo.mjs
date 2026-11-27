@@ -511,6 +511,13 @@ export function createDemoProvider() {
           { name: 'ops-probe.service', status: 'active', role: 'Push Telemetry Probe', memoryMb: 28 },
           { name: 'caddy.service', status: 'active', role: 'APAC Reverse Proxy', memoryMb: 64 },
         ],
+        modelSources: [
+          { id: 'edge-tokyo-ollama', kind: 'ollama', name: 'Ollama Local', reachable: true, latencyMs: 14, modelsCount: 1, endpointScope: 'loopback' },
+        ],
+        models: [
+          { id: 'ollama/qwen3-coder:32b', displayName: 'Qwen3 Coder 32B', provider: 'ollama', sourceKind: 'ollama', sourceId: 'edge-tokyo-ollama', reasoning: false, contextWindow: 131072, toolCall: true },
+        ],
+        agentBindings: [],
         agentsCount: 2,
         rttMs: 98,
         lastSeenAt: nowIso,
@@ -594,6 +601,18 @@ export function createDemoProvider() {
           { name: 'Tailscale', status: 'active', role: 'Tailnet VPN', memoryMb: 72 },
           { name: 'com.ops-console.probe', status: 'active', role: 'launchd Telemetry', memoryMb: 34 },
           { name: 'mlx-lm-server', status: 'active', role: 'Local MLX Inference', memoryMb: 2140 },
+        ],
+        modelSources: [
+          { id: 'workstation-mac-mlx', kind: 'mlx', name: 'MLX Local Server', reachable: true, latencyMs: 9, modelsCount: 2, endpointScope: 'loopback' },
+          { id: 'workstation-mac-ollama', kind: 'ollama', name: 'Ollama Local', reachable: true, latencyMs: 11, modelsCount: 1, endpointScope: 'loopback' },
+        ],
+        models: [
+          { id: 'mlx/qwen3-32b-4bit', displayName: 'Qwen3 32B (MLX 4-bit)', provider: 'mlx', sourceKind: 'mlx', sourceId: 'workstation-mac-mlx', reasoning: true, reasoningLevels: ['low', 'medium', 'high'], contextWindow: 131072, toolCall: true },
+          { id: 'mlx/deepseek-r1-distill-14b', displayName: 'DeepSeek R1 Distill 14B (MLX)', provider: 'mlx', sourceKind: 'mlx', sourceId: 'workstation-mac-mlx', reasoning: true, reasoningLevels: ['low', 'high'], contextWindow: 65536, toolCall: true },
+          { id: 'ollama/llama3.3:70b', displayName: 'Llama 3.3 70B', provider: 'ollama', sourceKind: 'ollama', sourceId: 'workstation-mac-ollama', reasoning: false, contextWindow: 131072, toolCall: true },
+        ],
+        agentBindings: [
+          { name: 'pi-agent', harness: 'pi-agent', model: 'mlx/qwen3-32b-4bit', canonicalModel: 'mlx/qwen3-32b-4bit', mode: 'pinned', effort: 'medium', configSource: 'local-config' },
         ],
         agentsCount: 2,
         rttMs: 162,

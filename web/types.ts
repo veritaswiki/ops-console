@@ -299,6 +299,132 @@ export interface MagpieCatalogResponse {
   error?: string | null;
 }
 
+export type ModelSourceKind = 'magpie' | 'ollama' | 'mlx' | 'openai-compatible' | string;
+
+export interface NodeModelSource {
+  id: string;
+  kind: ModelSourceKind;
+  name: string;
+  reachable: boolean;
+  latencyMs: number | null;
+  modelsCount: number;
+  endpointScope: string;
+}
+
+export interface CatalogModelItem {
+  id: string;
+  displayName: string;
+  label: string;
+  provider: string;
+  group: string;
+  sourceKind: ModelSourceKind;
+  sourceId: string;
+  category: 'routing-group' | 'local' | 'cloud' | string;
+  isRoutingGroup: boolean;
+  recommended: boolean;
+  reasoning: boolean;
+  reasoningLevels: string[];
+  contextWindow: number | null;
+  maxOutputTokens: number | null;
+  toolCall: boolean;
+  nodeId: string;
+  nodeName: string;
+  boundToAgent?: boolean;
+  effectiveEfforts?: string[];
+}
+
+export interface AgentParameterConstraints {
+  supportsEffort: boolean;
+  supportsThinking: boolean;
+  supportsExplicitModel: boolean;
+  supportsRoutingGroups: boolean;
+  supportedSources: ModelSourceKind[];
+  allowedEfforts: string[];
+  defaultEffort: string;
+  thinkingParam: string | null;
+}
+
+export interface OnlineNodeModelCatalog {
+  nodeId: string;
+  name: string;
+  deviceType: string;
+  platform: string;
+  role: string;
+  region: string;
+  status: string;
+  isLocal: boolean;
+  sources: NodeModelSource[];
+  models: CatalogModelItem[];
+  agentBindings: Array<{
+    name: string;
+    harness: string;
+    model: string | null;
+    canonicalModel: string | null;
+    mode: string;
+    effort: string | null;
+    configSource: string | null;
+  }>;
+  totalModels: number;
+  lastSeenAt: string | null;
+}
+
+export interface OfflineNodeCatalogNotice {
+  nodeId: string;
+  name: string;
+  deviceType: string;
+  platform: string;
+  status: string;
+  offlineReason: string;
+  offlineCategory: string;
+  lastSeenAt: string | null;
+}
+
+export interface AgentModelCatalogEntry {
+  agentId: string;
+  name: string;
+  harness: string;
+  canonicalHarness: string;
+  nodeId: string;
+  nodeName: string;
+  online: boolean;
+  unavailableReason: string | null;
+  binding: {
+    name: string;
+    harness: string;
+    model: string | null;
+    canonicalModel: string | null;
+    mode: string;
+    effort: string | null;
+    configSource: string | null;
+  } | null;
+  defaultModel: string | null;
+  defaultSource: 'node-binding' | 'agent-hint' | 'node-recommended' | 'none' | string;
+  parameterConstraints: AgentParameterConstraints;
+  sources: NodeModelSource[];
+  models: CatalogModelItem[];
+  totalModels: number;
+}
+
+export interface DynamicModelCatalogResponse {
+  ok: boolean;
+  generatedAt: string;
+  catalogHash: string;
+  localNodeId: string;
+  onlineNodes: OnlineNodeModelCatalog[];
+  offlineNodes: OfflineNodeCatalogNotice[];
+  agents: AgentModelCatalogEntry[];
+  harnessCapabilities?: Record<string, AgentParameterConstraints & { harness: string; label: string }>;
+  summary: {
+    onlineNodesCount: number;
+    offlineNodesCount: number;
+    totalOnlineModels: number;
+    uniqueOnlineModels: number;
+    totalAgents: number;
+    onlineAgents: number;
+    offlineAgents: number;
+  };
+}
+
 export interface A2ASigningMetadata {
   enabled: boolean;
   configured: boolean;
@@ -690,6 +816,7 @@ export interface FleetNode {
     id: string;
     name: string;
     harness: string;
+    version?: string | null;
     role: 'lead' | 'worker' | string;
     status: string;
     delegatable?: boolean;
@@ -699,6 +826,8 @@ export interface FleetNode {
     boundMcpIds?: string[];
     latencyMs?: number | null;
   }>;
+  modelSources?: NodeModelSource[];
+  models?: CatalogModelItem[];
   agentsCount?: number;
   note?: string;
   history?: Array<{
@@ -1359,6 +1488,12 @@ export interface A2AAgentPeer {
   magpieMode?: string | null;
   magpieBindingName?: string | null;
   magpieConfigSource?: string | null;
+  nodeOnline?: boolean;
+  catalogDefaultModel?: string | null;
+  catalogDefaultSource?: string;
+  parameterConstraints?: AgentParameterConstraints | null;
+  availableModelsCount?: number;
+  availableModels?: CatalogModelItem[];
   agentCardUrl?: string | null;
   rpcUrl?: string | null;
   modelHint?: string | null;

@@ -50,6 +50,7 @@ import type {
   LinearStateResponse,
   LogsResponse,
   MagpieCatalogResponse,
+  DynamicModelCatalogResponse,
   McpFleetResponse,
   McpTestResult,
   MemoryCompareResponse,
@@ -631,6 +632,21 @@ export const fetchA2AState = (signal?: AbortSignal) =>
 
 export const fetchMagpieModels = (signal?: AbortSignal) =>
   apiRequest<MagpieCatalogResponse>('/api/magpie/models', { cacheTtlMs: 5000, signal });
+
+export const fetchModelCatalog = (
+  signal?: AbortSignal,
+  params?: { nodeId?: string; agentId?: string; refresh?: boolean },
+) => {
+  const query = new URLSearchParams();
+  if (params?.nodeId) query.set('nodeId', params.nodeId);
+  if (params?.agentId) query.set('agentId', params.agentId);
+  if (params?.refresh) query.set('refresh', '1');
+  const suffix = query.toString() ? `?${query.toString()}` : '';
+  return apiRequest<DynamicModelCatalogResponse>(`/api/models/catalog${suffix}`, {
+    cacheTtlMs: params?.refresh ? 0 : 4000,
+    signal,
+  });
+};
 
 export const verifyA2ASigning = (payload?: {
   rawBody?: string;

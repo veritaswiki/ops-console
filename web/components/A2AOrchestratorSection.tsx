@@ -1163,31 +1163,54 @@ export function A2AOrchestratorSection({
                         </div>
 
                         <div className="flex flex-wrap items-center gap-2 shrink-0">
-                          <select
-                            disabled={readOnly}
-                            aria-label={`${agent.name} 默认模型`}
-                            value={agent.modelHint || ''}
-                            onChange={(e) => void handleUpdateAgent(agent.id, { modelHint: e.target.value })}
-                            className={cn('ui-select h-8 pl-2.5 text-[12px] font-mono cursor-pointer max-w-[165px]', inputBaseClass)}
-                          >
-                            {!MODEL_PRESETS.includes(agent.modelHint as typeof MODEL_PRESETS[number]) && agent.modelHint && (
-                              <option value={agent.modelHint}>{agent.modelHint}</option>
-                            )}
-                            {MODEL_PRESETS.map((m) => (
-                              <option key={m} value={m}>{m}</option>
-                            ))}
-                          </select>
-                          <select
-                            disabled={readOnly}
-                            aria-label={`${agent.name} 思考强度`}
-                            value={agent.reasoningEffort || 'medium'}
-                            onChange={(e) => void handleUpdateAgent(agent.id, { reasoningEffort: e.target.value })}
-                            className={cn('ui-select h-8 pl-2 text-[12px] font-mono cursor-pointer', inputBaseClass)}
-                          >
-                            {EFFORT_OPTIONS.map((opt) => (
-                              <option key={opt.value} value={opt.value}>思考:{opt.short}</option>
-                            ))}
-                          </select>
+                          {(() => {
+                            const isOfflineNode = agent.nodeOnline === false;
+                            const dynamicIds = !isOfflineNode && Array.isArray(agent.availableModels) && agent.availableModels.length > 0
+                              ? agent.availableModels.map((item) => item.id)
+                              : [];
+                            const candidateModels = isOfflineNode
+                              ? []
+                              : (dynamicIds.length > 0 ? dynamicIds : [...MODEL_PRESETS]);
+                            const allowedEfforts = agent.parameterConstraints?.allowedEfforts?.length
+                              ? EFFORT_OPTIONS.filter((opt) => agent.parameterConstraints?.allowedEfforts.includes(opt.value))
+                              : EFFORT_OPTIONS;
+                            const effortList = allowedEfforts.length > 0 ? allowedEfforts : EFFORT_OPTIONS;
+                            return (
+                              <>
+                                <select
+                                  disabled={readOnly || isOfflineNode}
+                                  aria-label={`${agent.name} 默认模型`}
+                                  value={isOfflineNode ? '' : (agent.modelHint || agent.catalogDefaultModel || '')}
+                                  onChange={(e) => void handleUpdateAgent(agent.id, { modelHint: e.target.value })}
+                                  className={cn('ui-select h-8 pl-2.5 text-[12px] font-mono cursor-pointer max-w-[185px]', inputBaseClass)}
+                                >
+                                  {isOfflineNode ? (
+                                    <option value="">节点离线（模型已隐藏）</option>
+                                  ) : (
+                                    <>
+                                      {agent.modelHint && !candidateModels.includes(agent.modelHint) && (
+                                        <option value={agent.modelHint}>{agent.modelHint}</option>
+                                      )}
+                                      {candidateModels.map((m) => (
+                                        <option key={m} value={m}>{m}</option>
+                                      ))}
+                                    </>
+                                  )}
+                                </select>
+                                <select
+                                  disabled={readOnly || isOfflineNode}
+                                  aria-label={`${agent.name} 思考强度`}
+                                  value={agent.reasoningEffort || agent.parameterConstraints?.defaultEffort || 'medium'}
+                                  onChange={(e) => void handleUpdateAgent(agent.id, { reasoningEffort: e.target.value })}
+                                  className={cn('ui-select h-8 pl-2 text-[12px] font-mono cursor-pointer', inputBaseClass)}
+                                >
+                                  {effortList.map((opt) => (
+                                    <option key={opt.value} value={opt.value}>思考:{opt.short}</option>
+                                  ))}
+                                </select>
+                              </>
+                            );
+                          })()}
                           <Button
                             variant="secondary"
                             size="sm"

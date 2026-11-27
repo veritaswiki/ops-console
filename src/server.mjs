@@ -34,6 +34,7 @@ import { LinearCommanderManager } from './linear-commander.mjs';
 import { StructuredLogger } from './logger.mjs';
 import { LogService } from './logs.mjs';
 import { McpFleetManager } from './mcp-fleet.mjs';
+import { buildOnlineModelCatalog, filterOnlineModelCatalog } from './model-catalog.mjs';
 import { isTailscaleOrLoopbackIp, ProbeRegistry, validateNodeId } from './probes.mjs';
 import { PluginManager } from './plugins/manager.mjs';
 import { validatePluginId } from './plugins/sdk.mjs';
@@ -333,6 +334,56 @@ export function createOpsConsole(options = {}) {
   });
   const staticCache = new Map();
   const staticInflight = new Map();
+  let lastModelCatalogHash = null;
+
+  async function collectDynamicModelCatalog({
+    snapshot = null,
+    awaitMagpie = false,
+    emitOnChange = true,
+    reason = 'refresh',
+    nodeId = null,
+  } = {}) {
+    const resolvedSnapshot = snapshot || await hub.collectSnapshot(false);
+    const fleetNodes = Array.isArray(resolvedSnapshot?.fleet?.nodes)
+      ? resolvedSnapshot.fleet.nodes
+      : (probeRegistry.buildFleetView({ snapshot: resolvedSnapshot || {} }).nodes || []);
+    const localNodeId = resolvedSnapshot?.fleet?.localNodeId || config.fleet?.localNode?.id || 'hub-local';
+    let hubMagpieCatalog = null;
+    if (typeof options.collectHubMagpieCatalog === 'function') {
+      hubMagpieCatalog = await options.collectHubMagpieCatalog();
+    } else if (config.demo && demoProvider) {
+      hubMagpieCatalog = demoProvider.getMagpieCatalog();
+    } else {
+      try {
+        hubMagpieCatalog = await collectMagpieCatalog(config.connectors.magpie, { awaitCli: Boolean(awaitMagpie) });
+      } catch {
+        hubMagpieCatalog = null;
+      }
+    }
+    a2aOrchestrator.syncProbeHarnesses(fleetNodes);
+    const catalog = buildOnlineModelCatalog({
+      fleetNodes,
+      localNodeId,
+      hubMagpieCatalog,
+      agents: [...a2aOrchestrator.agents.values()],
+    });
+    const shouldEmit = emitOnChange
+      && catalog.catalogHash !== lastModelCatalogHash
+      && (lastModelCatalogHash !== null || reason === 'probe_ingest' || reason === 'probe_revoked');
+    if (shouldEmit) {
+      eventBus.emit('model_catalog_updated', {
+        catalogHash: catalog.catalogHash,
+        onlineNodesCount: catalog.summary.onlineNodesCount,
+        offlineNodesCount: catalog.summary.offlineNodesCount,
+        uniqueOnlineModels: catalog.summary.uniqueOnlineModels,
+        onlineAgents: catalog.summary.onlineAgents,
+        reason,
+        nodeId,
+      });
+    }
+    lastModelCatalogHash = catalog.catalogHash;
+    return catalog;
+  }
   const repoDir = options.repoDir || PACKAGE_ROOT;
   const agentModuleHost = options.agentModuleHost || new AgentModuleHost({
     config,
@@ -546,7 +597,10 @@ export function createOpsConsole(options = {}) {
       }
 
       if (method === 'GET' && (pathname === '/.well-known/agent-card.json' || pathname === '/.well-known/agent.json')) {
-        const state = a2aOrchestrator.getState([]);
+        const snapshot = await hub.collectSnapshot(false);
+        const fleetNodes = snapshot?.fleet?.nodes || [];
+        const modelCatalog = await collectDynamicModelCatalog({ snapshot, awaitMagpie: false, emitOnChange: false });
+        const state = a2aOrchestrator.getState(fleetNodes, { modelCatalog });
         const origin = computeRequestOrigin(req, isHttps, Boolean(config.security.trustProxy));
         const card = buildHubAgentCard({
           origin,
@@ -554,6 +608,7 @@ export function createOpsConsole(options = {}) {
           version: APP_VERSION,
           agents: state.agents,
           leadAgentId: state.leadAgentId,
+          modelCatalog,
         });
         sendJson(res, 200, card, {}, req);
         return;
@@ -614,7 +669,10 @@ export function createOpsConsole(options = {}) {
           return;
         }
 
-        const state = a2aOrchestrator.getState([]);
+        const snapshot = await hub.collectSnapshot(false);
+        const fleetNodes = snapshot?.fleet?.nodes || [];
+        const modelCatalog = await collectDynamicModelCatalog({ snapshot, awaitMagpie: false, emitOnChange: false });
+        const state = a2aOrchestrator.getState(fleetNodes, { modelCatalog });
         const origin = computeRequestOrigin(req, isHttps, Boolean(config.security.trustProxy));
         const card = buildHubAgentCard({
           origin,
@@ -622,6 +680,7 @@ export function createOpsConsole(options = {}) {
           version: APP_VERSION,
           agents: state.agents,
           leadAgentId: state.leadAgentId,
+          modelCatalog,
         });
         const rpcResult = await handleA2AJsonRpc({
           payload: rpcPayload,
@@ -669,8 +728,17 @@ export function createOpsConsole(options = {}) {
             sourceIp: clientIp,
             via: 'probe-token',
           });
+          cache.invalidate();
           const pendingCommands = probeRegistry.drainPendingCommands(record.id);
           eventBus.emit('probe_heartbeat', { nodeId: record.id, pendingCommands: pendingCommands.length });
+          const fleetAfterIngest = probeRegistry.buildFleetView({ snapshot: {} });
+          await collectDynamicModelCatalog({
+            snapshot: { fleet: fleetAfterIngest },
+            awaitMagpie: false,
+            emitOnChange: true,
+            reason: 'probe_ingest',
+            nodeId: record.id,
+          }).catch(() => {});
           sendJson(res, 200, { ...ingestResult, pendingCommands });
         } catch (ingestErr) {
           sendJson(res, 400, { ok: false, error: ingestErr.message });
@@ -1069,6 +1137,17 @@ export function createOpsConsole(options = {}) {
         }
         const targetId = decodeURIComponent(pathname.slice('/api/probes/'.length)).trim().toLowerCase();
         const revoked = await probeRegistry.revoke(targetId);
+        if (revoked.ok) {
+          cache.invalidate();
+          const fleetAfterRevoke = probeRegistry.buildFleetView({ snapshot: {} });
+          await collectDynamicModelCatalog({
+            snapshot: { fleet: fleetAfterRevoke },
+            awaitMagpie: false,
+            emitOnChange: true,
+            reason: 'probe_revoked',
+            nodeId: targetId,
+          }).catch(() => {});
+        }
         await logger.appendAudit({
           category: 'probe',
           action: 'probe_revoke',
@@ -1521,6 +1600,22 @@ export function createOpsConsole(options = {}) {
       }
 
       // ─── Harness-Free A2A Lead/Worker Orchestrator (/api/a2a/*) ────────────
+      if (method === 'GET' && pathname === '/api/models/catalog') {
+        const nodeFilter = String(url.searchParams.get('nodeId') || '').trim();
+        const agentFilter = String(url.searchParams.get('agentId') || '').trim();
+        const forceRefresh = url.searchParams.get('refresh') === '1';
+        const snapshot = await hub.collectSnapshot(forceRefresh);
+        const catalog = await collectDynamicModelCatalog({
+          snapshot,
+          awaitMagpie: true,
+          emitOnChange: true,
+          reason: 'api_refresh',
+        });
+        const filtered = filterOnlineModelCatalog(catalog, { nodeId: nodeFilter, agentId: agentFilter });
+        sendJson(res, 200, filtered, {}, req);
+        return;
+      }
+
       if (method === 'GET' && pathname === '/api/magpie/models') {
         const catalog = config.demo && demoProvider
           ? demoProvider.getMagpieCatalog()
@@ -1535,7 +1630,13 @@ export function createOpsConsole(options = {}) {
         const magpieBindings = config.demo && demoProvider
           ? (snapshot?.magpie?.agents || [])
           : (snapshot?.magpie?.agentBindings || snapshot?.magpie?.agents || getCachedMagpieAgentBindings(config.connectors.magpie));
-        const state = a2aOrchestrator.getState(fleetNodes, { magpieBindings });
+        const modelCatalog = await collectDynamicModelCatalog({
+          snapshot,
+          awaitMagpie: false,
+          emitOnChange: true,
+          reason: 'a2a_state',
+        });
+        const state = a2aOrchestrator.getState(fleetNodes, { magpieBindings, modelCatalog });
         sendJson(res, 200, state, {}, req);
         return;
       }

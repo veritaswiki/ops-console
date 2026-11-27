@@ -36,6 +36,7 @@ import type {
   A2ASigningVerifyResponse,
   A2ASkillCatalogItem,
   A2AStateResponse,
+  DynamicModelCatalogResponse,
   GatewayTelemetryResponse,
   LinearStateResponse,
   MagpieCatalogResponse,
@@ -54,6 +55,7 @@ import {
   fetchGatewayTelemetry,
   fetchLinearState,
   fetchMagpieModels,
+  fetchModelCatalog,
   pingA2AAgent,
   saveA2ATopologyPositions,
   setLeadA2AAgent,
@@ -261,6 +263,7 @@ export function AgentSettingsView({
   const [a2aState, setA2aState] = React.useState<A2AStateResponse | null>(null);
   const [a2aLoading, setA2aLoading] = React.useState(false);
   const [magpieCatalog, setMagpieCatalog] = React.useState<MagpieCatalogResponse | null>(null);
+  const [modelCatalog, setModelCatalog] = React.useState<DynamicModelCatalogResponse | null>(null);
   const [verifyingSigning, setVerifyingSigning] = React.useState(false);
   const [signingVerifyResult, setSigningVerifyResult] =
     React.useState<A2ASigningVerifyResponse | null>(null);
@@ -450,10 +453,21 @@ export function AgentSettingsView({
     if (activeTab === 'multi-device') {
       void loadConnectProfiles(profileParams, controller.signal);
     }
-    if (activeTab === 'general' || activeTab === 'multi-device' || activeTab === 'gateway') {
-      fetchMagpieModels(controller.signal)
-        .then((res) => {
-          if (!controller.signal.aborted) setMagpieCatalog(res);
+    if (
+      activeTab === 'general' ||
+      activeTab === 'orchestration' ||
+      activeTab === 'multi-device' ||
+      activeTab === 'gateway'
+    ) {
+      Promise.all([
+        fetchModelCatalog(controller.signal).catch(() => null),
+        fetchMagpieModels(controller.signal).catch(() => null),
+      ])
+        .then(([dynamicCat, legacyCat]) => {
+          if (!controller.signal.aborted) {
+            setModelCatalog(dynamicCat);
+            setMagpieCatalog(legacyCat);
+          }
         })
         .catch(() => {
           // Non-blocking catalog lookup
@@ -516,6 +530,14 @@ export function AgentSettingsView({
   const modelPresetOptions = React.useMemo(() => {
     const seen = new Set<string>();
     const list: string[] = [];
+    for (const node of modelCatalog?.onlineNodes || []) {
+      for (const model of node.models || []) {
+        if (model?.id && !seen.has(model.id)) {
+          seen.add(model.id);
+          list.push(model.id);
+        }
+      }
+    }
     for (const model of magpieCatalog?.models || []) {
       if (model?.id && !seen.has(model.id)) {
         seen.add(model.id);
@@ -529,7 +551,7 @@ export function AgentSettingsView({
       }
     }
     return list;
-  }, [magpieCatalog?.models]);
+  }, [modelCatalog?.onlineNodes, magpieCatalog?.models]);
 
   const activeSigningMeta = connectProfiles?.signing || a2aState?.signing || null;
 
@@ -1163,9 +1185,11 @@ export function AgentSettingsView({
                   </datalist>
 
                   <div className="text-[12px] font-mono text-[var(--ink-subtle)]">
-                    {magpieCatalog?.reachable
-                      ? `已从天翼云 Magpie 网关同步 ${magpieCatalog.totalModels} 个模型，识别 ${magpieCatalog.agentBindings.length} 项 Agent 模型绑定。`
-                      : 'Magpie 网关未连接，当前使用内置模型候选列表。'}
+                    {modelCatalog
+                      ? `在线节点 ${modelCatalog.summary.onlineNodesCount} 台 · 可选模型 ${modelCatalog.summary.uniqueOnlineModels} 个${modelCatalog.summary.offlineNodesCount > 0 ? `（已自动隐藏 ${modelCatalog.summary.offlineNodesCount} 台离线节点模型）` : ''}`
+                      : magpieCatalog?.reachable
+                        ? `已从 Magpie 网关同步 ${magpieCatalog.totalModels} 个模型，识别 ${magpieCatalog.agentBindings.length} 项 Agent 模型绑定。`
+                        : '在线模型目录暂未就绪，当前使用兜底候选列表。'}
                   </div>
 
                   <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
