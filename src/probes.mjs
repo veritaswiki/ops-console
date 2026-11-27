@@ -3,13 +3,16 @@ import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import net from 'node:net';
 import path from 'node:path';
-import { maskClientIp } from './redact.mjs';
+import { maskClientIp, redactText } from './redact.mjs';
 import { safeEqualString } from './security.mjs';
 import { sanitizeAgentBinding, sanitizeModelEntry, sanitizeModelSource } from './model-catalog.mjs';
 
 const NODE_ID_RE = /^[a-z0-9][a-z0-9._-]{1,47}$/;
 const VALID_DEVICE_TYPES = new Set(['hub', 'server', 'edge', 'laptop', 'mobile']);
 const VALID_PROBE_MODES = new Set(['local', 'push', 'checkin', 'tailscale-only', 'ssh', 'external']);
+const VALID_PROBE_LOG_LEVELS = new Set(['crit', 'err', 'warn', 'notice', 'info', 'debug']);
+const PROBE_LOG_EMAIL_RE = /\b[A-Za-z0-9._%+-]+@(?![A-Za-z0-9.-]*\.(?:service|socket|timer|target|mount|slice|scope)\b)[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g;
+const PROBE_LOG_EXTRA_SECRET_RE = /\b(?:github_pat_|xox[baprs]-)[A-Za-z0-9._-]{8,}\b/gi;
 
 export const DERP_COORDS = {
   pek: { region: 'Beijing', lat: 39.9, lon: 116.4 },
@@ -510,6 +513,7 @@ export function sanitizeProbePayload(raw, expectedNodeId) {
           .filter(Boolean)
       : [],
     cache: sanitizeProbeCache(raw.cache),
+    logs: sanitizeProbeLogs(raw.logs),
     regionOverride: cleanStr(raw.region || '', 64),
     note: cleanStr(raw.note || '', 120),
     hubRttMs: clampNum(raw.hubRttMs, 0, 60000, null),
@@ -566,6 +570,69 @@ function sanitizeProbeCache(raw) {
     cacheHitPct: clampNum(raw.cacheHitPct, 0, 100, null),
     avgTtftMs: Math.round(clampNum(raw.avgTtftMs, 0, 600_000, 0)),
     buckets,
+  };
+}
+
+function scrubProbeLogText(value, maxLen = 220) {
+  if (value === null || value === undefined) return '';
+  const redacted = redactText(String(value))
+    .replace(PROBE_LOG_EXTRA_SECRET_RE, '[REDACTED]')
+    .replace(PROBE_LOG_EMAIL_RE, '[REDACTED_EMAIL]');
+  return cleanStr(redacted, maxLen);
+}
+
+function normalizeProbeLogLevel(rawLevel) {
+  const lowered = String(rawLevel || '').trim().toLowerCase();
+  if (lowered === 'error') return 'err';
+  if (lowered === 'warning') return 'warn';
+  if (lowered === 'emerg' || lowered === 'alert' || lowered === 'fatal' || lowered === 'critical') return 'crit';
+  return VALID_PROBE_LOG_LEVELS.has(lowered) ? lowered : 'err';
+}
+
+function sanitizeProbeLogService(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const serviceId = scrubProbeLogText(raw.serviceId || raw.unit || '', 120);
+  if (!serviceId) return null;
+  return {
+    serviceId,
+    errorCount: Math.round(clampNum(raw.errorCount, 0, 10_000_000, 0)),
+    warnCount: Math.round(clampNum(raw.warnCount, 0, 10_000_000, 0)),
+    newFingerprintCount: Math.round(clampNum(raw.newFingerprintCount, 0, 1_000_000, 0)),
+    restartCount: Math.round(clampNum(raw.restartCount, 0, 1_000_000, 0)),
+    http5xxCount: Math.round(clampNum(raw.http5xxCount, 0, 10_000_000, 0)),
+    totalScanned: Math.round(clampNum(raw.totalScanned, 0, 10_000_000, 0)),
+  };
+}
+
+function sanitizeProbeLogFingerprint(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const fingerprint = cleanStr(raw.fingerprint || '', 64);
+  if (!fingerprint) return null;
+  return {
+    fingerprint,
+    serviceId: scrubProbeLogText(raw.serviceId || 'remote', 120) || 'remote',
+    sourceId: scrubProbeLogText(raw.sourceId || raw.serviceId || 'remote', 160) || 'remote',
+    level: normalizeProbeLogLevel(raw.level),
+    template: scrubProbeLogText(raw.template || '', 220),
+    sampleRedacted: scrubProbeLogText(raw.sampleRedacted || raw.template || '', 280),
+    count: Math.round(clampNum(raw.count, 1, 10_000_000, 1)),
+  };
+}
+
+export function sanitizeProbeLogs(raw) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const services = Array.isArray(raw.services)
+    ? raw.services.slice(0, 32).map((item) => sanitizeProbeLogService(item)).filter(Boolean)
+    : [];
+  const fingerprints = Array.isArray(raw.fingerprints)
+    ? raw.fingerprints.slice(0, 32).map((item) => sanitizeProbeLogFingerprint(item)).filter(Boolean)
+    : [];
+  if (services.length === 0 && fingerprints.length === 0) return null;
+  return {
+    collectedAt: cleanStr(raw.collectedAt || '', 64) || null,
+    windowMinutes: Math.round(clampNum(raw.windowMinutes, 1, 1440, 5)),
+    services,
+    fingerprints,
   };
 }
 
@@ -1080,6 +1147,7 @@ export class ProbeRegistry {
         models: nodeIsOnline ? (data?.models || []) : [],
         agentBindings: nodeIsOnline ? (data?.agentBindings || []) : [],
         cache: nodeIsOnline ? (data?.cache || null) : null,
+        logs: nodeIsOnline ? (data?.logs || null) : null,
         agentsCount: data?.agents?.count ?? 0,
         backupDisk: sshRem?.backupDisk || (sshRem?.backup && sshRem.backup !== 'n/a' ? sshRem.backup : null),
         rttMs: data?.hubRttMs ?? (sshRem?.reachable ? sshRem.rttMs : (extCheck?.reachable ? extCheck.rttMs : null)),

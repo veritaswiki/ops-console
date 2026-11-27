@@ -47,6 +47,8 @@ import { TimeSeriesStore } from './timeseries.mjs';
 import { IncrementalUpdater } from './updater.mjs';
 import { DecisionAdvisor } from './decision-advisor.mjs';
 import { RuntimeCacheMonitor } from './cache-monitor.mjs';
+import { LogIndexer } from './log-indexer.mjs';
+import { ObservabilityAdvisor } from './observability-advisor.mjs';
 import {
   buildClearSessionCookie,
   buildSessionCookie,
@@ -451,6 +453,24 @@ export function createOpsConsole(options = {}) {
     logger,
     eventBus,
     usageFile: options.usageFile !== undefined ? options.usageFile : (config.demo ? '' : undefined),
+  });
+  const logIndexer = options.logIndexer || new LogIndexer({
+    dataDir: config.demo ? '' : config.console.dataDir,
+    retentionDays: config.observability?.retentionDays,
+    maxDiskMb: config.observability?.maxDiskMb,
+    logger,
+  });
+  const observabilityAdvisor = options.observabilityAdvisor || new ObservabilityAdvisor({
+    config,
+    indexer: logIndexer,
+    advisor: decisionAdvisor,
+    probeRegistry,
+    cacheMonitor,
+    hub,
+    logger,
+    eventBus,
+    runCmdFn: options.observabilityRunCmdFn || undefined,
+    fetchImpl: options.observabilityFetchImpl || options.advisorFetchImpl || undefined,
   });
   const allowIframe = Boolean(config.security?.allowIframe);
   const secHeaders = (isHtml = false) => getSecurityHeaders({ isHtml, allowIframe });
@@ -1391,6 +1411,115 @@ export function createOpsConsole(options = {}) {
         const updated = await decisionAdvisor.updateConfig(data || {});
         const status = await decisionAdvisor.getStatus();
         sendJson(res, 200, { ok: true, config: updated, status }, {}, req);
+        return;
+      }
+
+      // ─── Federated Log Observability & Decision Advisor (/api/observability/*) ──
+      if (method === 'GET' && pathname === '/api/observability/status') {
+        const status = await observabilityAdvisor.getStatus();
+        sendJson(res, 200, status, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/observability/metrics') {
+        const range = url.searchParams.get('range') || '6h';
+        const stepRaw = Number(url.searchParams.get('step') || 0);
+        const step = stepRaw === 60 || stepRaw === 300 ? stepRaw : null;
+        const nodeId = url.searchParams.get('nodeId') || '';
+        const serviceId = url.searchParams.get('serviceId') || '';
+        const series = await logIndexer.queryMetricsSeries({ range, step, nodeId, serviceId });
+        sendJson(res, 200, { ok: true, ...series }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/observability/fingerprints') {
+        const range = url.searchParams.get('range') || '24h';
+        const nodeId = url.searchParams.get('nodeId') || '';
+        const serviceId = url.searchParams.get('serviceId') || '';
+        const level = url.searchParams.get('level') || '';
+        const limit = Number(url.searchParams.get('limit') || 50);
+        const items = await logIndexer.queryFingerprints({ range, nodeId, serviceId, level, limit });
+        sendJson(res, 200, { ok: true, items }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/observability/annotations') {
+        const range = url.searchParams.get('range') || '24h';
+        const nodeId = url.searchParams.get('nodeId') || '';
+        const serviceId = url.searchParams.get('serviceId') || '';
+        const limit = Number(url.searchParams.get('limit') || 50);
+        const items = await logIndexer.queryAnnotations({ range, nodeId, serviceId, limit });
+        sendJson(res, 200, { ok: true, items }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/observability/adapters') {
+        const listed = observabilityAdvisor.listAdapters();
+        sendJson(res, 200, { ok: true, ...listed }, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/observability/logs/read') {
+        const result = await observabilityAdvisor.readAdapterLogs({
+          adapterId: url.searchParams.get('adapterId') || '',
+          nodeId: url.searchParams.get('nodeId') || '',
+          sourceKind: url.searchParams.get('sourceKind') || '',
+          target: url.searchParams.get('target') || '',
+          since: url.searchParams.get('since') || '15m',
+          level: url.searchParams.get('level') || 'all',
+          limit: Number(url.searchParams.get('limit') || 100),
+          q: url.searchParams.get('q') || '',
+        });
+        sendJson(res, result.ok ? 200 : 400, result, {}, req);
+        return;
+      }
+
+      if (method === 'PUT' && pathname === '/api/observability/config') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const updatedConfig = await observabilityAdvisor.updateConfig(data || {});
+        const advisorStatus = await decisionAdvisor.getStatus();
+        sendJson(res, 200, { ok: true, config: updatedConfig, advisor: advisorStatus }, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/observability/analyze') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await observabilityAdvisor.triggerManual({
+          mode: data?.mode === 'digest' ? 'digest' : 'triage',
+          force: data?.force !== undefined ? Boolean(data.force) : true,
+          serviceId: data?.serviceId ? String(data.serviceId) : '',
+          nodeId: data?.nodeId ? String(data.nodeId) : '',
+        });
+        sendJson(res, 200, { ok: true, ...result }, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/observability/scan') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const result = await observabilityAdvisor.runFastScan();
+        sendJson(res, 200, { ok: true, ...result }, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/observability/prune') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const result = await logIndexer.pruneShards();
+        const storage = await logIndexer.getStorageStats();
+        sendJson(res, 200, { ok: true, ...result, storage }, {}, req);
         return;
       }
 
@@ -3738,6 +3867,8 @@ export function createOpsConsole(options = {}) {
       await updater.init();
       await decisionAdvisor.ensureLoaded();
       await cacheMonitor.ensureLoaded();
+      await logIndexer.init();
+      await observabilityAdvisor.ensureLoaded();
       await store.hydrateTimeSeries(timeseries, { limitPerSeries: config.fleet?.historyPoints || 60 });
       for (const host of hosts) {
         const srv = http.createServer(handleRequest);
@@ -3761,6 +3892,7 @@ export function createOpsConsole(options = {}) {
       hub.warmUp();
       if (!config.demo && !options.disableBackgroundTimers) {
         cacheMonitor.start();
+        observabilityAdvisor.start();
       }
       logger.info('server_started', {
         version: APP_VERSION,
@@ -3780,6 +3912,8 @@ export function createOpsConsole(options = {}) {
   async function stop() {
     updater.stopWatchers();
     cacheMonitor.stop();
+    observabilityAdvisor.stop();
+    await logIndexer.close();
     await agentModuleHost.dispose();
     await pluginManager.disposeAll('shutdown');
     logs.closeAllStreams();
@@ -3826,6 +3960,8 @@ export function createOpsConsole(options = {}) {
     selfEvolution,
     decisionAdvisor,
     cacheMonitor,
+    logIndexer,
+    observabilityAdvisor,
     servers,
     addresses,
     start,

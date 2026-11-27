@@ -1,3 +1,15 @@
+import type {
+  ObservabilityAnnotation,
+  ObservabilityMetricPoint,
+  ObservabilitySourceRef,
+} from './lib/observability';
+
+export type {
+  ObservabilityAnnotation,
+  ObservabilityMetricPoint,
+  ObservabilitySourceRef,
+};
+
 export type ViewId =
   | 'agents'
   | 'projects'
@@ -3156,4 +3168,217 @@ export interface CacheMonitorAnalyzeResponse {
   diagnosis?: DecisionAdvisorDiagnosis | null;
 }
 
+export type ObservabilityAdapterKind = 'journald' | 'file' | 'docker' | 'http-json' | 'remote';
+
+export type ObservabilityMetricsRange = '1h' | '6h' | '24h' | '7d';
+
+export interface ObservabilityConfig {
+  enabled: boolean;
+  retentionDays: number;
+  maxDiskMb: number;
+  fastScanSec: number;
+  triageDebounceSec: number;
+  triageEnabled: boolean;
+  digestIntervalMinutes: number;
+  silentSkip: boolean;
+  heartbeatDigestHours: number;
+  advisorEnabled: boolean;
+  decisionModel: string;
+  cooldownMinutes: number;
+  maxCallsPerHour: number;
+  dailyTokenBudget: number;
+}
+
+export interface ObservabilityStorageShard {
+  dayKey: string;
+  file: string;
+  bytes: number;
+}
+
+export interface ObservabilityStorageStats {
+  driver: string;
+  retentionDays: number;
+  maxDiskMb: number;
+  maxDiskBytes: number;
+  totalBytes: number;
+  usedPct: number;
+  shardCount: number;
+  shards: ObservabilityStorageShard[];
+}
+
+export interface ObservabilityCadenceStatus {
+  fastScanSec: number;
+  triageDebounceSec: number;
+  triageEnabled: boolean;
+  digestIntervalMinutes: number;
+  silentSkip: boolean;
+  heartbeatDigestHours: number;
+  lastFastScanAt: string | null;
+  lastTriageAt: string | null;
+  lastDigestAt: string | null;
+  silentSkipCount: number;
+  pendingTriageCount: number;
+}
+
+export interface ObservabilityTotals {
+  errorCount: number;
+  warnCount: number;
+  newFingerprintCount: number;
+  restartCount: number;
+  http5xxCount: number;
+  totalScanned: number;
+}
+
+export interface ObservabilityServiceRollup extends ObservabilityTotals {
+  nodeId: string;
+  serviceId: string;
+}
+
+export interface ObservabilityAdapterStatus {
+  id: string;
+  name: string;
+  kind: ObservabilityAdapterKind;
+  enabled: boolean;
+  serviceId: string;
+  origin: string;
+  target: string;
+  cursor: string | null;
+  lastScanAt: string | null;
+  lastOk: boolean | null;
+  lastError: string | null;
+  lastEntries: number;
+  lastBytesRead: number;
+}
+
+export interface ObservabilityRemoteNodeStatus {
+  nodeId: string;
+  name: string;
+  status: string;
+  hasLogTelemetry: boolean;
+  collectedAt: string | null;
+  serviceCount: number;
+  fingerprintCount: number;
+  directReadSupported: boolean;
+}
+
+export interface ObservabilityRecentDigest {
+  id: string;
+  ts: string;
+  mode: string;
+  severity: string;
+  summary: string;
+  tokensUsed: number;
+}
+
+export interface ObservabilityStatusResponse {
+  ok: boolean;
+  config: ObservabilityConfig;
+  storage: ObservabilityStorageStats;
+  cadence: ObservabilityCadenceStatus;
+  summary1h: ObservabilityTotals;
+  serviceRollups: ObservabilityServiceRollup[];
+  adapters: ObservabilityAdapterStatus[];
+  remoteNodes: ObservabilityRemoteNodeStatus[];
+  recentAnnotations: ObservabilityAnnotation[];
+  recentDigests: ObservabilityRecentDigest[];
+  advisor: DecisionAdvisorStatus | null;
+}
+
+export interface ObservabilityMetricsResponse {
+  ok: boolean;
+  range: string;
+  stepSec: number;
+  startMs: number;
+  endMs: number;
+  deterministic: boolean;
+  points: ObservabilityMetricPoint[];
+  totals: ObservabilityTotals;
+  annotations: ObservabilityAnnotation[];
+}
+
+export interface ObservabilityFingerprint {
+  fingerprint: string;
+  nodeId: string;
+  serviceId: string;
+  sourceKind: ObservabilityAdapterKind | string;
+  sourceId: string;
+  level: string;
+  template: string;
+  sampleRedacted: string;
+  firstSeenTs: number;
+  lastSeenTs: number;
+  firstSeenAt: string;
+  lastSeenAt: string;
+  count: number;
+  sourceRef: ObservabilitySourceRef | null;
+}
+
+export interface ObservabilityFingerprintsResponse {
+  ok: boolean;
+  items: ObservabilityFingerprint[];
+}
+
+export interface ObservabilityAnnotationsResponse {
+  ok: boolean;
+  items: ObservabilityAnnotation[];
+}
+
+export interface ObservabilityAdaptersResponse {
+  ok: boolean;
+  adapters: ObservabilityAdapterStatus[];
+  remoteNodes: ObservabilityRemoteNodeStatus[];
+}
+
+export interface ObservabilityDirectLogEntry {
+  ts: string;
+  level: string;
+  priority?: number;
+  unit: string;
+  serviceId: string;
+  nodeId: string;
+  message: string;
+  fingerprint?: string;
+  sourceRef?: ObservabilitySourceRef | null;
+}
+
+export interface ObservabilityLogsReadResponse {
+  ok: boolean;
+  sourceKind: string;
+  target: string;
+  nodeId: string;
+  entries: ObservabilityDirectLogEntry[];
+  bytesRead?: number;
+  truncated?: boolean;
+  error?: string;
+}
+
+export interface ObservabilityConfigUpdateResponse {
+  ok: boolean;
+  config: ObservabilityConfig;
+  advisor: DecisionAdvisorStatus | null;
+}
+
+export interface ObservabilityAnalyzeResponse {
+  ok: boolean;
+  skipped?: boolean;
+  skipReason?: string | null;
+  diagnosis?: DecisionAdvisorDiagnosis | null;
+  diagnoses?: unknown[];
+  annotation?: ObservabilityAnnotation | null;
+}
+
+export interface ObservabilityScanResponse {
+  ok: boolean;
+  skipped?: boolean;
+  scanned: number;
+  anomalies: unknown[];
+}
+
+export interface ObservabilityPruneResponse {
+  ok: boolean;
+  removedShards: Array<{ dayKey: string; reason: string }>;
+  totalBytes: number;
+  shardCount: number;
+  storage?: ObservabilityStorageStats;
+}
 

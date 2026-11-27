@@ -68,6 +68,18 @@ import type {
   MetaResponse,
   MetricsRange,
   MetricsSeriesResponse,
+  ObservabilityAdaptersResponse,
+  ObservabilityAnalyzeResponse,
+  ObservabilityAnnotationsResponse,
+  ObservabilityConfig,
+  ObservabilityConfigUpdateResponse,
+  ObservabilityFingerprintsResponse,
+  ObservabilityLogsReadResponse,
+  ObservabilityMetricsRange,
+  ObservabilityMetricsResponse,
+  ObservabilityPruneResponse,
+  ObservabilityScanResponse,
+  ObservabilityStatusResponse,
   PluginCatalogItem,
   PluginsResponse,
   PluginTestResult,
@@ -342,6 +354,136 @@ export const updateDecisionAdvisorConfig = (patch: Partial<DecisionAdvisorStatus
       body: JSON.stringify(patch),
     },
   );
+
+export const fetchObservabilityStatus = (signal?: AbortSignal) =>
+  apiRequest<ObservabilityStatusResponse>('/api/observability/status', { cacheTtlMs: 4000, signal });
+
+export const fetchObservabilityMetrics = (
+  params: {
+    range?: ObservabilityMetricsRange | string;
+    step?: number;
+    nodeId?: string;
+    serviceId?: string;
+  } = {},
+  signal?: AbortSignal,
+) => {
+  const qs = new URLSearchParams();
+  if (params.range) qs.set('range', params.range);
+  if (params.step != null && Number.isFinite(params.step)) qs.set('step', String(params.step));
+  if (params.nodeId) qs.set('nodeId', params.nodeId);
+  if (params.serviceId) qs.set('serviceId', params.serviceId);
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  return apiRequest<ObservabilityMetricsResponse>(`/api/observability/metrics${suffix}`, {
+    cacheTtlMs: 4000,
+    signal,
+  });
+};
+
+export const fetchObservabilityFingerprints = (
+  params: {
+    range?: string;
+    nodeId?: string;
+    serviceId?: string;
+    level?: string;
+    limit?: number;
+  } = {},
+  signal?: AbortSignal,
+) => {
+  const qs = new URLSearchParams();
+  if (params.range) qs.set('range', params.range);
+  if (params.nodeId) qs.set('nodeId', params.nodeId);
+  if (params.serviceId) qs.set('serviceId', params.serviceId);
+  if (params.level) qs.set('level', params.level);
+  if (params.limit != null && Number.isFinite(params.limit)) qs.set('limit', String(params.limit));
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  return apiRequest<ObservabilityFingerprintsResponse>(`/api/observability/fingerprints${suffix}`, {
+    cacheTtlMs: 4000,
+    signal,
+  });
+};
+
+export const fetchObservabilityAnnotations = (
+  params: {
+    range?: string;
+    nodeId?: string;
+    serviceId?: string;
+    limit?: number;
+  } = {},
+  signal?: AbortSignal,
+) => {
+  const qs = new URLSearchParams();
+  if (params.range) qs.set('range', params.range);
+  if (params.nodeId) qs.set('nodeId', params.nodeId);
+  if (params.serviceId) qs.set('serviceId', params.serviceId);
+  if (params.limit != null && Number.isFinite(params.limit)) qs.set('limit', String(params.limit));
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  return apiRequest<ObservabilityAnnotationsResponse>(`/api/observability/annotations${suffix}`, {
+    cacheTtlMs: 4000,
+    signal,
+  });
+};
+
+export const fetchObservabilityAdapters = (signal?: AbortSignal) =>
+  apiRequest<ObservabilityAdaptersResponse>('/api/observability/adapters', { cacheTtlMs: 4000, signal });
+
+export const readObservabilityAdapterLogs = (
+  params: {
+    adapterId?: string;
+    nodeId?: string;
+    sourceKind?: string;
+    target?: string;
+    since?: string;
+    level?: string;
+    limit?: number;
+    q?: string;
+  } = {},
+  signal?: AbortSignal,
+) => {
+  const qs = new URLSearchParams();
+  if (params.adapterId) qs.set('adapterId', params.adapterId);
+  if (params.nodeId) qs.set('nodeId', params.nodeId);
+  if (params.sourceKind) qs.set('sourceKind', params.sourceKind);
+  if (params.target) qs.set('target', params.target);
+  if (params.since) qs.set('since', params.since);
+  if (params.level) qs.set('level', params.level);
+  if (params.limit != null && Number.isFinite(params.limit)) qs.set('limit', String(params.limit));
+  if (params.q) qs.set('q', params.q);
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  return apiRequest<ObservabilityLogsReadResponse>(`/api/observability/logs/read${suffix}`, {
+    signal,
+  });
+};
+
+export const updateObservabilityConfig = (patch: Partial<ObservabilityConfig>) =>
+  apiRequest<ObservabilityConfigUpdateResponse>('/api/observability/config', {
+    method: 'PUT',
+    body: JSON.stringify(patch),
+  });
+
+export const triggerObservabilityAnalyze = (
+  payload: {
+    mode?: 'triage' | 'digest';
+    force?: boolean;
+    serviceId?: string;
+    nodeId?: string;
+  } = {},
+) =>
+  apiRequest<ObservabilityAnalyzeResponse>('/api/observability/analyze', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const triggerObservabilityScan = () =>
+  apiRequest<ObservabilityScanResponse>('/api/observability/scan', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+
+export const triggerObservabilityPrune = () =>
+  apiRequest<ObservabilityPruneResponse>('/api/observability/prune', {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
 
 export const compareMemoryRetrieval = (q: string, signal?: AbortSignal) => {
   const qs = new URLSearchParams({ q });

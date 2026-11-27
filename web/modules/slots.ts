@@ -3,6 +3,7 @@ import {
   Activity,
   Gauge,
   Globe,
+  Radar,
   ShieldCheck,
   SlidersHorizontal,
   Workflow,
@@ -19,7 +20,8 @@ export type AgentSettingsTabId =
   | 'orchestration'
   | 'governance'
   | 'gateway'
-  | 'cache';
+  | 'cache'
+  | 'observability';
 
 export type RailPanelRegion =
   | 'sidebar-nav'
@@ -376,6 +378,15 @@ export const SETTINGS_SECTION_SLOTS: readonly SettingsSectionSlot[] = [
     description: '多机 Agent × 模型缓存命中率监控、阈值告警与可选决策模型自动归因',
     icon: Gauge,
     order: 60,
+    group: 'runtime',
+  },
+  {
+    id: 'observability',
+    kind: 'settings-section',
+    label: '联邦日志与可观测',
+    description: '多源只读日志索引、定时巡检频率档位、磁盘配额与共享决策模型归因',
+    icon: Radar,
+    order: 70,
     group: 'runtime',
   },
 ] as const;
