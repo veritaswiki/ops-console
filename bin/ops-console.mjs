@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn } from 'node:child_process';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
 import { APP_VERSION, loadConfig, parseCliArgs } from '../src/config.mjs';
@@ -7,6 +8,9 @@ import { buildScaffoldPluginSource, PluginManager } from '../src/plugins/manager
 import { validatePluginId } from '../src/plugins/sdk.mjs';
 import { ProbeRegistry } from '../src/probes.mjs';
 import { createOpsConsole } from '../src/server.mjs';
+import { IncrementalUpdater } from '../src/updater.mjs';
+
+const RESTART_EXIT_CODE = 75;
 
 function printHelp() {
   process.stdout.write(`ops-console v${APP_VERSION}
@@ -16,6 +20,7 @@ Usage:
   ops-console [options]
   ops-console plugin <list|enable|disable|scaffold> [options]
   ops-console probe <enroll|list|revoke> [options]
+  ops-console update <status|check|apply|rollback> [options]
 
 Options:
   -c, --config <path>     Path to JSON configuration file
@@ -26,6 +31,9 @@ Options:
       --read-only         Disable all mutating service, timer, and ops actions
       --demo              Run in full sandbox mode with synthetic telemetry and SSE logs
       --allow-iframe      Allow embedding the UI in an iframe (preview / portal mode)
+      --hot-reload        Enable file watchers for config/plugins/public hot reload (default: on)
+      --no-hot-reload     Disable file watchers for hot reload
+      --supervised        Run with lightweight auto-restart supervisor for graceful core updates
       --check-config      Validate resolved configuration and exit
   -v, --version           Show version number
   -h, --help              Show this help message
@@ -42,6 +50,12 @@ Probe subcommands:
   ops-console probe list   [--json]
   ops-console probe revoke --id <id>
 
+Update subcommands:
+  ops-console update status [--json]
+  ops-console update check  [--remote <name>] [--branch <ref>] [--no-fetch] [--json]
+  ops-console update apply  [--remote <name>] [--branch <ref>] [--rebuild] [--json]
+  ops-console update rollback --commit <sha> [--json]
+
 Environment variables:
   OPS_CONSOLE_CONFIG      Config file path
   OPS_CONSOLE_HOSTS       Comma-separated bind hosts
@@ -54,7 +68,151 @@ Environment variables:
   OPS_CONSOLE_DATA_DIR    Directory for rotating logs, audit, probes, and telemetry store
   OPS_CONSOLE_LOG_LEVEL   debug | info | warn | error
   OPS_CONSOLE_STORAGE_DRIVER auto | sqlite | jsonl | memory
+  OPS_CONSOLE_HOT_RELOAD  1 / true / false to override config/plugins/public file watchers
+  OPS_CONSOLE_UPDATES_ENABLED 1 / true / false to enable or disable incremental updates
+  OPS_CONSOLE_UPDATE_REMOTE Git remote name for incremental checks (default: origin)
+  OPS_CONSOLE_UPDATE_BRANCH Git branch name for incremental checks (default: main)
 `);
+}
+
+async function handleUpdateSubcommand(args) {
+  const action = args[0] || 'status';
+  const rest = args.slice(1);
+  const opts = {
+    configPath: '',
+    remote: '',
+    branch: '',
+    commit: '',
+    fetchRemote: true,
+    rebuildFrontend: false,
+    json: false,
+  };
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i];
+    if (arg === '--json') opts.json = true;
+    else if (arg === '--no-fetch') opts.fetchRemote = false;
+    else if (arg === '--rebuild') opts.rebuildFrontend = true;
+    else if ((arg === '-c' || arg === '--config') && rest[i + 1]) opts.configPath = rest[++i];
+    else if (arg === '--remote' && rest[i + 1]) opts.remote = rest[++i];
+    else if (arg === '--branch' && rest[i + 1]) opts.branch = rest[++i];
+    else if (arg === '--commit' && rest[i + 1]) opts.commit = rest[++i];
+  }
+
+  const config = loadConfig({ cli: { configPath: opts.configPath, hotReload: false } });
+  const logger = new StructuredLogger({ dataDir: config.console.dataDir, silentStdout: true });
+  const pluginManager = new PluginManager({ config, logger });
+  await pluginManager.loadExternalPlugins();
+  const updater = new IncrementalUpdater({ config, logger, pluginManager });
+  await updater.init();
+  updater.stopWatchers();
+
+  try {
+    if (action === 'status') {
+      const status = await updater.getStatus();
+      if (opts.json) {
+        process.stdout.write(`${JSON.stringify(status, null, 2)}\n`);
+      } else {
+        process.stdout.write(
+          `ops-console v${status.version} | commit=${status.git.shortCommit || 'n/a'} | branch=${status.git.branch || status.branch} | assets=${status.assetsRevision} | dirty=${status.git.dirtyCount}\n`,
+        );
+      }
+      process.exit(0);
+    }
+
+    if (action === 'check') {
+      const result = await updater.checkForUpdates({
+        remote: opts.remote || undefined,
+        branch: opts.branch || undefined,
+        fetchRemote: opts.fetchRemote,
+      });
+      if (opts.json) {
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      } else {
+        process.stdout.write(
+          `remote=${result.remote}/${result.branch} | behind=${result.behind} | ahead=${result.ahead} | strategy=${result.plan.strategy} | ${result.plan.summary}\n`,
+        );
+      }
+      process.exit(0);
+    }
+
+    if (action === 'apply') {
+      const token = config.security?.requireCriticalConfirm ? updater.issueConfirmToken('apply').confirmToken : '';
+      const result = await updater.applyIncrementalUpdate({
+        remote: opts.remote || undefined,
+        branch: opts.branch || undefined,
+        confirmToken: token,
+        rebuildFrontend: opts.rebuildFrontend,
+        autoRestart: false,
+        actor: 'cli',
+      });
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      process.exit(0);
+    }
+
+    if (action === 'rollback') {
+      if (!opts.commit) {
+        process.stderr.write('Missing required --commit <sha>\n');
+        process.exit(1);
+      }
+      const token = config.security?.requireCriticalConfirm ? updater.issueConfirmToken('rollback').confirmToken : '';
+      const result = await updater.rollbackToCommit({
+        commit: opts.commit,
+        confirmToken: token,
+        autoRestart: false,
+        actor: 'cli',
+      });
+      process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+      process.exit(0);
+    }
+
+    process.stderr.write(`Unknown update subcommand: ${action}. Use status, check, apply, or rollback.\n`);
+    process.exit(1);
+  } catch (err) {
+    process.stderr.write(`${err.message}\n`);
+    process.exit(1);
+  }
+}
+
+function runSupervisedLoop(rawArgs) {
+  const childArgs = [process.argv[1], ...rawArgs.filter((arg) => arg !== '--supervised')];
+  let child = null;
+  let stopping = false;
+
+  const spawnChild = () => {
+    child = spawn(process.execPath, childArgs, {
+      stdio: 'inherit',
+      env: { ...process.env, OPS_CONSOLE_SUPERVISED: '1' },
+    });
+    child.on('exit', (code, signal) => {
+      if (stopping) {
+        process.exit(code ?? 0);
+      }
+      if (code === RESTART_EXIT_CODE) {
+        setTimeout(spawnChild, 250);
+        return;
+      }
+      if (signal) {
+        process.exit(128);
+      }
+      process.exit(code ?? 0);
+    });
+  };
+
+  const forwardStop = (signal) => {
+    stopping = true;
+    if (child && !child.killed) {
+      child.kill(signal);
+    } else {
+      process.exit(0);
+    }
+  };
+
+  process.on('SIGTERM', () => forwardStop('SIGTERM'));
+  process.on('SIGINT', () => forwardStop('SIGINT'));
+  process.on('SIGHUP', () => {
+    if (child && !child.killed) child.kill('SIGHUP');
+  });
+  spawnChild();
 }
 
 async function handleProbeSubcommand(args) {
@@ -229,6 +387,10 @@ async function main() {
     await handleProbeSubcommand(process.argv.slice(3));
     return;
   }
+  if (process.argv[2] === 'update') {
+    await handleUpdateSubcommand(process.argv.slice(3));
+    return;
+  }
   const cli = parseCliArgs(process.argv.slice(2));
   if (cli.showHelp) {
     printHelp();
@@ -237,6 +399,10 @@ async function main() {
   if (cli.showVersion) {
     process.stdout.write(`ops-console v${APP_VERSION}\n`);
     process.exit(0);
+  }
+  if (cli.supervised && process.env.OPS_CONSOLE_SUPERVISED !== '1') {
+    runSupervisedLoop(process.argv.slice(2));
+    return;
   }
 
   let config;
@@ -273,26 +439,42 @@ async function main() {
     process.exit(0);
   }
 
-  const instance = createOpsConsole({ config });
-
+  const isSupervisedChild = process.env.OPS_CONSOLE_SUPERVISED === '1';
   let shuttingDown = false;
-  const shutdown = async (signal) => {
+  let instance = null;
+
+  const shutdown = async (signal, exitCode = 0) => {
     if (shuttingDown) return;
     shuttingDown = true;
-    const forceTimer = setTimeout(() => process.exit(1), 5000);
+    const forceTimer = setTimeout(() => process.exit(exitCode === 0 ? 1 : exitCode), 5000);
     forceTimer.unref();
-    instance.logger.info('shutdown_signal', { signal });
+    instance?.logger?.info('shutdown_signal', { signal, exitCode });
     try {
-      await instance.stop();
-      process.exit(0);
+      if (instance) await instance.stop();
+      process.exit(exitCode);
     } catch (err) {
       process.stderr.write(`Shutdown error: ${err.message}\n`);
-      process.exit(1);
+      process.exit(exitCode === 0 ? 1 : exitCode);
     }
   };
 
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  instance = createOpsConsole({
+    config,
+    supervised: isSupervisedChild,
+    onRestartRequested: async () => {
+      await shutdown('GRACEFUL_RESTART', isSupervisedChild ? RESTART_EXIT_CODE : 0);
+    },
+  });
+
+  process.on('SIGTERM', () => shutdown('SIGTERM', 0));
+  process.on('SIGINT', () => shutdown('SIGINT', 0));
+  process.on('SIGHUP', () => {
+    instance.updater
+      .hotReload({ scopes: ['config', 'plugins', 'assets'], force: false, reason: 'sighup', actor: 'signal', bypassReadOnly: true })
+      .catch((err) => {
+        instance.logger.warn('sighup_hot_reload_failed', { error: err.message });
+      });
+  });
   process.on('uncaughtException', (err) => {
     instance.logger.error('uncaught_exception', { error: err.message, stack: String(err.stack || '').slice(0, 600) });
   });

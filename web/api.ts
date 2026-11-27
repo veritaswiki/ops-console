@@ -26,6 +26,8 @@ import type {
   FleetMcpServer,
   GatewayTelemetryResponse,
   GithubOverviewResponse,
+  HotReloadResponse,
+  HotReloadScope,
   IncidentItem,
   LinearCommanderConfig,
   LinearGithubConfig,
@@ -52,6 +54,12 @@ import type {
   SnapshotResponse,
   TailscaleNetcheckResult,
   TailscalePingResult,
+  UpdateApplyResponse,
+  UpdateCheckResponse,
+  UpdateConfirmResponse,
+  UpdateRestartResponse,
+  UpdateRollbackResponse,
+  UpdateStatusResponse,
 } from './types';
 
 interface ApiRequestOptions extends RequestInit {
@@ -1221,6 +1229,67 @@ export const triggerBotEvent = (
 
 export const logoutSession = () =>
   apiRequest('/api/auth/logout', { method: 'POST', body: JSON.stringify({}) });
+
+export const fetchUpdateStatus = () =>
+  apiRequest<UpdateStatusResponse>('/api/updates/status');
+
+export const checkForUpdates = (payload: {
+  remote?: string;
+  branch?: string;
+  fetchRemote?: boolean;
+} = {}) =>
+  apiRequest<UpdateCheckResponse>('/api/updates/check', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const issueUpdateConfirmToken = (action: 'apply' | 'rollback' | 'restart') =>
+  apiRequest<UpdateConfirmResponse>('/api/updates/confirm', {
+    method: 'POST',
+    body: JSON.stringify({ action }),
+  });
+
+export const triggerHotReload = (payload: {
+  scopes?: HotReloadScope[];
+  force?: boolean;
+  reason?: string;
+  moduleId?: string;
+} = {}) =>
+  apiRequest<HotReloadResponse>('/api/updates/reload', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const applyIncrementalUpdate = (payload: {
+  remote?: string;
+  branch?: string;
+  confirmToken?: string;
+  rebuildFrontend?: boolean;
+  autoRestart?: boolean;
+}) =>
+  apiRequest<UpdateApplyResponse>('/api/updates/apply', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const rollbackUpdate = (payload: {
+  commit: string;
+  confirmToken?: string;
+  autoRestart?: boolean;
+}) =>
+  apiRequest<UpdateRollbackResponse>('/api/updates/rollback', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+
+export const triggerGracefulRestart = (payload: {
+  confirmToken?: string;
+  reason?: string;
+} = {}) =>
+  apiRequest<UpdateRestartResponse>('/api/updates/restart', {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
 
 export async function copyToClipboard(text: string): Promise<boolean> {
   try {

@@ -357,6 +357,7 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
       { id: 'ops:tasks', subTab: 'tasks', label: '巡检与定时任务', keywords: ['timers', 'health', 'backup', 'audit', '定时任务'] },
       { id: 'ops:runbooks', subTab: 'runbooks', label: 'Runbook 自愈预案', keywords: ['runbooks', 'incident', '预案'] },
       { id: 'ops:studio', subTab: 'studio', label: '配置中心与 RBAC', keywords: ['config', 'rbac', 'prometheus', '配置中心'] },
+      { id: 'ops:updates', subTab: 'updates', label: '增量更新与热重载', keywords: ['update', 'hot-reload', 'rollback', '增量更新', '热更新'] },
     ],
     benchmarks: {
       references: ['Rundeck', 'Ansible AWX', 'Cockpit'],

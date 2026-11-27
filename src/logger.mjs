@@ -67,6 +67,14 @@ export class StructuredLogger extends EventEmitter {
     this.writeMeta = new Map();
   }
 
+  setLevel(level, { maxBytes, maxFiles } = {}) {
+    if (level && LEVELS[level]) {
+      this.minLevel = level;
+    }
+    if (Number.isFinite(Number(maxBytes)) && Number(maxBytes) > 0) this.maxBytes = Number(maxBytes);
+    if (Number.isFinite(Number(maxFiles)) && Number(maxFiles) > 0) this.maxFiles = Number(maxFiles);
+  }
+
   _enqueueWrite(filePath, line) {
     if (!filePath) return Promise.resolve();
     this.writeQueue = this.writeQueue

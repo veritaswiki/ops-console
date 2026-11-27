@@ -5,28 +5,44 @@ import {
   CheckCircle2,
   Copy,
   Download,
+  GitBranch,
+  History,
   Play,
+  RefreshCw,
+  RotateCcw,
   Search,
   ShieldCheck,
+  Sparkles,
   XCircle,
+  Zap,
 } from 'lucide-react';
 import type {
   AuditEntry,
   ConfigStudioResponse,
+  HotReloadScope,
   IncidentItem,
   RunbookExecution,
   RunbooksResponse,
   SnapshotResponse,
   TimerItem,
+  UpdateCheckResponse,
+  UpdateStatusResponse,
 } from '../types';
 import {
+  applyIncrementalUpdate,
+  checkForUpdates,
   copyToClipboard,
   executeTimerAction,
   fetchConfigStudio,
   fetchPrometheusMetrics,
   fetchRunbooks,
+  fetchUpdateStatus,
+  issueUpdateConfirmToken,
+  rollbackUpdate,
   runOpsAction,
   runRunbook,
+  triggerGracefulRestart,
+  triggerHotReload,
   validateConfigStudio,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
@@ -35,6 +51,12 @@ import {
   filterAuditEntries,
   type AuditOutcomeFilter,
 } from '../lib/module-helpers';
+import {
+  extractRollbackCandidates,
+  listActiveLayers,
+  UPDATE_LAYER_LABELS,
+  UPDATE_STRATEGY_META,
+} from '../lib/updates';
 import { ModuleFrame } from '../modules/ModuleFrame';
 import { formatDateTime, statusLabel } from '../utils/format';
 import {
@@ -57,6 +79,7 @@ const OPS_TABS = [
   { value: 'tasks', label: '巡检与定时任务' },
   { value: 'runbooks', label: 'Runbook 自愈预案' },
   { value: 'studio', label: '配置中心与 RBAC' },
+  { value: 'updates', label: '增量更新与热重载' },
 ] as const;
 
 type OpsTab = (typeof OPS_TABS)[number]['value'];
@@ -85,7 +108,7 @@ export function OpsView({
   onConfirm: (modal: ConfirmModalState) => void;
 }) {
   const normalizeOpsTab = (raw?: string | null): OpsTab =>
-    raw === 'runbooks' || raw === 'studio' ? raw : 'tasks';
+    raw === 'runbooks' || raw === 'studio' || raw === 'updates' ? raw : 'tasks';
   const [tab, setTabState] = React.useState<OpsTab>(() => normalizeOpsTab(activeTab));
   React.useEffect(() => {
     if (activeTab) {
@@ -118,6 +141,13 @@ export function OpsView({
   const [validating, setValidating] = React.useState(false);
   const [promText, setPromText] = React.useState('');
   const [copiedKey, setCopiedKey] = React.useState('');
+
+  // Incremental Update & Hot Reload state
+  const [updateStatus, setUpdateStatus] = React.useState<UpdateStatusResponse | null>(null);
+  const [updateCheck, setUpdateCheck] = React.useState<UpdateCheckResponse | null>(null);
+  const [updateBusy, setUpdateBusy] = React.useState<string | null>(null);
+  const [rebuildFrontendOpt, setRebuildFrontendOpt] = React.useState(false);
+  const [autoRestartOpt, setAutoRestartOpt] = React.useState(false);
 
   const timers: TimerItem[] = snapshot?.services?.timers || snapshot?.timers || [];
 
@@ -172,13 +202,168 @@ export function OpsView({
     }
   }, []);
 
+  const loadUpdateStatus = React.useCallback(async () => {
+    try {
+      const res = await fetchUpdateStatus();
+      setUpdateStatus(res);
+      if (res.lastCheck) {
+        setUpdateCheck(res.lastCheck);
+      }
+    } catch {
+      // Non-blocking
+    }
+  }, []);
+
   React.useEffect(() => {
     if (tab === 'runbooks') {
       void loadRunbooks();
     } else if (tab === 'studio') {
       void loadStudio();
+    } else if (tab === 'updates') {
+      void loadUpdateStatus();
     }
-  }, [tab, loadRunbooks, loadStudio]);
+  }, [tab, loadRunbooks, loadStudio, loadUpdateStatus]);
+
+  const handleCheckUpdates = async () => {
+    setUpdateBusy('check');
+    try {
+      const res = await checkForUpdates({ fetchRemote: true });
+      setUpdateCheck(res);
+      await loadUpdateStatus();
+      onToast(
+        res.hasUpdate
+          ? `发现 ${res.behind} 个新提交 · ${UPDATE_STRATEGY_META[res.plan.strategy].label}`
+          : '当前已是最新提交，无需增量拉取',
+        res.hasUpdate ? 'info' : 'ok',
+      );
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : '检查增量更新失败', 'err');
+    } finally {
+      setUpdateBusy(null);
+    }
+  };
+
+  const handleHotReload = async (scopes: HotReloadScope[], label: string) => {
+    if (readOnly) return;
+    setUpdateBusy(`reload:${scopes.join(',')}`);
+    try {
+      const res = await triggerHotReload({ scopes, force: scopes.includes('assets'), reason: 'manual' });
+      await Promise.all([loadUpdateStatus(), onRefresh()]);
+      onToast(`${label}完成 (${res.durationMs}ms · rev ${res.assetsRevision.slice(0, 8)})`, 'ok');
+    } catch (err) {
+      onToast(err instanceof Error ? err.message : `${label}失败`, 'err');
+    } finally {
+      setUpdateBusy(null);
+    }
+  };
+
+  const handleApplyUpdate = () => {
+    if (readOnly) return;
+    const strategyLabel = updateCheck?.plan
+      ? UPDATE_STRATEGY_META[updateCheck.plan.strategy].label
+      : '增量拉取与热重载';
+    onConfirm({
+      open: true,
+      title: '确认执行增量更新',
+      description: `将从 ${updateStatus?.remote || 'origin'}/${updateStatus?.branch || 'main'} 以 fast-forward 增量拉取并按分层策略「${strategyLabel}」执行热更新。${autoRestartOpt ? '若涉及后端核心变更将自动安排平滑重启。' : ''}`,
+      confirmLabel: '确认增量更新',
+      danger: Boolean(updateCheck?.plan?.requiresRestart),
+      onConfirm: async () => {
+        setUpdateBusy('apply');
+        try {
+          let confirmToken = '';
+          if (updateStatus?.requireCriticalConfirm) {
+            const issued = await issueUpdateConfirmToken('apply');
+            confirmToken = issued.confirmToken;
+          }
+          const res = await applyIncrementalUpdate({
+            confirmToken,
+            rebuildFrontend: rebuildFrontendOpt,
+            autoRestart: autoRestartOpt,
+          });
+          await Promise.all([loadUpdateStatus(), onRefresh()]);
+          onToast(
+            res.status === 'up-to-date'
+              ? '当前已是最新版本'
+              : res.restartRequired
+                ? '增量拉取完成，后端核心变更待平滑重启生效'
+                : '增量更新已零停机热生效',
+            'ok',
+          );
+        } catch (err) {
+          onToast(err instanceof Error ? err.message : '增量更新失败', 'err');
+        } finally {
+          setUpdateBusy(null);
+        }
+      },
+    });
+  };
+
+  const handleRollbackCommit = (commit: string) => {
+    if (readOnly) return;
+    onConfirm({
+      open: true,
+      title: `确认回滚至 ${commit.slice(0, 8)}`,
+      description: '将执行 git reset --hard 回滚到历史提交，并立即热重载静态资源、插件与配置。',
+      confirmLabel: '确认回滚',
+      danger: true,
+      onConfirm: async () => {
+        setUpdateBusy(`rollback:${commit}`);
+        try {
+          let confirmToken = '';
+          if (updateStatus?.requireCriticalConfirm) {
+            const issued = await issueUpdateConfirmToken('rollback');
+            confirmToken = issued.confirmToken;
+          }
+          const res = await rollbackUpdate({
+            commit,
+            confirmToken,
+            autoRestart: autoRestartOpt,
+          });
+          await Promise.all([loadUpdateStatus(), onRefresh()]);
+          onToast(
+            res.restartRequired
+              ? `已回滚至 ${res.toCommit.slice(0, 8)}，待平滑重启后端`
+              : `已回滚至 ${res.toCommit.slice(0, 8)} 并完成热重载`,
+            'ok',
+          );
+        } catch (err) {
+          onToast(err instanceof Error ? err.message : '回滚失败', 'err');
+        } finally {
+          setUpdateBusy(null);
+        }
+      },
+    });
+  };
+
+  const handleGracefulRestart = () => {
+    if (readOnly) return;
+    onConfirm({
+      open: true,
+      title: '确认平滑重启控制面后端',
+      description: updateStatus?.supervised
+        ? '当前运行于 supervisor 模式，进程关闭后会由守护父进程自动拉起新版本，浏览器将自动重连。'
+        : '将向当前进程发起平滑退出；请确认已由 systemd (Restart=always) 或守护进程托管。',
+      confirmLabel: '立即平滑重启',
+      danger: true,
+      onConfirm: async () => {
+        setUpdateBusy('restart');
+        try {
+          let confirmToken = '';
+          if (updateStatus?.requireCriticalConfirm) {
+            const issued = await issueUpdateConfirmToken('restart');
+            confirmToken = issued.confirmToken;
+          }
+          await triggerGracefulRestart({ confirmToken, reason: 'manual-ops-view' });
+          onToast('平滑重启已安排，等待后端重新就绪…', 'info');
+        } catch (err) {
+          onToast(err instanceof Error ? err.message : '触发平滑重启失败', 'err');
+        } finally {
+          setUpdateBusy(null);
+        }
+      },
+    });
+  };
 
   const handleCopy = async (key: string, text: string) => {
     const ok = await copyToClipboard(text);
@@ -833,6 +1018,318 @@ export function OpsView({
             >
               {promText || '正在抓取 /api/metrics ...'}
             </pre>
+          </Panel>
+        </div>
+      )}
+
+      {tab === 'updates' && (
+        <div className="space-y-6" data-testid="ops-updates-panel">
+          <Panel
+            title="实时热重载与运行态"
+            description="配置、外部插件与前端构建资源支持零停机热更新；修改文件后由内置 Watcher 自动触发并经 SSE 推送客户端。"
+            actions={
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={readOnly || updateBusy !== null}
+                  onClick={() => void handleHotReload(['config'], '配置热重载')}
+                >
+                  <Zap className="size-3.5" strokeWidth={1.75} />
+                  重载配置
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={readOnly || updateBusy !== null}
+                  onClick={() => void handleHotReload(['plugins'], '插件热重载')}
+                >
+                  <Sparkles className="size-3.5" strokeWidth={1.75} />
+                  重载插件
+                </Button>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={readOnly || updateBusy !== null}
+                  onClick={() => void handleHotReload(['assets'], '前端资源缓存刷新')}
+                >
+                  <RefreshCw className="size-3.5" strokeWidth={1.75} />
+                  刷新静态资源
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={readOnly || updateBusy !== null}
+                  onClick={() => void handleHotReload(['config', 'plugins', 'assets'], '全量零停机热重载')}
+                >
+                  <Zap className="size-3.5" strokeWidth={1.75} />
+                  一键全量热重载
+                </Button>
+              </div>
+            }
+          >
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-[12.5px]">
+              <div className="space-y-1">
+                <div className="text-[var(--ink-muted)]">当前提交 / 分支</div>
+                <div className="font-mono font-medium tabular-nums text-[var(--ink)] flex items-center gap-1.5">
+                  <GitBranch className="size-3.5 text-[var(--ink-muted)]" strokeWidth={1.75} />
+                  <span>{updateStatus?.git.shortCommit || 'non-git'}</span>
+                  <span className="text-[var(--ink-muted)]">·</span>
+                  <span>{updateStatus?.git.branch || updateStatus?.branch || 'main'}</span>
+                </div>
+                <div className="text-[11.5px] text-[var(--ink-muted)]">
+                  工作树：{updateStatus?.git.dirty ? `有 ${updateStatus.git.dirtyCount} 处未提交修改` : '干净可增量更新'}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="text-[var(--ink-muted)]">静态资源版本</div>
+                <div className="font-mono font-medium tabular-nums text-[var(--ink)]">
+                  {updateStatus?.assetsRevision || '—'}
+                </div>
+                <div className="text-[11.5px] text-[var(--ink-muted)] tabular-nums">
+                  文件数 {updateStatus?.assetsFileCount ?? 0} · 累计热载 {updateStatus?.reloadCount ?? 0} 次
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="text-[var(--ink-muted)]">文件监听 Watcher</div>
+                <div className="font-mono text-[12px] text-[var(--ink)] tabular-nums">
+                  配置 {updateStatus?.watchers.config ? 'ON' : 'OFF'} · 插件 {updateStatus?.watchers.plugins ? 'ON' : 'OFF'} · 资源 {updateStatus?.watchers.public ? 'ON' : 'OFF'}
+                </div>
+                <div className="text-[11.5px] text-[var(--ink-muted)] tabular-nums">
+                  防抖 {updateStatus?.watchers.debounceMs ?? 500}ms · 守护模式 {updateStatus?.supervised ? 'Supervised' : 'Standard'}
+                </div>
+              </div>
+
+              <div className="space-y-1">
+                <div className="text-[var(--ink-muted)]">重启状态</div>
+                <StatusIndicator
+                  status={updateStatus?.pendingRestart ? 'degraded' : 'healthy'}
+                  label={updateStatus?.pendingRestart ? '待平滑重启' : '运行态同步'}
+                />
+                <div className="text-[11.5px] text-[var(--ink-muted)] truncate">
+                  {updateStatus?.pendingRestartReason || '无需重启，所有热重载层已对齐'}
+                </div>
+              </div>
+            </div>
+
+            {updateStatus?.pendingRestart && updateStatus.allowSelfRestart && (
+              <div className="mt-4 pt-3 border-t border-[var(--border)] flex flex-wrap items-center justify-between gap-2 text-[12.5px]">
+                <span className="text-[var(--warn)]">{updateStatus.pendingRestartReason}</span>
+                <Button
+                  variant="danger"
+                  size="sm"
+                  disabled={readOnly || updateBusy !== null}
+                  onClick={handleGracefulRestart}
+                >
+                  <RotateCcw className="size-3.5" strokeWidth={1.75} />
+                  立即平滑重启后端
+                </Button>
+              </div>
+            )}
+          </Panel>
+
+          <Panel
+            title="增量更新引擎（Git Fast-Forward + 分层执行）"
+            description="自动识别前端、外部插件、声明式 Agent 规则、热切模块与后端核心差异，仅执行必要构建与热重载，避免整包停机部署。"
+            actions={
+              <div className="flex flex-wrap items-center gap-2">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={updateBusy !== null || !updateStatus?.updatesEnabled}
+                  onClick={() => void handleCheckUpdates()}
+                >
+                  <RefreshCw
+                    className={cn('size-3.5', updateBusy === 'check' && 'animate-spin')}
+                    strokeWidth={1.75}
+                  />
+                  检查增量更新
+                </Button>
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={
+                    readOnly
+                    || updateBusy !== null
+                    || !updateStatus?.updatesEnabled
+                    || Boolean(updateCheck && !updateCheck.hasUpdate && !updateStatus?.demo)
+                    || Boolean(updateCheck?.dirty)
+                    || Boolean(updateCheck?.diverged)
+                  }
+                  onClick={handleApplyUpdate}
+                >
+                  <Download className="size-3.5" strokeWidth={1.75} />
+                  执行增量更新
+                </Button>
+              </div>
+            }
+          >
+            <div className="flex flex-wrap items-center gap-6 pb-3 mb-4 border-b border-[var(--border)] text-[12px] text-[var(--ink-muted)]">
+              <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={rebuildFrontendOpt}
+                  onChange={(e) => setRebuildFrontendOpt(e.target.checked)}
+                />
+                <span>强制增量重编前端（npm run build）</span>
+              </label>
+              <label className="inline-flex items-center gap-2 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoRestartOpt}
+                  onChange={(e) => setAutoRestartOpt(e.target.checked)}
+                />
+                <span>涉及后端核心时自动平滑重启</span>
+              </label>
+              <span className="font-mono tabular-nums">
+                远端目标：{updateStatus?.remote || 'origin'}/{updateStatus?.branch || 'main'}
+              </span>
+            </div>
+
+            {!updateCheck ? (
+              <EmptyState
+                title="尚未检测远端差异"
+                message="点击右上角「检查增量更新」，按文件层级预览本次更新策略（零停机热重载 / 模块热切 / 平滑重启）。"
+              />
+            ) : (
+              <div className="space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 text-[13px]">
+                  <div className="flex items-center gap-2">
+                    <StatusIndicator
+                      status={
+                        UPDATE_STRATEGY_META[updateCheck.plan.strategy].tone === 'ok'
+                          ? 'healthy'
+                          : UPDATE_STRATEGY_META[updateCheck.plan.strategy].tone === 'warn'
+                            ? 'degraded'
+                            : 'idle'
+                      }
+                      label={UPDATE_STRATEGY_META[updateCheck.plan.strategy].label}
+                    />
+                    <span className="text-[var(--ink-muted)]">·</span>
+                    <span className="font-mono text-[12px] tabular-nums text-[var(--ink-muted)]">
+                      落后 {updateCheck.behind} · 领先 {updateCheck.ahead} · 变更文件 {updateCheck.plan.totalFiles}
+                    </span>
+                  </div>
+                  <span className="font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">
+                    {updateCheck.shortCommit || 'n/a'} → {updateCheck.shortRemoteCommit || 'n/a'}
+                  </span>
+                </div>
+
+                <p className="m-0 text-[12.5px] text-[var(--ink-muted)]">
+                  {UPDATE_STRATEGY_META[updateCheck.plan.strategy].detail}
+                </p>
+
+                {listActiveLayers(updateCheck.plan).length > 0 && (
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[12px] font-mono tabular-nums text-[var(--ink)]">
+                    {listActiveLayers(updateCheck.plan).map((item) => (
+                      <span key={item.layer}>
+                        {item.label} {item.count}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
+                {updateCheck.changedFiles.length > 0 && (
+                  <div className="rounded-xl border border-[var(--border)] overflow-hidden">
+                    <div className="divide-y divide-[var(--border)] max-h-[220px] overflow-y-auto font-mono text-[11.5px]">
+                      {updateCheck.changedFiles.slice(0, 40).map((file) => (
+                        <div
+                          key={`${file.status}-${file.path}`}
+                          className="px-3 py-1.5 flex items-center justify-between gap-3"
+                        >
+                          <span className="truncate text-[var(--ink)]">
+                            <span className="text-[var(--ink-muted)] mr-2">{file.status}</span>
+                            {file.path}
+                          </span>
+                          <span className="shrink-0 text-[var(--ink-muted)]">
+                            {UPDATE_LAYER_LABELS[file.layer] || file.layer}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+          </Panel>
+
+          <Panel
+            title="更新历史与原子回滚"
+            description="记录每次热重载、增量拉取、平滑重启与回滚操作；支持按历史提交 SHA 一键回滚并自动触发热重载。"
+          >
+            {(() => {
+              const rollbackCandidates = extractRollbackCandidates(
+                updateStatus?.history || [],
+                updateStatus?.git.commit,
+              );
+              return (
+                <div className="space-y-4">
+                  {rollbackCandidates.length > 0 && (
+                    <div className="flex flex-wrap items-center gap-2 pb-3 border-b border-[var(--border)] text-[12px]">
+                      <span className="text-[var(--ink-muted)] inline-flex items-center gap-1">
+                        <History className="size-3.5" strokeWidth={1.75} />
+                        可回滚版本：
+                      </span>
+                      {rollbackCandidates.map((cand) => (
+                        <Button
+                          key={cand.commit}
+                          variant="secondary"
+                          size="sm"
+                          disabled={readOnly || updateBusy !== null}
+                          onClick={() => handleRollbackCommit(cand.commit)}
+                        >
+                          <RotateCcw className="size-3" strokeWidth={1.75} />
+                          <span className="font-mono tabular-nums">{cand.shortCommit}</span>
+                        </Button>
+                      ))}
+                    </div>
+                  )}
+
+                  {!updateStatus?.history?.length ? (
+                    <EmptyState
+                      title="暂无更新记录"
+                      message="执行热重载或增量更新后将自动写入审计历史并持久化至 data/update-history.json。"
+                    />
+                  ) : (
+                    <div className="divide-y divide-[var(--border)] text-[12px]">
+                      {updateStatus.history.slice(0, 12).map((item) => (
+                        <div
+                          key={item.id}
+                          className="py-2.5 flex flex-wrap items-center justify-between gap-2"
+                        >
+                          <div className="flex items-center gap-2 min-w-0">
+                            <span className="font-mono font-medium text-[var(--ink)]">{item.kind}</span>
+                            <span className="text-[var(--ink-muted)]">·</span>
+                            <span className="text-[var(--ink-muted)]">{item.status}</span>
+                            {item.fromCommit && item.toCommit && (
+                              <>
+                                <span className="text-[var(--ink-muted)]">·</span>
+                                <span className="font-mono tabular-nums text-[var(--ink)]">
+                                  {item.fromCommit.slice(0, 8)} → {item.toCommit.slice(0, 8)}
+                                </span>
+                              </>
+                            )}
+                            {item.scopes && item.scopes.length > 0 && (
+                              <>
+                                <span className="text-[var(--ink-muted)]">·</span>
+                                <span className="font-mono text-[var(--ink-muted)]">
+                                  {item.scopes.join(', ')}
+                                </span>
+                              </>
+                            )}
+                          </div>
+                          <span className="font-mono text-[11.5px] tabular-nums text-[var(--ink-muted)]">
+                            {formatDateTime(item.ts)} · {item.actor || 'system'}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </Panel>
         </div>
       )}

@@ -35,6 +35,8 @@ const VALID_RISKS = new Set(['standard', 'critical']);
 const VALID_SVC_ACTIONS = new Set(['start', 'stop', 'restart', 'reload']);
 const VALID_STORAGE_DRIVERS = new Set(['auto', 'sqlite', 'jsonl', 'memory']);
 const UNIT_RE = /^[A-Za-z0-9@._:-]{1,128}$/;
+export const GIT_REMOTE_RE = /^[A-Za-z0-9._-]{1,64}$/;
+export const GIT_REF_RE = /^(?!-)(?!.*\.\.)(?!.*[\s~^:?*[\]\\])[A-Za-z0-9._/-]{1,128}$/;
 
 function readSecretFileStrict(filePath, fieldName) {
   const expanded = filePath.startsWith('~/')
@@ -83,6 +85,8 @@ export function parseCliArgs(argv = process.argv.slice(2)) {
     readOnly: null,
     demo: null,
     allowIframe: null,
+    hotReload: null,
+    supervised: false,
     checkConfig: false,
     showHelp: false,
     showVersion: false,
@@ -96,6 +100,9 @@ export function parseCliArgs(argv = process.argv.slice(2)) {
     else if (arg === '--read-only') out.readOnly = true;
     else if (arg === '--demo') out.demo = true;
     else if (arg === '--allow-iframe') out.allowIframe = true;
+    else if (arg === '--hot' || arg === '--hot-reload') out.hotReload = true;
+    else if (arg === '--no-hot-reload') out.hotReload = false;
+    else if (arg === '--supervised') out.supervised = true;
     else if ((arg === '--config' || arg === '-c') && argv[i + 1]) {
       out.configPath = argv[++i];
     } else if (arg.startsWith('--config=')) {
@@ -256,6 +263,30 @@ export function validateConfig(raw) {
   }
   if (raw.storage?.driver !== undefined && !VALID_STORAGE_DRIVERS.has(raw.storage.driver)) {
     errors.push(`Invalid storage.driver: ${raw.storage.driver}`);
+  }
+  if (raw.updates !== undefined) {
+    if (!raw.updates || typeof raw.updates !== 'object' || Array.isArray(raw.updates)) {
+      errors.push('updates must be an object');
+    } else {
+      if (raw.updates.remote !== undefined && raw.updates.remote !== '' && !GIT_REMOTE_RE.test(String(raw.updates.remote))) {
+        errors.push(`Invalid updates.remote: ${raw.updates.remote}`);
+      }
+      if (raw.updates.branch !== undefined && raw.updates.branch !== '' && !GIT_REF_RE.test(String(raw.updates.branch))) {
+        errors.push(`Invalid updates.branch: ${raw.updates.branch}`);
+      }
+      if (raw.updates.watchDebounceMs !== undefined) {
+        const debounce = Number(raw.updates.watchDebounceMs);
+        if (!Number.isFinite(debounce) || debounce < 50 || debounce > 30_000) {
+          errors.push(`Invalid updates.watchDebounceMs: ${raw.updates.watchDebounceMs}`);
+        }
+      }
+      if (raw.updates.autoCheckIntervalSec !== undefined) {
+        const interval = Number(raw.updates.autoCheckIntervalSec);
+        if (!Number.isFinite(interval) || interval < 0 || interval > 86_400) {
+          errors.push(`Invalid updates.autoCheckIntervalSec: ${raw.updates.autoCheckIntervalSec}`);
+        }
+      }
+    }
   }
 
   return { valid: errors.length === 0, errors };
@@ -542,6 +573,26 @@ export function loadConfig(options = {}) {
         ? raw.plugins.configs
         : {},
     },
+    updates: {
+      enabled: parseBoolEnv(env.OPS_CONSOLE_UPDATES_ENABLED)
+        ?? (raw.updates?.enabled !== undefined ? Boolean(raw.updates.enabled) : true),
+      remote: String(env.OPS_CONSOLE_UPDATE_REMOTE || raw.updates?.remote || 'origin').trim() || 'origin',
+      branch: String(env.OPS_CONSOLE_UPDATE_BRANCH || raw.updates?.branch || 'main').trim() || 'main',
+      watchConfig: cli.hotReload
+        ?? parseBoolEnv(env.OPS_CONSOLE_HOT_RELOAD)
+        ?? (raw.updates?.watchConfig !== undefined ? Boolean(raw.updates.watchConfig) : true),
+      watchPlugins: cli.hotReload
+        ?? parseBoolEnv(env.OPS_CONSOLE_HOT_RELOAD)
+        ?? (raw.updates?.watchPlugins !== undefined ? Boolean(raw.updates.watchPlugins) : true),
+      watchPublic: cli.hotReload
+        ?? parseBoolEnv(env.OPS_CONSOLE_HOT_RELOAD)
+        ?? (raw.updates?.watchPublic !== undefined ? Boolean(raw.updates.watchPublic) : true),
+      watchDebounceMs: Math.min(30_000, Math.max(50, Number(raw.updates?.watchDebounceMs || 500))),
+      autoCheckIntervalSec: Math.min(86_400, Math.max(0, Number(raw.updates?.autoCheckIntervalSec || 0))),
+      allowSelfRestart: raw.updates?.allowSelfRestart !== undefined
+        ? Boolean(raw.updates.allowSelfRestart)
+        : true,
+    },
     agentMatchers: Array.isArray(raw.agentMatchers) && raw.agentMatchers.length > 0
       ? raw.agentMatchers
       : DEFAULT_AGENT_MATCHERS,
@@ -553,6 +604,86 @@ export function loadConfig(options = {}) {
   }
 
   return merged;
+}
+
+function stableEqual(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function applyHotConfigUpdate(targetConfig, nextConfig) {
+  if (!targetConfig || !nextConfig) {
+    throw new Error('Both targetConfig and nextConfig are required');
+  }
+
+  const restartRequiredFields = [];
+  if (!stableEqual(targetConfig.console?.hosts, nextConfig.console?.hosts)) {
+    restartRequiredFields.push('console.hosts');
+  }
+  if (targetConfig.console?.port !== nextConfig.console?.port) {
+    restartRequiredFields.push('console.port');
+  }
+  if (targetConfig.console?.dataDir !== nextConfig.console?.dataDir) {
+    restartRequiredFields.push('console.dataDir');
+  }
+  if (targetConfig.storage?.driver !== nextConfig.storage?.driver) {
+    restartRequiredFields.push('storage.driver');
+  }
+  if (Boolean(targetConfig.demo) !== Boolean(nextConfig.demo)) {
+    restartRequiredFields.push('demo');
+  }
+
+  const changedSections = [];
+  const consoleHotFields = ['title', 'subtitle', 'readOnly'];
+  let consoleChanged = false;
+  for (const field of consoleHotFields) {
+    if (!stableEqual(targetConfig.console?.[field], nextConfig.console?.[field])) {
+      targetConfig.console[field] = nextConfig.console[field];
+      consoleChanged = true;
+    }
+  }
+  if (consoleChanged) changedSections.push('console');
+
+  const storageHotFields = ['rawRetentionDays', 'rollup1mDays', 'rollup5mDays', 'incidentRetentionDays'];
+  let storageChanged = false;
+  for (const field of storageHotFields) {
+    if (!stableEqual(targetConfig.storage?.[field], nextConfig.storage?.[field])) {
+      targetConfig.storage[field] = nextConfig.storage[field];
+      storageChanged = true;
+    }
+  }
+  if (storageChanged) changedSections.push('storage');
+
+  const hotSections = [
+    'auth',
+    'a2a',
+    'security',
+    'logging',
+    'host',
+    'layers',
+    'services',
+    'timers',
+    'connectors',
+    'logFiles',
+    'remotes',
+    'fleet',
+    'ops',
+    'plugins',
+    'updates',
+    'agentMatchers',
+  ];
+  for (const section of hotSections) {
+    if (!stableEqual(targetConfig[section], nextConfig[section])) {
+      targetConfig[section] = nextConfig[section];
+      changedSections.push(section);
+    }
+  }
+  targetConfig.warnings = Array.isArray(nextConfig.warnings) ? [...nextConfig.warnings] : [];
+
+  return {
+    changed: changedSections.length > 0 || restartRequiredFields.length > 0,
+    changedSections,
+    restartRequiredFields,
+  };
 }
 
 export function findService(config, unitOrId) {
