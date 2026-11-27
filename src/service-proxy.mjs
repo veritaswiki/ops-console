@@ -22,6 +22,8 @@ const STRIPPED_RESPONSE_HEADERS = new Set([
   'x-frame-options',
   'content-security-policy',
   'content-security-policy-report-only',
+  'access-control-allow-origin',
+  'access-control-allow-credentials',
   'transfer-encoding',
   'content-encoding',
   'content-length',
@@ -179,7 +181,25 @@ export function rewriteLocationHeader(location, embedBase, targetOrigin = '') {
   return trimmed;
 }
 
-function buildEmbedRuntimeShim(prefix) {
+export function rewriteUpstreamReferer(rawReferer, embedBase, targetOrigin) {
+  if (!rawReferer || !targetOrigin) return '';
+  const prefix = normalizeEmbedBase(embedBase).slice(0, -1);
+  try {
+    const parsed = new URL(String(rawReferer).trim());
+    const originNorm = new URL(targetOrigin).origin;
+    let pathname = parsed.pathname || '/';
+    if (pathname === prefix) {
+      pathname = '/';
+    } else if (pathname.startsWith(`${prefix}/`)) {
+      pathname = pathname.slice(prefix.length) || '/';
+    }
+    return `${originNorm}${pathname}${parsed.search || ''}`;
+  } catch {
+    return '';
+  }
+}
+
+export function buildEmbedRuntimeShim(prefix) {
   const serializedPrefix = JSON.stringify(prefix).replace(/</g, '\\u003c');
   return (
     '<script data-ops-embed-shim="1">(function(){'
@@ -190,22 +210,76 @@ function buildEmbedRuntimeShim(prefix) {
     + 'if(u.charAt(0)==="/"&&u.charAt(1)!=="/")return p+u;'
     + 'try{var o=window.location.origin;if(o&&u.indexOf(o+"/")===0){var r=u.slice(o.length);if(r!==p&&r.indexOf(p+"/")!==0&&r.indexOf("/embed/")!==0)return o+p+r;}}catch(_){}'
     + 'return u;}'
+    + 'function rwUrl(u){'
+    + 'if(typeof u==="string")return rw(u);'
+    + 'if(u&&typeof u==="object"&&typeof u.href==="string"&&typeof u.origin==="string"){var nh=rw(u.href);if(nh!==u.href)return nh;}'
+    + 'return u;}'
     + 'if(typeof window.fetch==="function"){'
     + 'var _f=window.fetch.bind(window);'
     + 'window.fetch=function(i,n){'
     + 'if(typeof i==="string")return _f(rw(i),n);'
-    + 'if(i&&typeof i==="object"&&typeof i.url==="string"){var nu=rw(i.url);if(nu!==i.url){try{return _f(new Request(nu,i),n);}catch(_){}}}'
+    + 'if(i&&typeof i==="object"){'
+    + 'if(typeof i.url==="string"){var nu=rw(i.url);if(nu!==i.url){try{return _f(new Request(nu,i),n);}catch(_){}}}'
+    + 'else if(typeof i.href==="string"&&typeof i.origin==="string"){var nh=rw(i.href);if(nh!==i.href)return _f(nh,n);}}'
     + 'return _f(i,n);};}'
     + 'if(window.XMLHttpRequest&&window.XMLHttpRequest.prototype){'
     + 'var _o=window.XMLHttpRequest.prototype.open;'
     + 'window.XMLHttpRequest.prototype.open=function(m,u){'
-    + 'var a=Array.prototype.slice.call(arguments);if(typeof u==="string")a[1]=rw(u);return _o.apply(this,a);};}'
+    + 'var a=Array.prototype.slice.call(arguments);a[1]=rwUrl(u);return _o.apply(this,a);};}'
     + 'if(typeof window.EventSource==="function"){'
     + 'var _E=window.EventSource;'
-    + 'window.EventSource=function(u,c){return new _E(typeof u==="string"?rw(u):u,c);};'
+    + 'window.EventSource=function(u,c){return new _E(rwUrl(u),c);};'
     + 'window.EventSource.prototype=_E.prototype;}'
+    + 'function patchProp(C,prop){try{if(!C||!C.prototype)return;var d=Object.getOwnPropertyDescriptor(C.prototype,prop);if(d&&d.set&&d.configurable){Object.defineProperty(C.prototype,prop,{configurable:true,enumerable:d.enumerable,get:d.get,set:function(v){return d.set.call(this,typeof v==="string"?rw(v):v);}});}}catch(_){}}'
+    + 'patchProp(window.HTMLLinkElement,"href");'
+    + 'patchProp(window.HTMLScriptElement,"src");'
+    + 'patchProp(window.HTMLImageElement,"src");'
+    + 'try{if(window.Element&&window.Element.prototype&&typeof window.Element.prototype.setAttribute==="function"){'
+    + 'var _sa=window.Element.prototype.setAttribute;'
+    + 'window.Element.prototype.setAttribute=function(k,v){'
+    + 'if(typeof k==="string"&&typeof v==="string"){'
+    + 'var lk=k.toLowerCase();var tn=this&&this.tagName?String(this.tagName).toUpperCase():"";'
+    + 'if((tn==="LINK"&&lk==="href")||((tn==="SCRIPT"||tn==="IMG")&&lk==="src")){v=rw(v);}}'
+    + 'return _sa.call(this,k,v);};}}catch(_){}'
     + '})();</script>'
   );
+}
+
+export function rewriteEmbeddedCss(css, embedBase, targetOrigin = '') {
+  if (typeof css !== 'string' || !css) return css;
+  const base = normalizeEmbedBase(embedBase);
+  const prefix = base.slice(0, -1);
+  const originNorm = (() => {
+    if (!targetOrigin) return '';
+    try {
+      return new URL(targetOrigin).origin;
+    } catch {
+      return '';
+    }
+  })();
+
+  return css.replace(/url\(\s*(["']?)([^)"']+)\1\s*\)/gi, (full, quote, rawVal) => {
+    const val = rawVal.trim();
+    if (
+      !val ||
+      val.startsWith('#') ||
+      val.startsWith('//') ||
+      val.startsWith('/embed/') ||
+      val === prefix ||
+      val.startsWith(base) ||
+      /^(?:data|blob|about):/i.test(val)
+    ) {
+      return full;
+    }
+    if (val.startsWith('/')) {
+      return `url(${quote}${prefix}${val}${quote})`;
+    }
+    if (originNorm && val.startsWith(`${originNorm}/`)) {
+      const rest = val.slice(originNorm.length);
+      return `url(${quote}${prefix}${rest}${quote})`;
+    }
+    return full;
+  });
 }
 
 export function rewriteEmbeddedHtml(html, embedBase, targetOrigin = '') {
@@ -446,12 +520,22 @@ export async function handleServiceEmbedProxy({ req, res, pathname, search = '',
     const lower = key.toLowerCase();
     if (HOP_BY_HOP_REQUEST_HEADERS.has(lower)) continue;
     if (rawVal === undefined) continue;
+    const strVal = Array.isArray(rawVal) ? rawVal.join(', ') : String(rawVal);
     if (lower === 'cookie') {
       const filtered = filterOutgoingCookies(Array.isArray(rawVal) ? rawVal.join('; ') : String(rawVal));
       if (filtered) outHeaders.set('cookie', filtered);
       continue;
     }
-    outHeaders.set(lower, Array.isArray(rawVal) ? rawVal.join(', ') : String(rawVal));
+    if (lower === 'origin') {
+      if (strVal.trim()) outHeaders.set('origin', baseTarget.origin);
+      continue;
+    }
+    if (lower === 'referer') {
+      const rewrittenRef = rewriteUpstreamReferer(strVal, embedBase, baseTarget.origin);
+      if (rewrittenRef) outHeaders.set('referer', rewrittenRef);
+      continue;
+    }
+    outHeaders.set(lower, strVal);
   }
   outHeaders.set('accept-encoding', 'identity');
   outHeaders.set('x-forwarded-prefix', embedBase.slice(0, -1));
@@ -500,6 +584,7 @@ export async function handleServiceEmbedProxy({ req, res, pathname, search = '',
 
     const contentType = String(upstreamRes.headers.get('content-type') || '');
     const isHtml = /\btext\/html\b/i.test(contentType);
+    const isCss = /\btext\/css\b/i.test(contentType);
 
     if (method === 'HEAD') {
       res.writeHead(upstreamRes.status, respHeaders);
@@ -512,6 +597,10 @@ export async function handleServiceEmbedProxy({ req, res, pathname, search = '',
       const rawHtml = await upstreamRes.text();
       const rewrittenHtml = rewriteEmbeddedHtml(rawHtml, embedBase, baseTarget.origin);
       finalBody = Buffer.from(rewrittenHtml, 'utf8');
+    } else if (isCss) {
+      const rawCss = await upstreamRes.text();
+      const rewrittenCss = rewriteEmbeddedCss(rawCss, embedBase, baseTarget.origin);
+      finalBody = Buffer.from(rewrittenCss, 'utf8');
     } else {
       finalBody = Buffer.from(await upstreamRes.arrayBuffer());
     }

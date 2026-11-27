@@ -22,6 +22,7 @@ import {
 async function startConsoleServer(overrides = {}) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'ops-a2a-embed-'));
   const config = loadConfig({
+    rawConfig: {},
     cli: {
       hosts: '127.0.0.1',
       port: 4320,
@@ -29,7 +30,10 @@ async function startConsoleServer(overrides = {}) {
       readOnly: overrides.readOnly ?? false,
       webKey: overrides.webKey ?? '',
     },
-    env: { OPS_CONSOLE_DATA_DIR: dataDir },
+    env: {
+      OPS_CONSOLE_DATA_DIR: dataDir,
+      ...(process.env.OPS_A2A_SHARED_SECRET ? { OPS_A2A_SHARED_SECRET: process.env.OPS_A2A_SHARED_SECRET } : {}),
+    },
   });
   config.console.port = 0;
   if (Array.isArray(overrides.services)) {
