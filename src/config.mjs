@@ -216,6 +216,11 @@ export function validateConfig(raw) {
         if (svc.adminLabel !== undefined && svc.adminLabel !== null && typeof svc.adminLabel !== 'string') {
           errors.push(`Invalid adminLabel for ${svc.id}: must be a string`);
         }
+        if (svc.logFile !== undefined && svc.logFile !== null && svc.logFile !== '') {
+          if (typeof svc.logFile !== 'string' || svc.logFile.includes('\0')) {
+            errors.push(`Invalid logFile for ${svc.id}: must be a valid file path string`);
+          }
+        }
       }
     }
   }
@@ -348,6 +353,7 @@ export function loadConfig(options = {}) {
       tailnetUrl: s.tailnetUrl ? String(s.tailnetUrl) : null,
       adminUrl: s.adminUrl ? String(s.adminUrl).trim() : null,
       adminLabel: s.adminLabel ? String(s.adminLabel).trim() : null,
+      logFile: s.logFile && String(s.logFile).trim() ? path.resolve(String(s.logFile).trim()) : null,
       optional: Boolean(s.optional),
       risk: s.risk === 'critical' ? 'critical' : 'standard',
       riskNote: s.riskNote ? String(s.riskNote) : '',
@@ -433,6 +439,7 @@ export function loadConfig(options = {}) {
       id: String(f.id),
       name: String(f.name || f.id),
       path: path.resolve(String(f.path)),
+      serviceId: f.serviceId ? String(f.serviceId).trim() : '',
     })) : [],
     remotes: Array.isArray(raw.remotes) ? raw.remotes.map((r) => ({
       id: String(r.id),
@@ -532,5 +539,20 @@ export function findTimer(config, unitOrId) {
 
 export function findLogFile(config, id) {
   if (!id) return null;
-  return config.logFiles.find((f) => f.id === id) || null;
+  const direct = config.logFiles.find((f) => f.id === id);
+  if (direct) return direct;
+  if (String(id).startsWith('svc-file:')) {
+    const svcId = String(id).slice('svc-file:'.length);
+    const svc = config.services.find((s) => s.id === svcId && s.logFile);
+    if (svc) {
+      return {
+        id: `svc-file:${svc.id}`,
+        name: `${svc.name} 原生日志`,
+        path: svc.logFile,
+        serviceId: svc.id,
+        unit: svc.unit,
+      };
+    }
+  }
+  return null;
 }

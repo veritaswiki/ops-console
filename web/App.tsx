@@ -20,11 +20,14 @@ import type {
   A2ATaskRecord,
   AuditEntry,
   IncidentItem,
+  LogFilterState,
+  LogNavigationRequest,
   MetaResponse,
   ProbesResponse,
   SnapshotResponse,
   ViewId,
 } from './types';
+import { normalizeLogNavigation } from './lib/logs';
 import {
   fetchA2AState,
   fetchAudit,
@@ -235,6 +238,7 @@ export function App() {
 
   const [logsInitialUnit, setLogsInitialUnit] = React.useState<string>('');
   const [logsInitialLevel, setLogsInitialLevel] = React.useState<string>('all');
+  const [logsInitialFilter, setLogsInitialFilter] = React.useState<Partial<LogFilterState> | null>(null);
   const [logsRequestNonce, setLogsRequestNonce] = React.useState<number>(0);
   const [recentServiceUnits, setRecentServiceUnits] = React.useState<string[]>([]);
   const [agentCategory, setAgentCategory] = React.useState<string>('');
@@ -532,12 +536,17 @@ export function App() {
   }, [commandOpen, confirmState?.open]);
 
   const handleOpenLogs = React.useCallback(
-    (unit: string, level: 'all' | 'error' | 'warn' = 'all') => {
-      setLogsInitialUnit(unit);
-      setLogsInitialLevel(level);
+    (unitOrRequest: string | LogNavigationRequest, level: 'all' | 'error' | 'warn' = 'all') => {
+      const normalized = normalizeLogNavigation(unitOrRequest, level);
+      setLogsInitialFilter(normalized);
+      setLogsInitialUnit(normalized.source === 'service' ? normalized.target : '');
+      setLogsInitialLevel(normalized.level);
       setLogsRequestNonce((n) => n + 1);
-      if (unit) {
-        setRecentServiceUnits((prev) => [unit, ...prev.filter((u) => u !== unit)].slice(0, 5));
+      const trackUnit = typeof unitOrRequest === 'string'
+        ? unitOrRequest
+        : (unitOrRequest.unit || (normalized.source === 'service' ? normalized.target : ''));
+      if (trackUnit && trackUnit !== 'all') {
+        setRecentServiceUnits((prev) => [trackUnit, ...prev.filter((u) => u !== trackUnit)].slice(0, 5));
       }
       setView('logs');
       setMobileNavOpen(false);
@@ -1457,6 +1466,7 @@ export function App() {
                   {view === 'services' && (
                     <ServicesView
                       snapshot={snapshot}
+                      meta={meta}
                       readOnly={readOnly}
                       activeLayer={viewSubTabs.services}
                       onLayerChange={(next) => setViewSubTab('services', next)}
@@ -1563,6 +1573,7 @@ export function App() {
                       meta={meta}
                       initialUnit={logsInitialUnit}
                       initialLevel={logsInitialLevel}
+                      initialFilter={logsInitialFilter}
                       requestNonce={logsRequestNonce}
                       onToast={pushToast}
                     />

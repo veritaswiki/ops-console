@@ -311,35 +311,54 @@ export const fetchLogs = (
   params: {
     source: string;
     target: string;
+    targets?: string[];
     since: string;
     level: string;
     q: string;
     regex: boolean;
     lines?: number;
+    maxBytesPerFile?: number;
   },
   signal?: AbortSignal,
 ) => {
   const qs = new URLSearchParams();
   qs.set('source', params.source);
-  if (params.target) qs.set('target', params.target);
+  if (params.source === 'unified') {
+    const list = params.targets && params.targets.length > 0
+      ? params.targets
+      : (params.target ? [params.target] : ['all']);
+    qs.set('targets', list.join(','));
+  } else if (params.target) {
+    qs.set('target', params.target);
+  }
   if (params.since) qs.set('since', params.since);
   if (params.level && params.level !== 'all') qs.set('level', params.level);
   if (params.q.trim()) qs.set('q', params.q.trim());
   if (params.regex) qs.set('regex', '1');
+  if (params.maxBytesPerFile) qs.set('maxBytesPerFile', String(params.maxBytesPerFile));
   qs.set('lines', String(params.lines ?? 200));
-  return apiRequest<LogsResponse>(`/api/logs?${qs.toString()}`, { signal, dedupe: false });
+  const endpoint = params.source === 'unified' ? '/api/logs/unified' : '/api/logs';
+  return apiRequest<LogsResponse>(`${endpoint}?${qs.toString()}`, { signal, dedupe: false });
 };
 
 export const buildLogStreamUrl = (params: {
   source: string;
   target: string;
+  targets?: string[];
   level: string;
   q: string;
   regex: boolean;
 }) => {
   const qs = new URLSearchParams();
   qs.set('source', params.source);
-  if (params.target) qs.set('target', params.target);
+  if (params.source === 'unified') {
+    const list = params.targets && params.targets.length > 0
+      ? params.targets
+      : (params.target ? [params.target] : ['all']);
+    qs.set('targets', list.join(','));
+  } else if (params.target) {
+    qs.set('target', params.target);
+  }
   if (params.level && params.level !== 'all') qs.set('level', params.level);
   if (params.q.trim()) qs.set('q', params.q.trim());
   if (params.regex) qs.set('regex', '1');
