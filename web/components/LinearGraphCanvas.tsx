@@ -31,6 +31,8 @@ import {
   X,
 } from 'lucide-react';
 import type {
+  A2ATaskRecord,
+  GithubPullRequestItem,
   LinearIssueItem,
   LinearIssuePriority,
   LinearIssueStatus,
@@ -174,6 +176,8 @@ function N8nCanvasInner({
   commanderId,
   issues,
   projects,
+  liveA2ATasks = [],
+  liveGithubPrs = [],
   availableAgents,
   availableBots,
   readOnly,
@@ -185,6 +189,8 @@ function N8nCanvasInner({
   commanderId: string;
   issues: LinearIssueItem[];
   projects: LinearProjectItem[];
+  liveA2ATasks?: A2ATaskRecord[];
+  liveGithubPrs?: GithubPullRequestItem[];
   availableAgents: Array<{ id: string; name: string; role: string; harness: string }>;
   availableBots: Array<{ id: string; name: string; channel: string; handle?: string; role?: string }>;
   readOnly: boolean;
@@ -212,8 +218,10 @@ function N8nCanvasInner({
         commanderId,
         issues,
         projects,
+        liveA2ATasks,
+        liveGithubPrs,
       }),
-    [commanderName, commanderId, issues, projects],
+    [commanderName, commanderId, issues, projects, liveA2ATasks, liveGithubPrs],
   );
 
   const rfNodes = React.useMemo<Node<N8nNodeData>[]>(
@@ -578,6 +586,8 @@ export function LinearGraphCanvas(props: {
   commanderId: string;
   issues: LinearIssueItem[];
   projects: LinearProjectItem[];
+  liveA2ATasks?: A2ATaskRecord[];
+  liveGithubPrs?: GithubPullRequestItem[];
   availableAgents: Array<{ id: string; name: string; role: string; harness: string }>;
   availableBots: Array<{ id: string; name: string; channel: string; handle?: string; role?: string }>;
   readOnly?: boolean;
@@ -601,6 +611,8 @@ export function LinearGraphCanvas(props: {
         commanderId={props.commanderId}
         issues={props.issues}
         projects={props.projects}
+        liveA2ATasks={props.liveA2ATasks}
+        liveGithubPrs={props.liveGithubPrs}
         availableAgents={props.availableAgents}
         availableBots={props.availableBots}
         readOnly={Boolean(props.readOnly)}

@@ -154,12 +154,13 @@ export function GithubView({
       }
       if (linResult.status === 'fulfilled') {
         const lin = linResult.value;
+        const detectedRepo = ovResult.status === 'fulfilled' ? ovResult.value.repo : null;
         setLinearState(lin);
         setGithubDraft({
           enabled: lin.githubConfig.enabled,
-          owner: lin.githubConfig.owner || '',
-          repo: lin.githubConfig.repo || '',
-          defaultBranch: lin.githubConfig.defaultBranch || 'main',
+          owner: lin.githubConfig.owner || detectedRepo?.owner || '',
+          repo: lin.githubConfig.repo || detectedRepo?.name || '',
+          defaultBranch: lin.githubConfig.defaultBranch || detectedRepo?.defaultBranch || 'main',
           syncDirection: lin.githubConfig.syncDirection || 'bidirectional',
           tokenEnvVar: lin.githubConfig.tokenEnvVar || 'GITHUB_TOKEN',
           autoCreatePr: lin.githubConfig.autoCreatePr,

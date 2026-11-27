@@ -21,6 +21,7 @@ import {
   dispatchLinearCommander,
   fetchA2AState,
   fetchLinearState,
+  syncLinearGithub,
   updateLinearIssue,
 } from '../api';
 import type {
@@ -97,6 +98,7 @@ export function ProjectsView({
   const [showCreate, setShowCreate] = React.useState(false);
   const [creating, setCreating] = React.useState(false);
   const [dispatchingId, setDispatchingId] = React.useState<string | null>(null);
+  const [syncingGithub, setSyncingGithub] = React.useState(false);
 
   const [form, setForm] = React.useState({
     title: '',
@@ -232,6 +234,20 @@ export function ProjectsView({
     }
   };
 
+  const handleSyncGithub = async () => {
+    if (readOnly) return;
+    setSyncingGithub(true);
+    try {
+      const res = await syncLinearGithub('pull');
+      onToast?.(res.summary || `已同步 GitHub (${res.importedCount} 新增 / ${res.updatedCount} 更新)`, 'ok');
+      await loadData();
+    } catch (err) {
+      onToast?.(err instanceof Error ? err.message : '同步 GitHub 失败', 'err');
+    } finally {
+      setSyncingGithub(false);
+    }
+  };
+
   if (loading && !linearState) {
     return <ViewSkeleton />;
   }
@@ -310,6 +326,17 @@ export function ProjectsView({
               className={cn('w-full h-8 pl-8 pr-2.5 text-[12.5px]', inputBaseClass)}
             />
           </div>
+
+          <Button
+            variant="secondary"
+            size="sm"
+            disabled={readOnly || syncingGithub}
+            data-testid="sync-github-issues-btn"
+            onClick={() => void handleSyncGithub()}
+          >
+            <GitPullRequest className={cn('size-3.5', syncingGithub && 'animate-pulse')} />
+            {syncingGithub ? '同步中...' : '同步 GitHub'}
+          </Button>
 
           <Button
             variant="primary"
@@ -412,7 +439,14 @@ export function ProjectsView({
 
       {/* Main Linear Board or Grouped List */}
       {filteredIssues.length === 0 ? (
-        <EmptyState title="暂无任务" message="调整筛选条件，或点击右上角「新建」添加任务。" />
+        <EmptyState
+          title="暂无任务"
+          message={
+            (linearState?.issues?.length || 0) === 0
+              ? '当前为实时数据源，尚未同步或创建任务。点击「同步 GitHub」可直接拉取本仓库真实 PR / Issue，或点击「新建」手动添加。'
+              : '当前筛选条件下无匹配任务，可清空搜索词或切换执行者筛选。'
+          }
+        />
       ) : mode === 'board' ? (
         <div
           className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5 items-start"

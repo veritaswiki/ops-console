@@ -2314,7 +2314,16 @@ export function createOpsConsole(options = {}) {
 
       // ─── Bot Fleet & Multi-Channel Automation System ─────────────────────────
       if (method === 'GET' && pathname === '/api/bots') {
-        sendJson(res, 200, botFleet.list(), {}, req);
+        let githubOverview = null;
+        if (!config.demo) {
+          try {
+            githubOverview = await githubHub.getOverview({ force: false });
+          } catch {
+            githubOverview = null;
+          }
+        }
+        const payload = await botFleet.listWithIntegrations({ githubOverview });
+        sendJson(res, 200, payload, {}, req);
         return;
       }
 

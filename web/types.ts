@@ -1725,6 +1725,7 @@ export interface LinearCommanderLogItem {
 
 export interface LinearStateResponse {
   ok?: boolean;
+  mode?: 'demo' | 'live';
   commander: LinearCommanderConfig;
   githubConfig: LinearGithubConfig;
   summary: {
@@ -1802,8 +1803,30 @@ export interface BotActivityItem {
   dispatched: boolean;
 }
 
+export interface BotLiveWorkflowItem {
+  file: string;
+  name: string;
+  triggers: string[];
+}
+
+export interface BotLiveEnvStatus {
+  name: string;
+  channel: string;
+  label: string;
+  configured: boolean;
+}
+
+export interface BotLiveIntegrations {
+  ghAuthenticated: boolean;
+  ghAccount: string | null;
+  repoFullName: string | null;
+  workflows: BotLiveWorkflowItem[];
+  envStatus: BotLiveEnvStatus[];
+}
+
 export interface BotFleetResponse {
   ok?: boolean;
+  mode?: 'demo' | 'live';
   summary: {
     total: number;
     enabled: number;
@@ -1815,6 +1838,7 @@ export interface BotFleetResponse {
   };
   bots: BotItem[];
   activities: BotActivityItem[];
+  liveIntegrations?: BotLiveIntegrations;
 }
 
 export interface A2AConnectProfile {

@@ -1,4 +1,6 @@
 import type {
+  A2ATaskRecord,
+  GithubPullRequestItem,
   LinearIssueItem,
   LinearIssuePriority,
   LinearIssueStatus,
@@ -152,11 +154,15 @@ export function buildLinearDependencyGraph({
   commanderId,
   issues,
   projects,
+  liveA2ATasks = [],
+  liveGithubPrs = [],
 }: {
   commanderName: string;
   commanderId: string;
   issues: LinearIssueItem[];
   projects: LinearProjectItem[];
+  liveA2ATasks?: A2ATaskRecord[];
+  liveGithubPrs?: GithubPullRequestItem[];
 }): {
   nodes: LinearGraphNodeSpec[];
   edges: LinearGraphEdgeSpec[];
@@ -168,9 +174,14 @@ export function buildLinearDependencyGraph({
   const visibleIssues = issues.filter((i) => i.status !== 'canceled');
   const rootIssues = visibleIssues.filter((i) => !i.parentId);
   const subIssues = visibleIssues.filter((i) => Boolean(i.parentId));
+  const linkedTaskIds = new Set(visibleIssues.map((i) => i.linkedTaskId).filter(Boolean));
+  const standaloneA2ATasks = liveA2ATasks
+    .filter((task) => task?.id && !linkedTaskIds.has(task.id))
+    .slice(0, 12);
+  const totalPrimaryLanes = Math.max(rootIssues.length + standaloneA2ATasks.length, 1);
 
   const commanderNodeId = 'node-commander';
-  const centerY = Math.max(140, Math.round(((Math.max(rootIssues.length, 1) - 1) * 185) / 2) + 40);
+  const centerY = Math.max(140, Math.round(((totalPrimaryLanes - 1) * 185) / 2) + 40);
 
   nodes.push({
     id: commanderNodeId,
@@ -207,6 +218,39 @@ export function buildLinearDependencyGraph({
       kind: 'commands',
       label: issue.status === 'triage' ? '待分诊' : '统领调度',
       animated: issue.status === 'in_progress',
+    });
+  });
+
+  // Live A2A tasks not already linked to a Linear issue
+  standaloneA2ATasks.forEach((task, idx) => {
+    const laneIndex = rootIssues.length + idx;
+    const nodeId = `a2a-task-${task.id}`;
+    const mappedStatus =
+      task.state === 'completed'
+        ? 'done'
+        : task.state === 'working'
+          ? 'in_progress'
+          : task.state === 'failed' || task.state === 'canceled'
+            ? 'canceled'
+            : 'todo';
+    nodes.push({
+      id: nodeId,
+      kind: 'sub-issue',
+      x: 380,
+      y: 40 + laneIndex * 185,
+      title: task.prompt || task.id,
+      subtitle: `A2A · ${task.workerAgentName || task.workerNodeId || 'Worker'} · ${task.state}`,
+      status: mappedStatus,
+      assigneeName: task.workerAgentName || task.workerNodeId || 'Agent',
+      identifier: task.id.length > 14 ? `${task.id.slice(0, 14)}…` : task.id,
+    });
+    edges.push({
+      id: `edge-cmd-a2a-${task.id}`,
+      source: commanderNodeId,
+      target: nodeId,
+      kind: 'commands',
+      label: 'A2A 派发',
+      animated: task.state === 'working',
     });
   });
 
@@ -292,6 +336,35 @@ export function buildLinearDependencyGraph({
         animated: issue.github.prState === 'open',
       });
     }
+  }
+
+  // Live GitHub PRs not yet linked to a Linear issue
+  const seenPrNumbers = new Set(visibleIssues.map((i) => i.github?.prNumber).filter(Boolean));
+  for (const pr of liveGithubPrs.slice(0, 10)) {
+    if (!pr?.number || seenPrNumbers.has(pr.number)) continue;
+    seenPrNumbers.add(pr.number);
+    const prNodeId = `live-pr-${pr.number}`;
+    const normalizedState = String(pr.state || 'OPEN').toLowerCase();
+    nodes.push({
+      id: prNodeId,
+      kind: 'github-pr',
+      x: 1140,
+      y: 40 + prIndex * 185,
+      title: pr.title || `GitHub PR #${pr.number}`,
+      subtitle: `${pr.headRefName || 'branch'} → ${pr.baseRefName || 'main'}`,
+      status: normalizedState === 'merged' ? 'done' : 'in_review',
+      identifier: `PR #${pr.number}`,
+      url: pr.url || null,
+    });
+    edges.push({
+      id: `edge-cmd-pr-${pr.number}`,
+      source: commanderNodeId,
+      target: prNodeId,
+      kind: 'delivers',
+      label: normalizedState === 'merged' ? '已合并' : '实时 PR',
+      animated: normalizedState === 'open',
+    });
+    prIndex++;
   }
 
   return { nodes, edges };

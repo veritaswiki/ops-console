@@ -1,6 +1,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { PACKAGE_ROOT } from './config.mjs';
+import { runCmd } from './exec.mjs';
+import { parseGithubRemoteUrl } from './github-hub.mjs';
 
 export const ISSUE_STATUSES = ['triage', 'backlog', 'todo', 'in_progress', 'in_review', 'done', 'canceled'];
 export const ISSUE_PRIORITIES = ['urgent', 'high', 'medium', 'low', 'none'];
@@ -360,32 +363,141 @@ function buildDemoSeedState() {
   };
 }
 
+function buildLiveInitialState() {
+  return {
+    version: 1,
+    nextIssueSeq: 1,
+    commander: {
+      leadAgentId: '',
+      autoDecompose: true,
+      autoAssignWorkers: true,
+      autoSyncGithub: false,
+      requireDshReview: true,
+      worktreePrefix: 'ai',
+    },
+    githubConfig: {
+      enabled: false,
+      owner: '',
+      repo: '',
+      defaultBranch: 'main',
+      autoCreatePr: false,
+      syncDirection: 'bidirectional',
+      tokenEnvVar: 'GITHUB_TOKEN',
+      lastSyncedAt: null,
+      lastSyncMode: 'live-idle',
+      lastSyncSummary: '尚未同步 GitHub 仓库',
+    },
+    projects: [],
+    cycles: [],
+    issues: [],
+    commanderLogs: [],
+  };
+}
+
+function isLegacyDemoSeedState(parsed) {
+  if (!parsed || typeof parsed !== 'object') return false;
+  const gh = parsed.githubConfig || {};
+  if (gh.lastSyncMode !== 'demo-simulated') return false;
+  if (gh.owner !== 'ops-console' || gh.repo !== 'ops-console') return false;
+  const issues = Array.isArray(parsed.issues) ? parsed.issues : [];
+  if (issues.length === 0) return false;
+  return issues.every((item) => /^iss-10[1-7]$/.test(String(item?.id || '')));
+}
+
 export class LinearCommanderManager {
   constructor(config, logger) {
     this.config = config;
     this.logger = logger;
     this.dataDir = config?.console?.dataDir || path.resolve(process.cwd(), 'data');
     this.stateFile = path.join(this.dataDir, 'linear-projects.json');
-    this.state = buildDemoSeedState();
+    this.repoDir = config?.github?.repoDir || PACKAGE_ROOT;
+    this.state = config?.demo ? buildDemoSeedState() : buildLiveInitialState();
     this.initialized = false;
+  }
+
+  async _detectLocalGitRepo() {
+    try {
+      const remoteRes = await runCmd('git', ['remote', 'get-url', 'origin'], {
+        cwd: this.repoDir,
+        timeout: 3000,
+      });
+      if (!remoteRes.ok || !remoteRes.stdout) return null;
+      const parsed = parseGithubRemoteUrl(remoteRes.stdout.trim());
+      if (!parsed || !SAFE_SLUG_RE.test(parsed.owner) || !SAFE_SLUG_RE.test(parsed.name)) {
+        return null;
+      }
+      let defaultBranch = 'main';
+      const headRes = await runCmd('git', ['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'], {
+        cwd: this.repoDir,
+        timeout: 3000,
+      });
+      if (headRes.ok && headRes.stdout) {
+        const cleaned = headRes.stdout.trim().replace(/^origin\//, '');
+        if (cleaned) defaultBranch = cleaned;
+      }
+      return {
+        owner: parsed.owner,
+        repo: parsed.name,
+        defaultBranch,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  _ensureDefaultProject(repoFull = '') {
+    if (this.state.projects.length > 0) return this.state.projects[0];
+    const gh = this.state.githubConfig || {};
+    const effectiveRepo = repoFull || (gh.owner && gh.repo ? `${gh.owner}/${gh.repo}` : '');
+    const rawKey = (gh.repo || 'OPS').replace(/[^A-Za-z0-9]/g, '').slice(0, 6).toUpperCase() || 'OPS';
+    const project = {
+      id: `proj-${slugifyBranch(gh.repo || 'workspace')}`,
+      key: rawKey,
+      name: effectiveRepo || '默认工作区项目',
+      summary: effectiveRepo ? `关联 GitHub 仓库 ${effectiveRepo} 的实时任务与 PR 交付空间` : '实时任务与 Agent 编排工作区',
+      status: 'in_progress',
+      leadAgentId: this.state.commander.leadAgentId || '',
+      targetDate: '',
+      githubRepo: effectiveRepo,
+      createdAt: new Date().toISOString(),
+    };
+    this.state.projects.push(project);
+    return project;
   }
 
   async init() {
     if (this.initialized) return;
     this.initialized = true;
+    const baseState = this.config?.demo ? buildDemoSeedState() : buildLiveInitialState();
     try {
       const raw = await fs.readFile(this.stateFile, 'utf8');
       const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.issues) && Array.isArray(parsed.projects)) {
+      if (!this.config?.demo && isLegacyDemoSeedState(parsed)) {
+        this.state = buildLiveInitialState();
+      } else if (parsed && Array.isArray(parsed.issues) && Array.isArray(parsed.projects)) {
         this.state = {
-          ...buildDemoSeedState(),
+          ...baseState,
           ...parsed,
-          commander: { ...buildDemoSeedState().commander, ...(parsed.commander || {}) },
-          githubConfig: { ...buildDemoSeedState().githubConfig, ...(parsed.githubConfig || {}) },
+          commander: { ...baseState.commander, ...(parsed.commander || {}) },
+          githubConfig: { ...baseState.githubConfig, ...(parsed.githubConfig || {}) },
         };
       }
     } catch {
       // Fresh state in demo/new deployment
+      this.state = baseState;
+    }
+
+    if (!this.config?.demo && (!this.state.githubConfig.owner || !this.state.githubConfig.repo)) {
+      const detected = await this._detectLocalGitRepo();
+      if (detected) {
+        this.state.githubConfig.owner = detected.owner;
+        this.state.githubConfig.repo = detected.repo;
+        this.state.githubConfig.defaultBranch = detected.defaultBranch;
+        this.state.githubConfig.enabled = true;
+      }
+    }
+
+    if (!this.config?.demo) {
       await this.persist().catch(() => {});
     }
   }
@@ -486,6 +598,7 @@ export class LinearCommanderManager {
 
     return {
       ok: true,
+      mode: this.config?.demo ? 'demo' : 'live',
       commander: {
         ...this.state.commander,
         leadAgentId,
@@ -562,7 +675,10 @@ export class LinearCommanderManager {
     const title = cleanStr(payload.title, 140);
     if (!title) throw createHttpError(400, 'Issue 标题不能为空');
 
-    const project = this.state.projects.find((p) => p.id === payload.projectId) || this.state.projects[0];
+    const project =
+      this.state.projects.find((p) => p.id === payload.projectId) ||
+      this.state.projects[0] ||
+      (!this.config?.demo ? this._ensureDefaultProject() : null);
     if (!project) throw createHttpError(400, '未找到有效目标项目');
 
     const cycle = this.state.cycles.find((c) => c.id === payload.cycleId)
@@ -606,7 +722,7 @@ export class LinearCommanderManager {
       blockedBy,
       assigneeType: ['agent', 'bot', 'human'].includes(payload.assigneeType) ? payload.assigneeType : 'agent',
       assigneeId: cleanStr(payload.assigneeId, 80) || this.state.commander.leadAgentId || '',
-      assigneeName: cleanStr(payload.assigneeName, 80) || 'Codex Lead (Hub)',
+      assigneeName: cleanStr(payload.assigneeName, 80) || (this.config?.demo ? 'Codex Lead (Hub)' : '未指派'),
       commanderId: cleanStr(payload.commanderId, 80) || this.state.commander.leadAgentId || '',
       labels,
       estimate: Math.max(1, Math.min(13, Number(payload.estimate) || 2)),
@@ -891,6 +1007,15 @@ export class LinearCommanderManager {
 
   async syncGithub({ direction, actor = 'web' } = {}) {
     const cfg = this.state.githubConfig;
+    if (!this.config?.demo && (!cfg.owner || !cfg.repo)) {
+      const detected = await this._detectLocalGitRepo();
+      if (detected) {
+        cfg.owner = detected.owner;
+        cfg.repo = detected.repo;
+        cfg.defaultBranch = detected.defaultBranch;
+        cfg.enabled = true;
+      }
+    }
     if (!SAFE_SLUG_RE.test(cfg.owner) || !SAFE_SLUG_RE.test(cfg.repo)) {
       throw createHttpError(400, '请先配置合法的 GitHub owner / repo');
     }
@@ -904,12 +1029,13 @@ export class LinearCommanderManager {
     let importedCount = 0;
     let updatedCount = 0;
 
-    // Live GitHub REST API sync ONLY when a server-side token env var is present and not strictly demo-offline
+    // Live GitHub sync: prefer server-side token REST API, fallback to authenticated local `gh` CLI
     const envVar = cfg.tokenEnvVar || 'GITHUB_TOKEN';
     const token = SAFE_ENV_VAR_RE.test(envVar) ? String(process.env[envVar] || '').trim() : '';
 
     if (token && !this.config?.demo) {
       mode = 'live-github-api';
+      this._ensureDefaultProject(repoFull);
       const headers = {
         Accept: 'application/vnd.github+json',
         Authorization: `Bearer ${token}`,
@@ -964,6 +1090,121 @@ export class LinearCommanderManager {
       } finally {
         clearTimeout(timer);
       }
+    } else if (!this.config?.demo) {
+      const authRes = await runCmd('gh', ['auth', 'status'], { cwd: this.repoDir, timeout: 4000 });
+      if (!authRes.ok) {
+        throw createHttpError(
+          400,
+          `未检测到环境变量 ${envVar}，且本机 gh CLI 未登录，无法拉取真实 GitHub 数据。请运行 gh auth login 或配置 ${envVar}。`,
+        );
+      }
+      mode = 'live-gh-cli';
+      const defaultProject = this._ensureDefaultProject(repoFull);
+      const [prRes, issueRes] = await Promise.all([
+        runCmd(
+          'gh',
+          ['pr', 'list', '--repo', repoFull, '--limit', '20', '--json', 'number,title,state,headRefName,url,labels,body'],
+          { cwd: this.repoDir, timeout: 8000 },
+        ),
+        runCmd(
+          'gh',
+          ['issue', 'list', '--repo', repoFull, '--limit', '20', '--json', 'number,title,state,url,labels,body'],
+          { cwd: this.repoDir, timeout: 8000 },
+        ),
+      ]);
+      if (!prRes.ok && !issueRes.ok) {
+        throw createHttpError(502, `gh CLI 拉取 ${repoFull} 失败：${(prRes.stderr || issueRes.stderr || 'unknown error').slice(0, 160)}`);
+      }
+      const parseList = (res) => {
+        if (!res.ok) return [];
+        try {
+          const parsed = JSON.parse(res.stdout || '[]');
+          return Array.isArray(parsed) ? parsed : [];
+        } catch {
+          return [];
+        }
+      };
+      const prs = parseList(prRes);
+      const ghIssues = parseList(issueRes);
+      for (const pr of prs) {
+        const num = Number(pr.number);
+        if (!Number.isFinite(num)) continue;
+        const prState = String(pr.state || 'open').toLowerCase();
+        const existing = this.state.issues.find(
+          (item) => item.github?.repo === repoFull && item.github?.prNumber === num,
+        );
+        if (existing) {
+          existing.worktreeBranch = cleanStr(pr.headRefName, 100) || existing.worktreeBranch;
+          existing.github = {
+            ...existing.github,
+            repo: repoFull,
+            prNumber: num,
+            prState,
+            branch: cleanStr(pr.headRefName, 100) || existing.github?.branch || null,
+            url: sanitizeGithubUrl(pr.url) || existing.github?.url || null,
+            syncedAt: nowIso,
+          };
+          if (prState === 'merged' && existing.status !== 'done') {
+            existing.status = 'done';
+          }
+          existing.updatedAt = nowIso;
+          updatedCount++;
+        } else if (effectiveDirection !== 'push') {
+          await this.createIssue({
+            title: cleanStr(pr.title, 140),
+            description: cleanStr(pr.body || `GitHub PR #${num} (${pr.headRefName || ''})`, 800),
+            status: prState === 'merged' ? 'done' : 'in_review',
+            priority: 'high',
+            projectId: defaultProject.id,
+            worktreeBranch: cleanStr(pr.headRefName, 100) || null,
+            labels: Array.isArray(pr.labels) ? pr.labels.map((l) => l?.name || l).filter(Boolean).slice(0, 4) : ['pr'],
+            github: {
+              repo: repoFull,
+              issueNumber: null,
+              prNumber: num,
+              prState,
+              branch: cleanStr(pr.headRefName, 100) || null,
+              url: pr.url,
+            },
+          });
+          importedCount++;
+        }
+      }
+      for (const gh of ghIssues) {
+        const num = Number(gh.number);
+        if (!Number.isFinite(num)) continue;
+        const existing = this.state.issues.find(
+          (item) => item.github?.repo === repoFull && item.github?.issueNumber === num,
+        );
+        if (existing) {
+          existing.github = {
+            ...existing.github,
+            repo: repoFull,
+            issueNumber: num,
+            url: sanitizeGithubUrl(gh.url) || existing.github?.url || null,
+            syncedAt: nowIso,
+          };
+          existing.updatedAt = nowIso;
+          updatedCount++;
+        } else if (effectiveDirection !== 'push') {
+          await this.createIssue({
+            title: cleanStr(gh.title, 140),
+            description: cleanStr(gh.body || `GitHub Issue #${num}`, 800),
+            status: 'triage',
+            priority: 'medium',
+            projectId: defaultProject.id,
+            labels: Array.isArray(gh.labels) ? gh.labels.map((l) => l?.name || l).filter(Boolean).slice(0, 4) : ['github'],
+            github: {
+              repo: repoFull,
+              issueNumber: num,
+              prNumber: null,
+              prState: null,
+              url: gh.url,
+            },
+          });
+          importedCount++;
+        }
+      }
     } else {
       // Deterministic demo / local simulation when GITHUB_TOKEN is not configured on server
       for (const issue of this.state.issues) {
@@ -995,6 +1236,8 @@ export class LinearCommanderManager {
     cfg.lastSyncMode = mode;
     cfg.lastSyncSummary = mode === 'live-github-api'
       ? `实时 GitHub API 同步完成：新导入 ${importedCount} 条，更新 ${updatedCount} 条 (${repoFull})`
+      : mode === 'live-gh-cli'
+        ? `实时 gh CLI 同步完成：新导入 ${importedCount} 条，更新 ${updatedCount} 条 (${repoFull})`
       : `本地模拟双向同步完成：已对齐 ${updatedCount} 条活跃 Issue 与 PR 映射 (${repoFull})；配置环境变量 ${envVar} 可切实时 API`;
 
     this.appendCommanderLog({

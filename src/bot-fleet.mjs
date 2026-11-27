@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { PACKAGE_ROOT } from './config.mjs';
 
 export const BOT_CHANNELS = ['github', 'feishu', 'telegram', 'discord', 'slack', 'webhook'];
 export const BOT_ROLES = ['commander-bridge', 'triage-intake', 'pr-reviewer', 'ops-alerter', 'custom'];
@@ -104,32 +105,126 @@ function buildSeedBots() {
   };
 }
 
+function buildLiveInitialBots() {
+  return {
+    version: 1,
+    bots: [],
+    activities: [],
+  };
+}
+
+function isLegacyDemoBotSeed(parsed) {
+  if (!parsed || typeof parsed !== 'object') return false;
+  const bots = Array.isArray(parsed.bots) ? parsed.bots : [];
+  const activities = Array.isArray(parsed.activities) ? parsed.activities : [];
+  const hasFakeActivity = activities.some((act) =>
+    /PR #418|BOT-106|OPS-101/.test(String(act?.message || ''))
+    || String(act?.id || '') === 'botact-1',
+  );
+  const onlySeedIds =
+    bots.length > 0 &&
+    bots.every((bot) => ['bot-github-commander', 'bot-ops-watchdog', 'bot-feishu-intake'].includes(String(bot?.id || '')));
+  return hasFakeActivity && onlySeedIds;
+}
+
+const CHECKED_BOT_ENV_VARS = [
+  { name: 'GITHUB_TOKEN', channel: 'github', label: 'GitHub API Token' },
+  { name: 'TELEGRAM_BOT_TOKEN', channel: 'telegram', label: 'Telegram Bot Token' },
+  { name: 'SLACK_BOT_TOKEN', channel: 'slack', label: 'Slack Bot Token' },
+  { name: 'DISCORD_BOT_TOKEN', channel: 'discord', label: 'Discord Bot Token' },
+  { name: 'OPS_WATCHDOG_TOKEN', channel: 'webhook', label: 'Ops Watchdog Webhook Token' },
+];
+
+export function parseGithubWorkflowMeta(fileName, content) {
+  const text = String(content || '');
+  const nameMatch = text.match(/^\s*name\s*:\s*["']?([^"'\n#]+)["']?/m);
+  const triggers = [];
+  const inlineOn = text.match(/^\s*on\s*:\s*\[([^\]]+)\]/m);
+  if (inlineOn) {
+    for (const part of inlineOn[1].split(',')) {
+      const clean = part.trim().replace(/^["']|["']$/g, '');
+      if (clean) triggers.push(clean);
+    }
+  } else {
+    const singleOn = text.match(/^\s*on\s*:\s*([a-zA-Z0-9_-]+)\s*$/m);
+    if (singleOn) {
+      triggers.push(singleOn[1]);
+    } else {
+      const blockMatch = text.match(/^\s*on\s*:\s*\n((?:[ \t]+.+\n?)+)/m);
+      if (blockMatch) {
+        for (const line of blockMatch[1].split('\n')) {
+          const keyMatch = line.match(/^[ \t]{2}([a-zA-Z0-9_-]+)\s*:/);
+          if (keyMatch) triggers.push(keyMatch[1]);
+        }
+      }
+    }
+  }
+  return {
+    file: path.basename(String(fileName || '')),
+    name: nameMatch ? nameMatch[1].trim().slice(0, 80) : path.basename(String(fileName || '')),
+    triggers: [...new Set(triggers)].slice(0, 6),
+  };
+}
+
 export class BotFleetManager {
   constructor(config, logger) {
     this.config = config;
     this.logger = logger;
     this.dataDir = config?.console?.dataDir || path.resolve(process.cwd(), 'data');
+    this.repoDir = config?.github?.repoDir || PACKAGE_ROOT;
     this.stateFile = path.join(this.dataDir, 'bots.json');
-    this.state = buildSeedBots();
+    this.state = config?.demo ? buildSeedBots() : buildLiveInitialBots();
     this.initialized = false;
+    this._workflowsCache = { expiresAt: 0, items: [] };
   }
 
   async init() {
     if (this.initialized) return;
     this.initialized = true;
+    const baseState = this.config?.demo ? buildSeedBots() : buildLiveInitialBots();
     try {
       const raw = await fs.readFile(this.stateFile, 'utf8');
       const parsed = JSON.parse(raw);
-      if (parsed && Array.isArray(parsed.bots)) {
+      if (!this.config?.demo && isLegacyDemoBotSeed(parsed)) {
+        this.state = buildLiveInitialBots();
+        await this.persist().catch(() => {});
+      } else if (parsed && Array.isArray(parsed.bots)) {
         this.state = {
-          ...buildSeedBots(),
+          ...baseState,
           ...parsed,
           activities: Array.isArray(parsed.activities) ? parsed.activities : [],
         };
       }
     } catch {
-      await this.persist().catch(() => {});
+      this.state = baseState;
+      if (!this.config?.demo) {
+        await this.persist().catch(() => {});
+      }
     }
+  }
+
+  async _discoverGithubWorkflows() {
+    if (this._workflowsCache.expiresAt > Date.now()) {
+      return this._workflowsCache.items;
+    }
+    const wfDir = path.join(this.repoDir, '.github', 'workflows');
+    const items = [];
+    try {
+      const entries = await fs.readdir(wfDir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (!entry.isFile() || !/\.(ya?ml)$/i.test(entry.name)) continue;
+        try {
+          const content = await fs.readFile(path.join(wfDir, entry.name), 'utf8');
+          items.push(parseGithubWorkflowMeta(entry.name, content));
+        } catch {
+          // Skip unreadable workflow
+        }
+      }
+    } catch {
+      // No .github/workflows directory
+    }
+    this._workflowsCache = { expiresAt: Date.now() + 30_000, items };
+    return items;
   }
 
   async persist() {
@@ -140,7 +235,7 @@ export class BotFleetManager {
     await fs.chmod(this.stateFile, 0o600).catch(() => {});
   }
 
-  list() {
+  list(liveIntegrations = null) {
     const bots = this.state.bots.map((bot) => ({
       ...bot,
       hasServerSecret: Boolean(
@@ -153,6 +248,7 @@ export class BotFleetManager {
     }
     return {
       ok: true,
+      mode: this.config?.demo ? 'demo' : 'live',
       summary: {
         total: bots.length,
         enabled: bots.filter((b) => b.enabled).length,
@@ -164,7 +260,25 @@ export class BotFleetManager {
       },
       bots,
       activities: this.state.activities.slice(0, 30),
+      ...(liveIntegrations ? { liveIntegrations } : {}),
     };
+  }
+
+  async listWithIntegrations({ githubOverview = null } = {}) {
+    const workflows = this.config?.demo ? [] : await this._discoverGithubWorkflows();
+    const envStatus = CHECKED_BOT_ENV_VARS.map((item) => ({
+      name: item.name,
+      channel: item.channel,
+      label: item.label,
+      configured: Boolean(process.env[item.name] && String(process.env[item.name]).trim().length > 0),
+    }));
+    return this.list({
+      ghAuthenticated: Boolean(githubOverview?.ghAuthenticated),
+      ghAccount: githubOverview?.ghAccount || null,
+      repoFullName: githubOverview?.repo?.fullName || null,
+      workflows,
+      envStatus,
+    });
   }
 
   async createBot(payload = {}) {
