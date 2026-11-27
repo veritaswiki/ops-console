@@ -8,6 +8,7 @@ import {
   getModulesGroupedByDomain,
   isValidViewId,
   MODULE_DOMAINS,
+  parseSubTabFromHash,
   parseViewFromHash,
 } from './registry';
 
@@ -72,4 +73,18 @@ test('parseViewFromHash and isValidViewId handle hash deep-links and aliases saf
   assert.equal(parseViewFromHash('#/services?tab=failed'), 'services');
   assert.equal(parseViewFromHash('#invalid-view'), null);
   assert.equal(parseViewFromHash(''), null);
+
+  assert.equal(parseViewFromHash('#network/tailscale'), 'network');
+  assert.equal(parseViewFromHash('#network/cloudflare'), 'network');
+  assert.equal(parseSubTabFromHash('#network/tailscale'), 'tailscale');
+  assert.equal(parseSubTabFromHash('#network/cloudflare'), 'cloudflare');
+  assert.equal(parseSubTabFromHash('#/services?tab=memory'), 'memory');
+  assert.equal(parseSubTabFromHash('#network'), null);
+
+  const networkMod = getModuleById('network');
+  assert.ok(Array.isArray(networkMod.children));
+  assert.deepEqual(
+    networkMod.children.map((c) => c.subTab),
+    ['overview', 'tailscale', 'cloudflare', 'firewall'],
+  );
 });

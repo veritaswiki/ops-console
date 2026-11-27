@@ -73,6 +73,8 @@ function safeExternalUrl(raw?: string | null): string | null {
 export function ServicesView({
   snapshot,
   readOnly,
+  activeLayer,
+  onLayerChange,
   onRefresh,
   onOpenLogs,
   onToast,
@@ -80,12 +82,25 @@ export function ServicesView({
 }: {
   snapshot: SnapshotResponse | null;
   readOnly: boolean;
+  activeLayer?: string | null;
+  onLayerChange?: (layer: LayerFilter) => void;
   onRefresh: () => Promise<void>;
   onOpenLogs: (unit: string, level?: 'all' | 'error' | 'warn') => void;
   onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
   onConfirm: (modal: ConfirmModalState) => void;
 }) {
-  const [layer, setLayer] = React.useState<LayerFilter>('all');
+  const normalizeLayer = (raw?: string | null): LayerFilter =>
+    raw === 'core' || raw === 'memory' || raw === 'agents' || raw === 'network' ? raw : 'all';
+  const [layer, setLayerState] = React.useState<LayerFilter>(() => normalizeLayer(activeLayer));
+  React.useEffect(() => {
+    if (activeLayer) {
+      setLayerState(normalizeLayer(activeLayer));
+    }
+  }, [activeLayer]);
+  const setLayer = (next: LayerFilter) => {
+    setLayerState(next);
+    onLayerChange?.(next);
+  };
   const [statusFilter, setStatusFilter] = React.useState('all');
   const [query, setQuery] = React.useState('');
   const [sortField, setSortField] = React.useState<SortField>('status');

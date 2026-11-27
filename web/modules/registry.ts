@@ -35,6 +35,13 @@ export interface ModuleBenchmarkSpec {
   migratedCapabilities: string[];
 }
 
+export interface ConsoleModuleSubItem {
+  id: string;
+  subTab: string;
+  label: string;
+  keywords: string[];
+}
+
 export interface ConsoleModule {
   id: ViewId;
   domain: ModuleDomainId;
@@ -48,6 +55,7 @@ export interface ConsoleModule {
   placement?: 'nav' | 'footer';
   eager?: boolean;
   prefetch?: () => Promise<unknown>;
+  children?: readonly ConsoleModuleSubItem[];
   benchmarks: ModuleBenchmarkSpec;
 }
 
@@ -195,6 +203,12 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     icon: Globe,
     dataDeps: ['snapshot', 'probes'],
     prefetch: loadFleetView,
+    children: [
+      { id: 'fleet:all', subTab: 'all', label: '全部节点', keywords: ['fleet', 'nodes', 'all', '全部节点'] },
+      { id: 'fleet:server', subTab: 'server', label: '服务器与枢纽', keywords: ['server', 'hub', 'vps', '服务器'] },
+      { id: 'fleet:laptop', subTab: 'laptop', label: '笔记本与桌面', keywords: ['laptop', 'macbook', '笔记本'] },
+      { id: 'fleet:mobile', subTab: 'mobile', label: '移动端设备', keywords: ['mobile', 'phone', '移动端'] },
+    ],
     benchmarks: {
       references: ['Tailscale Admin', 'Teleport', 'Uptime Kuma'],
       migratedCapabilities: ['多节点状态/CPU/内存/RTT 排序对比矩阵', '行内延迟可视化色条与 IP 快复制', '一次性令牌注册与 Pull-only 指令队列'],
@@ -229,6 +243,13 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     dataDeps: ['snapshot'],
     badgeKey: 'failedServices',
     prefetch: loadServicesView,
+    children: [
+      { id: 'services:all', subTab: 'all', label: '全部受管服务', keywords: ['services', 'all', '全部服务'] },
+      { id: 'services:core', subTab: 'core', label: '核心服务', keywords: ['core', '核心服务'] },
+      { id: 'services:memory', subTab: 'memory', label: '记忆引擎服务', keywords: ['memory', 'nmem', 'openviking', '记忆服务'] },
+      { id: 'services:agents', subTab: 'agents', label: '网关与 Agent', keywords: ['agents', 'magpie', 'gateway', '网关'] },
+      { id: 'services:network', subTab: 'network', label: '网络底座服务', keywords: ['network', 'tailscale', 'mihomo', 'syncthing'] },
+    ],
     benchmarks: {
       references: ['Cockpit', 'Portainer', 'Supervisor'],
       migratedCapabilities: ['按异常/延迟/内存列头排序', '行内高频重启直达', '可展开单元依赖与探针详情'],
@@ -274,6 +295,11 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     icon: Database,
     dataDeps: ['snapshot'],
     prefetch: loadMemoryView,
+    children: [
+      { id: 'memory:all', subTab: 'all', label: '联合检索与总览', keywords: ['memory', 'all', '联合检索'] },
+      { id: 'memory:nmem', subTab: 'nmem', label: 'Nowledge Mem', keywords: ['nmem', 'nowledge'] },
+      { id: 'memory:openviking', subTab: 'openviking', label: 'OpenViking', keywords: ['openviking', 'ov'] },
+    ],
     benchmarks: {
       references: ['Qdrant Dashboard', 'Milvus Attu', 'LangSmith Eval'],
       migratedCapabilities: ['跨引擎 Rerank 增益对照表', '快捷评测 Query 预设', '评测结果 JSON 一键导出'],
@@ -283,15 +309,21 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     id: 'network',
     domain: 'infra',
     label: '网络与防火墙',
-    shortDesc: 'Tailscale 设备搜索与 IP 快复制、Mihomo 代理与端口暴露面收敛',
+    shortDesc: '内置 Tailscale 控制台、Cloudflare 局域网控制台、Mihomo 代理与端口暴露面审计',
     chord: 'n',
-    keywords: ['network', 'tailscale', 'mihomo', 'syncthing', 'ssh', '网络', '防火墙'],
+    keywords: ['network', 'tailscale', 'cloudflare', 'cloudflared', 'warp', 'mihomo', 'syncthing', 'ssh', '网络', '防火墙'],
     icon: Network,
     dataDeps: ['snapshot'],
     prefetch: loadNetworkView,
+    children: [
+      { id: 'network:overview', subTab: 'overview', label: '网络总览', keywords: ['network', 'overview', 'mihomo', 'syncthing', '网络总览'] },
+      { id: 'network:tailscale', subTab: 'tailscale', label: 'Tailscale 控制台', keywords: ['tailscale', 'tailnet', 'derp', 'netcheck', 'ping', 'wireguard'] },
+      { id: 'network:cloudflare', subTab: 'cloudflare', label: 'Cloudflare 局域网', keywords: ['cloudflare', 'cloudflared', 'tunnel', 'warp', 'zero trust', 'lan'] },
+      { id: 'network:firewall', subTab: 'firewall', label: '防火墙与端口', keywords: ['firewall', 'ports', 'iptables', 'nftables', '防火墙'] },
+    ],
     benchmarks: {
-      references: ['Tailscale Admin', 'Metacubexd', 'OPNsense'],
-      migratedCapabilities: ['点击 IP 一键复制', 'DERP 中继/在线状态筛选', '防火墙非回环端口暴露面快筛'],
+      references: ['Tailscale Admin', 'Cloudflare Zero Trust', 'Metacubexd', 'OPNsense'],
+      migratedCapabilities: ['内置 Tailscale 控制台（Netcheck/Ping/DERP）', '内置 Cloudflare Tunnel/WARP 局域网控制台', '防火墙非回环端口暴露面快筛'],
     },
   },
 
@@ -321,6 +353,11 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     icon: Wrench,
     dataDeps: ['snapshot', 'ops'],
     prefetch: loadOpsView,
+    children: [
+      { id: 'ops:tasks', subTab: 'tasks', label: '巡检与定时任务', keywords: ['timers', 'health', 'backup', 'audit', '定时任务'] },
+      { id: 'ops:runbooks', subTab: 'runbooks', label: 'Runbook 自愈预案', keywords: ['runbooks', 'incident', '预案'] },
+      { id: 'ops:studio', subTab: 'studio', label: '配置中心与 RBAC', keywords: ['config', 'rbac', 'prometheus', '配置中心'] },
+    ],
     benchmarks: {
       references: ['Rundeck', 'Ansible AWX', 'Cockpit'],
       migratedCapabilities: ['审计日志关键词/结果多维过滤与 CSV 导出', 'Runbook 历史执行逐步回溯', 'Config Studio 语法校验'],
@@ -371,4 +408,20 @@ export function parseViewFromHash(hash: string): ViewId | null {
   const cleaned = String(hash || '').replace(/^#\/?/, '').split(/[?&/]/)[0].trim().toLowerCase();
   if (cleaned === 'tasks') return 'projects';
   return isValidViewId(cleaned) ? cleaned : null;
+}
+
+export function parseSubTabFromHash(hash: string): string | null {
+  const raw = String(hash || '').replace(/^#\/?/, '').trim();
+  if (!raw) return null;
+  const [pathPart, queryPart] = raw.split('?');
+  const segments = pathPart.split('/').filter(Boolean);
+  if (segments.length >= 2) {
+    return segments[1].trim().toLowerCase() || null;
+  }
+  if (queryPart) {
+    const params = new URLSearchParams(queryPart);
+    const tab = params.get('tab') || params.get('sub') || params.get('layer');
+    if (tab && tab.trim()) return tab.trim().toLowerCase();
+  }
+  return null;
 }
