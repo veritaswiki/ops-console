@@ -467,6 +467,7 @@ export function App() {
       'config_reloaded',
       'plugins_reloaded',
       'agent_declarative_reloaded',
+      'evolution_updated',
       'update_applied',
       'update_rolled_back',
     ];

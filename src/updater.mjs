@@ -491,11 +491,19 @@ export class IncrementalUpdater {
       assetsRevision: this.assetsRevision,
       assetsFileCount: this.assetsFileCount,
       reloadCount: this.reloadCount,
-      hotReloadEnabled: Boolean(updatesCfg.watchConfig || updatesCfg.watchPlugins || updatesCfg.watchPublic),
+      hotReloadEnabled: Boolean(
+        updatesCfg.watchConfig
+        || updatesCfg.watchPlugins
+        || updatesCfg.watchPublic
+        || updatesCfg.watchModules
+        || updatesCfg.watchAgents
+      ),
       watchers: {
         config: this.watchers.has('config'),
         plugins: this.watchers.has('plugins'),
         public: this.watchers.has('public'),
+        modules: this.watchers.has('modules') || this.watchers.has('modules-alt'),
+        agents: this.watchers.has('agents') || this.watchers.has('agents-config'),
         debounceMs: Number(updatesCfg.watchDebounceMs || 500),
       },
       autoCheckIntervalSec: Number(updatesCfg.autoCheckIntervalSec || 0),
@@ -888,6 +896,7 @@ export class IncrementalUpdater {
     remote,
     branch,
     confirmToken = '',
+    bypassConfirm = false,
     rebuildFrontend = false,
     autoRestart = false,
     actor = 'web',
@@ -900,7 +909,9 @@ export class IncrementalUpdater {
       err.statusCode = 409;
       throw err;
     }
-    this._requireConfirmIfNeeded('apply', confirmToken);
+    if (!bypassConfirm) {
+      this._requireConfirmIfNeeded('apply', confirmToken);
+    }
 
     const target = this._validateGitTarget(remote, branch);
     if (this.config?.demo) {
@@ -1080,6 +1091,7 @@ export class IncrementalUpdater {
   async rollbackToCommit({
     commit,
     confirmToken = '',
+    bypassConfirm = false,
     autoRestart = false,
     actor = 'web',
   } = {}) {
@@ -1096,7 +1108,9 @@ export class IncrementalUpdater {
       err.statusCode = 400;
       throw err;
     }
-    this._requireConfirmIfNeeded('rollback', confirmToken);
+    if (!bypassConfirm) {
+      this._requireConfirmIfNeeded('rollback', confirmToken);
+    }
 
     this.inFlight = 'rollback';
     try {
@@ -1132,7 +1146,7 @@ export class IncrementalUpdater {
       this.currentCommit = resolvedCommit;
 
       const reload = await this.hotReload({
-        scopes: ['assets', 'plugins', 'config'],
+        scopes: ['assets', 'plugins', 'config', 'agent-declarative', 'module-hot-swap'],
         force: true,
         reason: 'rollback',
         actor,
@@ -1293,6 +1307,26 @@ export class IncrementalUpdater {
       const assetsSub = path.join(this.publicDir, 'assets');
       if (fs.existsSync(assetsSub)) {
         this._watchPath('public-assets', assetsSub, 'assets');
+      }
+    }
+    if (updatesCfg.watchModules !== false) {
+      const primaryModulesDir = path.join(this.repoDir, 'src', 'agent-modules');
+      const altModulesDir = path.join(this.repoDir, 'src', 'modules');
+      if (fs.existsSync(primaryModulesDir)) {
+        this._watchPath('modules', primaryModulesDir, 'module-hot-swap');
+      }
+      if (fs.existsSync(altModulesDir)) {
+        this._watchPath('modules-alt', altModulesDir, 'module-hot-swap');
+      }
+    }
+    if (updatesCfg.watchAgents !== false) {
+      const agentsDir = path.join(this.repoDir, 'agents');
+      const configAgentsDir = path.join(this.repoDir, 'config', 'agents');
+      if (fs.existsSync(agentsDir)) {
+        this._watchPath('agents', agentsDir, 'agent-declarative');
+      }
+      if (fs.existsSync(configAgentsDir)) {
+        this._watchPath('agents-config', configAgentsDir, 'agent-declarative');
       }
     }
   }

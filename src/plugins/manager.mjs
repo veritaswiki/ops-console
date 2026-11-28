@@ -5,6 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { PACKAGE_ROOT } from '../config.mjs';
 import { resolveSafePath } from '../security.mjs';
+import { redactText } from '../redact.mjs';
 import { agentRuntimePlugin, collectAgentRuntime } from './builtin/agent-runtime.mjs';
 import { collectCustomHttp, customHttpPlugin } from './builtin/custom-http.mjs';
 import { collectMcpServer, mcpServerPlugin } from './builtin/mcp-server.mjs';
@@ -19,6 +20,43 @@ import {
   validatePluginConfig,
   validatePluginId,
 } from './sdk.mjs';
+
+function redactPayloadDeep(value, depth = 0) {
+  if (depth > 8 || value == null) return value;
+  if (typeof value === 'string') return redactText(value);
+  if (Array.isArray(value)) return value.map((item) => redactPayloadDeep(item, depth + 1));
+  if (typeof value === 'object') {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = redactPayloadDeep(item, depth + 1);
+    }
+    return out;
+  }
+  return value;
+}
+
+function matchSubpathPattern(pattern, targetPath) {
+  const normalizedTarget = targetPath === '/' ? '/' : String(targetPath || '/').replace(/\/+$/, '');
+  if (pattern === normalizedTarget) return { matched: true, params: {} };
+  const patternParts = pattern.split('/').filter(Boolean);
+  const targetParts = normalizedTarget.split('/').filter(Boolean);
+  if (patternParts.length !== targetParts.length) return { matched: false, params: {} };
+  const params = {};
+  for (let idx = 0; idx < patternParts.length; idx += 1) {
+    const seg = patternParts[idx];
+    const actual = targetParts[idx];
+    if (seg.startsWith(':') && seg.length > 1) {
+      try {
+        params[seg.slice(1)] = decodeURIComponent(actual);
+      } catch {
+        return { matched: false, params: {} };
+      }
+    } else if (seg !== actual) {
+      return { matched: false, params: {} };
+    }
+  }
+  return { matched: true, params };
+}
 
 const BUILTIN_PLUGINS = [
   mcpServerPlugin,
@@ -148,9 +186,10 @@ function buildCustomInstancePlugin(entry) {
 }
 
 export class PluginManager {
-  constructor({ config, logger = null, pluginsDir = null } = {}) {
+  constructor({ config, logger = null, pluginsDir = null, eventBus = null } = {}) {
     this.config = config;
     this.logger = logger;
+    this.eventBus = eventBus;
     this.pluginsDir = path.resolve(pluginsDir || config?.plugins?.dir || path.join(PACKAGE_ROOT, 'plugins'));
     this.statePath = path.join(config?.console?.dataDir || path.join(PACKAGE_ROOT, 'data'), 'plugins.json');
     this.plugins = new Map();
@@ -163,12 +202,219 @@ export class PluginManager {
     this.externalMeta = new Map();
     this.configDeclaredCustomIds = new Set();
     this.reloadGeneration = 0;
+    this.moduleRuntimes = new Map();
+    this.moduleConfirmTokens = new Map();
 
     for (const plugin of BUILTIN_PLUGINS) {
       this.plugins.set(plugin.id, plugin);
     }
     this._loadStateSync();
     this._hydrateCustomInstances();
+  }
+
+  _buildModuleRuntimeContext(plugin) {
+    return {
+      pluginId: plugin.id,
+      config: this.getEffectiveConfig(plugin.id, { resolveSecrets: true }) || {},
+      logger: this.logger,
+      eventBus: this.eventBus,
+    };
+  }
+
+  async _disposePluginRuntime(pluginId, reason = 'reload') {
+    const runtime = this.moduleRuntimes.get(pluginId);
+    if (!runtime) return false;
+    this.moduleRuntimes.delete(pluginId);
+    for (const unsubscribe of runtime.unsubscribers) {
+      try {
+        unsubscribe();
+      } catch {
+        // ignore unsubscribe errors
+      }
+    }
+    if (typeof runtime.plugin?.dispose === 'function') {
+      try {
+        await runtime.plugin.dispose({
+          pluginId,
+          reason,
+          logger: this.logger,
+          eventBus: this.eventBus,
+        });
+      } catch (err) {
+        this.logger?.warn('plugin_dispose_failed', { id: pluginId, reason, error: err?.message || String(err) });
+      }
+    }
+    return true;
+  }
+
+  async _activatePluginRuntime(plugin) {
+    if (!plugin) return false;
+    await this._disposePluginRuntime(plugin.id, 'reactivate');
+    const hasLifecycle = Boolean(
+      plugin.init
+      || plugin.dispose
+      || (Array.isArray(plugin.routes) && plugin.routes.length > 0)
+      || (Array.isArray(plugin.subscriptions) && plugin.subscriptions.length > 0),
+    );
+    if (!hasLifecycle || !this.isPluginEnabled(plugin.id)) {
+      return false;
+    }
+    const unsubscribers = [];
+    const ctx = this._buildModuleRuntimeContext(plugin);
+    if (this.eventBus && typeof this.eventBus.subscribe === 'function' && Array.isArray(plugin.subscriptions)) {
+      for (const sub of plugin.subscriptions) {
+        const unsub = this.eventBus.subscribe(sub.type, (evt) => sub.handler(evt, this._buildModuleRuntimeContext(plugin)));
+        unsubscribers.push(unsub);
+      }
+    }
+    try {
+      if (typeof plugin.init === 'function') {
+        await plugin.init(ctx);
+      }
+    } catch (err) {
+      for (const unsub of unsubscribers) {
+        try { unsub(); } catch {}
+      }
+      this.logger?.warn('plugin_init_failed', { id: plugin.id, error: err?.message || String(err) });
+      throw err;
+    }
+    this.moduleRuntimes.set(plugin.id, {
+      plugin,
+      unsubscribers,
+      activatedAt: new Date().toISOString(),
+      routes: Array.isArray(plugin.routes) ? plugin.routes : [],
+    });
+    return true;
+  }
+
+  async activateRuntimes() {
+    const activated = [];
+    for (const plugin of this.plugins.values()) {
+      try {
+        const ok = await this._activatePluginRuntime(plugin);
+        if (ok) activated.push(plugin.id);
+      } catch {
+        // already logged
+      }
+    }
+    return activated;
+  }
+
+  async disposeAll(reason = 'shutdown') {
+    const ids = [...this.moduleRuntimes.keys()];
+    for (const pluginId of ids) {
+      await this._disposePluginRuntime(pluginId, reason);
+    }
+    this.moduleConfirmTokens.clear();
+    return ids;
+  }
+
+  _pruneModuleConfirmTokens() {
+    const now = Date.now();
+    for (const [token, meta] of this.moduleConfirmTokens.entries()) {
+      if (meta.expiresAt <= now) this.moduleConfirmTokens.delete(token);
+    }
+  }
+
+  issueModuleConfirmToken(pluginId, method, subPath) {
+    if (!validatePluginId(pluginId) || !this.plugins.has(pluginId)) {
+      const err = new Error(`Unknown module: ${pluginId}`);
+      err.statusCode = 404;
+      throw err;
+    }
+    this._pruneModuleConfirmTokens();
+    if (this.moduleConfirmTokens.size >= 256) {
+      const oldest = this.moduleConfirmTokens.keys().next().value;
+      if (oldest !== undefined) this.moduleConfirmTokens.delete(oldest);
+    }
+    const normalizedMethod = String(method || 'POST').toUpperCase();
+    const normalizedPath = subPath === '/' ? '/' : String(subPath || '/').replace(/\/+$/, '');
+    const token = crypto.randomBytes(16).toString('hex');
+    this.moduleConfirmTokens.set(token, {
+      pluginId,
+      method: normalizedMethod,
+      path: normalizedPath,
+      expiresAt: Date.now() + 60_000,
+    });
+    return { ok: true, confirmToken: token, pluginId, method: normalizedMethod, path: normalizedPath, expiresInSec: 60 };
+  }
+
+  consumeModuleConfirmToken(token, pluginId, method, subPath) {
+    if (!token || typeof token !== 'string') return false;
+    this._pruneModuleConfirmTokens();
+    const meta = this.moduleConfirmTokens.get(token);
+    if (!meta) return false;
+    const normalizedMethod = String(method || 'POST').toUpperCase();
+    const normalizedPath = subPath === '/' ? '/' : String(subPath || '/').replace(/\/+$/, '');
+    if (meta.pluginId !== pluginId || meta.method !== normalizedMethod || meta.path !== normalizedPath) {
+      return false;
+    }
+    this.moduleConfirmTokens.delete(token);
+    return true;
+  }
+
+  matchModuleRoute(pluginId, method, subPath) {
+    if (!validatePluginId(pluginId)) return null;
+    const runtime = this.moduleRuntimes.get(pluginId);
+    if (!runtime || !this.isPluginEnabled(pluginId)) return null;
+    const normalizedMethod = String(method || 'GET').toUpperCase();
+    for (const route of runtime.routes) {
+      if (route.method !== normalizedMethod) continue;
+      const matched = matchSubpathPattern(route.path, subPath);
+      if (matched.matched) {
+        return { plugin: runtime.plugin, route, params: matched.params };
+      }
+    }
+    return null;
+  }
+
+  async dispatchModuleRoute(pluginId, method, subPath, reqCtx = {}) {
+    const matched = this.matchModuleRoute(pluginId, method, subPath);
+    if (!matched) {
+      return { ok: false, statusCode: 404, body: { ok: false, error: `Unknown module route: ${method} /api/modules/${pluginId}${subPath}` } };
+    }
+    const ctx = {
+      ...this._buildModuleRuntimeContext(matched.plugin),
+      method: String(method || 'GET').toUpperCase(),
+      path: subPath,
+      params: matched.params,
+      query: reqCtx.query || {},
+      body: reqCtx.body || {},
+      actor: reqCtx.actor || 'web',
+    };
+    const raw = await matched.route.handler(ctx);
+    if (raw && typeof raw === 'object' && typeof raw.statusCode === 'number' && 'body' in raw) {
+      return { ok: raw.statusCode < 400, statusCode: raw.statusCode, body: redactPayloadDeep(raw.body) };
+    }
+    return { ok: true, statusCode: 200, body: redactPayloadDeep(raw ?? { ok: true }) };
+  }
+
+  listModuleRoutes() {
+    const modules = [];
+    for (const [pluginId, runtime] of this.moduleRuntimes.entries()) {
+      if (!this.isPluginEnabled(pluginId)) continue;
+      modules.push({
+        id: pluginId,
+        name: runtime.plugin.name,
+        version: runtime.plugin.version,
+        source: runtime.plugin.source,
+        activatedAt: runtime.activatedAt,
+        hasDispose: typeof runtime.plugin.dispose === 'function',
+        subscriptionsCount: Array.isArray(runtime.plugin.subscriptions) ? runtime.plugin.subscriptions.length : 0,
+        routes: [...runtime.routes]
+          .map((route) => ({
+            method: route.method,
+            path: `/api/modules/${pluginId}${route.path === '/' ? '' : route.path}`,
+            subPath: route.path,
+            readOnly: route.readOnly,
+            requireConfirm: route.requireConfirm,
+            description: route.description,
+          }))
+          .sort((a, b) => `${a.method} ${a.path}`.localeCompare(`${b.method} ${b.path}`)),
+      });
+    }
+    modules.sort((a, b) => a.id.localeCompare(b.id));
+    return modules;
   }
 
   _loadStateSync() {
@@ -254,6 +500,7 @@ export class PluginManager {
 
     if (!fs.existsSync(this.pluginsDir)) {
       for (const [dirName, meta] of [...this.externalMeta.entries()]) {
+        await this._disposePluginRuntime(meta.pluginId, 'removed');
         if (this.plugins.get(meta.pluginId)?.source === 'external') this.plugins.delete(meta.pluginId);
         this.externalMeta.delete(dirName);
         this.lastTelemetry.delete(meta.pluginId);
@@ -268,6 +515,7 @@ export class PluginManager {
     } catch {
       return { loaded, added, updated, removed, unchanged, errors: this.externalLoadErrors, revision: this.reloadGeneration };
     }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
 
     const seenDirs = new Set();
     for (const entry of entries) {
@@ -306,11 +554,24 @@ export class PluginManager {
         const mod = await import(moduleUrl);
         const rawSpec = mod.default || mod.plugin;
         const plugin = definePlugin({ ...rawSpec, source: 'external' });
+        const prevPlugin = this.plugins.get(plugin.id) || null;
         if (prevMeta && prevMeta.pluginId !== plugin.id && this.plugins.get(prevMeta.pluginId)?.source === 'external') {
+          await this._disposePluginRuntime(prevMeta.pluginId, 'renamed');
           this.plugins.delete(prevMeta.pluginId);
           this.lastTelemetry.delete(prevMeta.pluginId);
         }
         this.plugins.set(plugin.id, plugin);
+        try {
+          await this._activatePluginRuntime(plugin);
+        } catch (activateErr) {
+          if (prevPlugin) {
+            this.plugins.set(prevPlugin.id, prevPlugin);
+            await this._activatePluginRuntime(prevPlugin).catch(() => {});
+          } else {
+            this.plugins.delete(plugin.id);
+          }
+          throw activateErr;
+        }
         this.externalMeta.set(entry.name, {
           dirName: entry.name,
           pluginId: plugin.id,
@@ -332,6 +593,7 @@ export class PluginManager {
 
     for (const [dirName, meta] of [...this.externalMeta.entries()]) {
       if (seenDirs.has(dirName)) continue;
+      await this._disposePluginRuntime(meta.pluginId, 'removed');
       if (this.plugins.get(meta.pluginId)?.source === 'external') {
         this.plugins.delete(meta.pluginId);
       }
@@ -351,11 +613,18 @@ export class PluginManager {
   registerPlugin(spec) {
     const plugin = definePlugin(spec);
     this.plugins.set(plugin.id, plugin);
+    if (this.eventBus || plugin.routes?.length || plugin.subscriptions?.length || plugin.init) {
+      void this._activatePluginRuntime(plugin).catch(() => {});
+    }
     return plugin;
   }
 
   getPlugin(id) {
     return this.plugins.get(id) || null;
+  }
+
+  isPluginEnabled(id) {
+    return Boolean(this.getEffectiveConfig(id)?.enabled);
   }
 
   getEffectiveConfig(id, { resolveSecrets = false } = {}) {
@@ -490,6 +759,11 @@ export class PluginManager {
       this.config.connectors[plugin.legacyKey].enabled = nextEnabled;
     }
     await this._persistState();
+    if (nextEnabled) {
+      await this._activatePluginRuntime(plugin).catch(() => {});
+    } else {
+      await this._disposePluginRuntime(id, 'disabled');
+    }
     return { ok: true, id, enabled: nextEnabled };
   }
 
@@ -590,6 +864,7 @@ export class PluginManager {
     if (plugin.source !== 'user-custom') {
       return { ok: false, statusCode: 400, error: '只能删除用户自定义接入的插件实例（内置插件请使用禁用开关）' };
     }
+    await this._disposePluginRuntime(id, 'deleted');
     this.plugins.delete(id);
     this.lastTelemetry.delete(id);
     delete this.state.overrides[id];
@@ -728,6 +1003,16 @@ export class PluginManager {
       description: plugin.description,
       officialSpec: plugin.officialSpec,
       capabilities: plugin.capabilities,
+      hasDispose: typeof plugin.dispose === 'function',
+      subscriptionsCount: Array.isArray(plugin.subscriptions) ? plugin.subscriptions.length : 0,
+      routes: Array.isArray(plugin.routes)
+        ? plugin.routes.map((route) => ({
+            method: route.method,
+            path: `/api/modules/${plugin.id}${route.path === '/' ? '' : route.path}`,
+            readOnly: route.readOnly,
+            requireConfirm: route.requireConfirm,
+          }))
+        : [],
       configSchema: plugin.configSchema,
       config: redactPluginConfig(plugin.configSchema, cfg),
       enabled,

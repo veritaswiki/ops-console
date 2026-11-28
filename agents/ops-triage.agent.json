@@ -1,0 +1,17 @@
+{
+  "id": "decl-ops-triage",
+  "name": "Ops Triage Declarative Agent",
+  "harness": "custom-a2a",
+  "nodeId": "hub-primary",
+  "agentCardUrl": "http://127.0.0.1:9109/.well-known/agent-card.json",
+  "rpcUrl": "http://127.0.0.1:9109/a2a",
+  "modelHint": "gpt-5-mini",
+  "reasoningEffort": "medium",
+  "skills": [
+    "ops-triage",
+    "log-audit",
+    "hot-reload-check"
+  ],
+  "description": "声明式运维巡检与变更预检 Agent，修改本 JSON 后可零停机热同步至 A2A 编排器。",
+  "enabled": true
+}

@@ -561,7 +561,12 @@ export function evaluateAiPreflight(
   }
 
   // 4. Worktree isolation, branch protection, and active branch collision
-  if (actionType === 'worktree-dispatch' || actionType === 'code-patch') {
+  if (
+    actionType === 'worktree-dispatch'
+    || actionType === 'code-patch'
+    || actionType === 'self-evolution'
+    || actionType === 'module-hot-swap'
+  ) {
     if (!worktreeBranch) {
       elevateBlast('medium');
       checks.push({
@@ -762,13 +767,35 @@ export function evaluateAiPreflight(
   }
 
   // 10. Incremental update & hot-reload safety check
-  if (actionType === 'incremental-update' || actionType === 'hot-reload') {
+  if (
+    actionType === 'incremental-update'
+    || actionType === 'hot-reload'
+    || actionType === 'self-evolution'
+    || actionType === 'module-hot-swap'
+  ) {
     if (config?.updates?.enabled === false) {
       checks.push({
         id: 'updates-disabled',
         status: 'block',
         title: '增量更新引擎已关闭',
         detail: '当前配置 updates.enabled=false，禁止执行增量拉取或热更新。',
+      });
+    } else if (actionType === 'module-hot-swap') {
+      checks.push({
+        id: 'module-hot-swap-gate',
+        status: 'pass',
+        title: '双槽位零停机热切预检通过',
+        detail: '变更限定在可热切模块/声明式 Agent 层，将在隔离 Worktree 校验后双槽位平滑切换并保留旧槽回滚。',
+      });
+    } else if (actionType === 'self-evolution') {
+      const touchesCore = files.some((f) => f === 'server.mjs' || (f.startsWith('src/') && !f.startsWith('src/agent-modules/') && !f.startsWith('src/modules/')) || f.startsWith('bin/'));
+      checks.push({
+        id: 'self-evolution-pr-gate',
+        status: touchesCore ? 'confirm_required' : 'pass',
+        title: touchesCore ? '自进化变更触及控制面核心，必须走 PR 合并与平滑重启' : '自进化提案符合隔离 Worktree + PR 规范',
+        detail: touchesCore
+          ? '沙箱验证通过后需经二次确认提交 PR，待合并后通过增量拉取与平滑重启生效。'
+          : '沙箱验证通过后可发布 PR 或按分层热更新策略生效。',
       });
     } else if (actionType === 'incremental-update') {
       const touchesCore = files.some((f) => f === 'server.mjs' || f.startsWith('src/') || f.startsWith('bin/'));
@@ -817,6 +844,10 @@ export function evaluateAiPreflight(
           ? '若增量更新后出现异常，调用 POST /api/updates/rollback（传入更新前的 fromCommit SHA 与一次性 confirmToken）原子回滚并热重载。'
           : actionType === 'hot-reload'
             ? '热重载异常时可恢复原配置/插件文件并再次调用 POST /api/updates/reload。'
+            : actionType === 'module-hot-swap'
+              ? '双槽位热切失败将自动保留活跃槽位；若切换后业务异常可调用 POST /api/agents/modules/:id/rollback 毫秒级切回旧槽。'
+              : actionType === 'self-evolution'
+                ? `基于独立 Worktree 分支「${worktreeBranch || 'evolve/isolated'}」沙箱演进；可调用 POST /api/evolution/proposals/:id/rollback 原子回退。`
         : `基于独立 Worktree 分支「${worktreeBranch || 'feat/isolated'}」作业；若验证不通过直接 git worktree remove + git worktree prune 无损回退。`;
 
   const recommendedCommands = coupled.verifyCommands.length > 0

@@ -587,6 +587,12 @@ export function loadConfig(options = {}) {
       watchPublic: cli.hotReload
         ?? parseBoolEnv(env.OPS_CONSOLE_HOT_RELOAD)
         ?? (raw.updates?.watchPublic !== undefined ? Boolean(raw.updates.watchPublic) : true),
+      watchModules: cli.hotReload
+        ?? parseBoolEnv(env.OPS_CONSOLE_HOT_RELOAD)
+        ?? (raw.updates?.watchModules !== undefined ? Boolean(raw.updates.watchModules) : true),
+      watchAgents: cli.hotReload
+        ?? parseBoolEnv(env.OPS_CONSOLE_HOT_RELOAD)
+        ?? (raw.updates?.watchAgents !== undefined ? Boolean(raw.updates.watchAgents) : true),
       watchDebounceMs: Math.min(30_000, Math.max(50, Number(raw.updates?.watchDebounceMs || 500))),
       autoCheckIntervalSec: Math.min(86_400, Math.max(0, Number(raw.updates?.autoCheckIntervalSec || 0))),
       allowSelfRestart: raw.updates?.allowSelfRestart !== undefined

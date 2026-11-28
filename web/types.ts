@@ -2378,6 +2378,8 @@ export interface UpdateStatusResponse {
     config: boolean;
     plugins: boolean;
     public: boolean;
+    modules?: boolean;
+    agents?: boolean;
     debounceMs: number;
   };
   autoCheckIntervalSec: number;
@@ -2445,5 +2447,259 @@ export interface UpdateRestartResponse {
   ts: string;
 }
 
+export interface HotSwapSlotState {
+  slot: 'A' | 'B';
+  revision: string;
+  version: string;
+  hash: string;
+  loadedAt: string;
+  healthy: boolean;
+  healthDetail: string;
+}
+
+export interface HotSwapModuleHistoryItem {
+  ts: string;
+  action: 'loaded' | 'swapped' | 'rolled_back' | 'swap_failed_preserved' | string;
+  fromSlot: 'A' | 'B' | null;
+  toSlot: 'A' | 'B';
+  revision: string;
+  prevRevision?: string | null;
+  version?: string;
+  reason?: string;
+  actor?: string;
+  prNumber?: number | null;
+  error?: string;
+}
+
+export interface HotSwapModuleEntry {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  capabilities: string[];
+  relPath: string;
+  activeSlot: 'A' | 'B';
+  standbySlot: 'A' | 'B';
+  canRollback: boolean;
+  revision: string;
+  hash: string;
+  healthy: boolean;
+  healthDetail: string;
+  hasHandler: boolean;
+  swapCount: number;
+  failedSwaps: number;
+  invocations: number;
+  lastError: string | null;
+  lastSwappedAt: string | null;
+  slots: {
+    A: HotSwapSlotState | null;
+    B: HotSwapSlotState | null;
+  };
+  history: HotSwapModuleHistoryItem[];
+}
+
+export interface DeclarativeAgentItem {
+  id: string;
+  kind: 'agent' | 'skill';
+  relPath: string;
+  hash: string;
+  name: string;
+  version: string;
+  description: string;
+  skills: string[];
+  syncedToA2A: boolean;
+  syncedAt: string;
+}
+
+export interface AgentModulesStateResponse {
+  ok?: boolean;
+  generation: number;
+  declarativeRevision: number;
+  modulesDirs: string[];
+  declarativeDirs: string[];
+  modules: HotSwapModuleEntry[];
+  declarativeItems: DeclarativeAgentItem[];
+  loadErrors: Array<{ file: string; error: string; preservedSlot?: string | null; rolledBack?: boolean }>;
+  lastModuleSwap: Record<string, unknown> | null;
+  lastDeclarativeSync: Record<string, unknown> | null;
+  summary: {
+    totalModules: number;
+    healthyModules: number;
+    totalSwaps: number;
+    failedSwaps: number;
+    totalDeclarativeAgents: number;
+    totalDeclarativeSkills: number;
+  };
+}
+
+export interface AgentModuleReloadResponse {
+  ok?: boolean;
+  reload?: HotReloadResponse;
+  state?: AgentModulesStateResponse;
+  module?: HotSwapModuleEntry | null;
+  moduleId?: string;
+  slot?: 'A' | 'B' | null;
+  revision?: string;
+  prevRevision?: string | null;
+}
+
+export interface AgentModuleRollbackResponse {
+  ok?: boolean;
+  module: HotSwapModuleEntry;
+  rolledBackFromSlot: 'A' | 'B';
+  activeSlot: 'A' | 'B';
+  revision: string;
+}
+
+export interface AgentModuleInvokeResponse {
+  ok?: boolean;
+  moduleId: string;
+  slot: 'A' | 'B';
+  revision: string;
+  version: string;
+  durationMs: number;
+  result: unknown;
+}
+
+export type EvolutionProposalStatus =
+  | 'preflight_checked'
+  | 'sandbox_ready'
+  | 'verified'
+  | 'pr_opened'
+  | 'applied'
+  | 'failed'
+  | 'rolled_back';
+
+export type EvolutionConfirmAction = 'publish-pr' | 'apply' | 'rollback';
+
+export interface EvolutionFilePatchInput {
+  path: string;
+  op?: 'write' | 'delete';
+  content?: string;
+}
+
+export interface EvolutionFilePatchSummary {
+  path: string;
+  op: 'write' | 'delete';
+  layer: UpdateLayer;
+  bytes: number;
+}
+
+export interface EvolutionSandboxInfo {
+  path: string;
+  relPath: string;
+  branch: string;
+  baseRef: string;
+  statusShort: string;
+  diffStat: string;
+  preparedAt: string;
+  cleanedAt?: string;
+}
+
+export interface EvolutionVerificationCheck {
+  name: string;
+  command: string;
+  ok: boolean;
+  output: string;
+}
+
+export interface EvolutionVerificationInfo {
+  ok: boolean;
+  checkedAt: string;
+  durationMs: number;
+  checks: EvolutionVerificationCheck[];
+}
+
+export interface EvolutionPrInfo {
+  number: number | null;
+  url: string | null;
+  branch: string;
+  baseBranch: string;
+  commitSha: string;
+  shortSha: string;
+  pushed: boolean;
+  draft: boolean;
+  publishedAt: string;
+}
+
+export interface EvolutionApplyResult {
+  mode: 'hot-swap' | 'git-pull';
+  scopes?: HotReloadScope[];
+  fromCommit?: string | null;
+  toCommit?: string | null;
+  restartRequired: boolean;
+  appliedAt: string;
+  reloadSummary?: Record<string, unknown> | null;
+}
+
+export interface EvolutionTimelineEntry {
+  ts: string;
+  stage: string;
+  actor: string;
+  detail: string;
+}
+
+export interface EvolutionProposal {
+  id: string;
+  title: string;
+  goal: string;
+  status: EvolutionProposalStatus;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+  btwThreadId: string | null;
+  sessionId: string | null;
+  taskId: string | null;
+  baseBranch: string;
+  branch: string;
+  primaryLayer: UpdateLayer;
+  targetFiles: string[];
+  filePatches: EvolutionFilePatchSummary[];
+  plan: UpdatePlan;
+  hotSwappable: boolean;
+  preflight: AiPreflightResponse;
+  sandbox: EvolutionSandboxInfo | null;
+  verification: EvolutionVerificationInfo | null;
+  pr: EvolutionPrInfo | null;
+  applyResult: EvolutionApplyResult | null;
+  canRollback: boolean;
+  lastError: string | null;
+  timeline: EvolutionTimelineEntry[];
+}
+
+export interface EvolutionStateResponse {
+  ok?: boolean;
+  readOnly: boolean;
+  requireCriticalConfirm: boolean;
+  proposals: EvolutionProposal[];
+  summary: {
+    total: number;
+    preflightChecked: number;
+    sandboxReady: number;
+    verified: number;
+    prOpened: number;
+    applied: number;
+    failed: number;
+    rolledBack: number;
+    hotSwappableCount: number;
+  };
+}
+
+export interface EvolutionConfirmResponse {
+  ok?: boolean;
+  action: EvolutionConfirmAction;
+  confirmToken: string;
+  expiresInSec: number;
+  expiresAt: string;
+}
+
+export interface EvolutionProposalActionResponse {
+  ok?: boolean;
+  verified?: boolean;
+  mode?: 'hot-swap' | 'git-pull';
+  proposal: EvolutionProposal;
+  reload?: HotReloadResponse | null;
+  update?: UpdateApplyResponse | null;
+}
 
 
