@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import path from 'node:path';
@@ -159,6 +160,9 @@ export class PluginManager {
     };
     this.lastTelemetry = new Map();
     this.externalLoadErrors = [];
+    this.externalMeta = new Map();
+    this.configDeclaredCustomIds = new Set();
+    this.reloadGeneration = 0;
 
     for (const plugin of BUILTIN_PLUGINS) {
       this.plugins.set(plugin.id, plugin);
@@ -195,6 +199,13 @@ export class PluginManager {
   }
 
   _hydrateCustomInstances() {
+    for (const id of this.configDeclaredCustomIds) {
+      const existing = this.plugins.get(id);
+      if (existing?.source === 'user-custom') {
+        this.plugins.delete(id);
+      }
+    }
+    this.configDeclaredCustomIds.clear();
     for (const entry of this.state.customInstances) {
       if (!entry || !validatePluginId(entry.id) || this.plugins.has(entry.id)) continue;
       try {
@@ -208,6 +219,7 @@ export class PluginManager {
     for (const item of declaredHttp) {
       const id = String(item?.id || '').trim().toLowerCase();
       if (!validatePluginId(id) || this.plugins.has(id)) continue;
+      this.configDeclaredCustomIds.add(id);
       this.plugins.set(id, buildCustomInstancePlugin({
         id,
         name: item.name || id,
@@ -220,17 +232,44 @@ export class PluginManager {
     }
   }
 
-  async loadExternalPlugins() {
+  syncConfig(nextConfig) {
+    if (nextConfig) {
+      this.config = nextConfig;
+    }
+    const nextDir = path.resolve(this.config?.plugins?.dir || path.join(PACKAGE_ROOT, 'plugins'));
+    const dirChanged = nextDir !== this.pluginsDir;
+    this.pluginsDir = nextDir;
+    this._hydrateCustomInstances();
+    this.lastTelemetry.clear();
+    return { dirChanged, pluginsDir: this.pluginsDir };
+  }
+
+  async loadExternalPlugins({ force = false } = {}) {
     this.externalLoadErrors = [];
-    if (!fs.existsSync(this.pluginsDir)) return { loaded: [], errors: [] };
+    const loaded = [];
+    const added = [];
+    const updated = [];
+    const removed = [];
+    const unchanged = [];
+
+    if (!fs.existsSync(this.pluginsDir)) {
+      for (const [dirName, meta] of [...this.externalMeta.entries()]) {
+        if (this.plugins.get(meta.pluginId)?.source === 'external') this.plugins.delete(meta.pluginId);
+        this.externalMeta.delete(dirName);
+        this.lastTelemetry.delete(meta.pluginId);
+        removed.push(meta.pluginId || dirName);
+      }
+      return { loaded, added, updated, removed, unchanged, errors: this.externalLoadErrors, revision: this.reloadGeneration };
+    }
+
     let entries = [];
     try {
       entries = await fsp.readdir(this.pluginsDir, { withFileTypes: true });
     } catch {
-      return { loaded: [], errors: [] };
+      return { loaded, added, updated, removed, unchanged, errors: this.externalLoadErrors, revision: this.reloadGeneration };
     }
 
-    const loaded = [];
+    const seenDirs = new Set();
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       if (entry.name.startsWith('_') || entry.name.startsWith('.')) continue;
@@ -240,19 +279,73 @@ export class PluginManager {
       }
       const resolvedEntry = await resolveSafePath(this.pluginsDir, path.join(entry.name, 'index.mjs'));
       if (!resolvedEntry) continue;
+      let content;
+      let stat;
       try {
-        const mod = await import(pathToFileURL(resolvedEntry).href);
+        [content, stat] = await Promise.all([
+          fsp.readFile(resolvedEntry),
+          fsp.stat(resolvedEntry),
+        ]);
+      } catch {
+        continue;
+      }
+
+      seenDirs.add(entry.name);
+      const contentHash = crypto.createHash('sha256').update(content).digest('hex');
+      const prevMeta = this.externalMeta.get(entry.name);
+
+      if (!force && prevMeta && prevMeta.contentHash === contentHash && this.plugins.has(prevMeta.pluginId)) {
+        loaded.push(prevMeta.pluginId);
+        unchanged.push(prevMeta.pluginId);
+        continue;
+      }
+
+      this.reloadGeneration += 1;
+      const moduleUrl = `${pathToFileURL(resolvedEntry).href}?reload=${this.reloadGeneration}&h=${contentHash.slice(0, 12)}&m=${Math.floor(stat.mtimeMs)}`;
+      try {
+        const mod = await import(moduleUrl);
         const rawSpec = mod.default || mod.plugin;
         const plugin = definePlugin({ ...rawSpec, source: 'external' });
+        if (prevMeta && prevMeta.pluginId !== plugin.id && this.plugins.get(prevMeta.pluginId)?.source === 'external') {
+          this.plugins.delete(prevMeta.pluginId);
+          this.lastTelemetry.delete(prevMeta.pluginId);
+        }
         this.plugins.set(plugin.id, plugin);
+        this.externalMeta.set(entry.name, {
+          dirName: entry.name,
+          pluginId: plugin.id,
+          filePath: resolvedEntry,
+          contentHash,
+          mtimeMs: stat.mtimeMs,
+          loadedAt: new Date().toISOString(),
+        });
+        this.lastTelemetry.delete(plugin.id);
         loaded.push(plugin.id);
+        if (prevMeta) updated.push(plugin.id);
+        else added.push(plugin.id);
         this.logger?.info('external_plugin_loaded', { id: plugin.id, version: plugin.version, category: plugin.category });
       } catch (err) {
         this.externalLoadErrors.push({ id: entry.name, error: err.message });
         this.logger?.warn('external_plugin_failed', { id: entry.name, error: err.message });
       }
     }
-    return { loaded, errors: this.externalLoadErrors };
+
+    for (const [dirName, meta] of [...this.externalMeta.entries()]) {
+      if (seenDirs.has(dirName)) continue;
+      if (this.plugins.get(meta.pluginId)?.source === 'external') {
+        this.plugins.delete(meta.pluginId);
+      }
+      this.externalMeta.delete(dirName);
+      this.lastTelemetry.delete(meta.pluginId);
+      removed.push(meta.pluginId);
+      this.logger?.info('external_plugin_removed', { id: meta.pluginId, dirName });
+    }
+
+    return { loaded, added, updated, removed, unchanged, errors: this.externalLoadErrors, revision: this.reloadGeneration };
+  }
+
+  async reloadExternalPlugins(opts = {}) {
+    return this.loadExternalPlugins(opts);
   }
 
   registerPlugin(spec) {

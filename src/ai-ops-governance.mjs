@@ -761,6 +761,35 @@ export function evaluateAiPreflight(
     });
   }
 
+  // 10. Incremental update & hot-reload safety check
+  if (actionType === 'incremental-update' || actionType === 'hot-reload') {
+    if (config?.updates?.enabled === false) {
+      checks.push({
+        id: 'updates-disabled',
+        status: 'block',
+        title: '增量更新引擎已关闭',
+        detail: '当前配置 updates.enabled=false，禁止执行增量拉取或热更新。',
+      });
+    } else if (actionType === 'incremental-update') {
+      const touchesCore = files.some((f) => f === 'server.mjs' || f.startsWith('src/') || f.startsWith('bin/'));
+      checks.push({
+        id: 'incremental-update-gate',
+        status: touchesCore || config?.security?.requireCriticalConfirm ? 'confirm_required' : 'pass',
+        title: touchesCore ? '增量更新涉及后端核心，需确认平滑重启窗口' : '增量更新满足热生效条件',
+        detail: touchesCore
+          ? '拉取完成后需触发 POST /api/updates/restart 或由 supervisor 平滑重启。'
+          : '仅影响前端资产/插件/声明式配置，可无停机热重载生效。',
+      });
+    } else {
+      checks.push({
+        id: 'hot-reload-ready',
+        status: 'pass',
+        title: '热重载预检通过',
+        detail: '将按作用域增量重载配置/插件/静态资源并推送 SSE 刷新事件，无需重启进程。',
+      });
+    }
+  }
+
   // Aggregate final verdict
   const hasBlock = checks.some((c) => c.status === 'block');
   const hasConfirm = checks.some((c) => c.status === 'confirm_required');
@@ -784,6 +813,10 @@ export function evaluateAiPreflight(
       ? '保留变更前配置备份（config.json.bak），校验失败时原子回退并重载控制面。'
       : actionType === 'mcp-sync'
         ? '在 #mcp 页面关闭或回滚目标节点的同步记录，并执行握手拨测确认剩余 MCP 可用。'
+        : actionType === 'incremental-update'
+          ? '若增量更新后出现异常，调用 POST /api/updates/rollback（传入更新前的 fromCommit SHA 与一次性 confirmToken）原子回滚并热重载。'
+          : actionType === 'hot-reload'
+            ? '热重载异常时可恢复原配置/插件文件并再次调用 POST /api/updates/reload。'
         : `基于独立 Worktree 分支「${worktreeBranch || 'feat/isolated'}」作业；若验证不通过直接 git worktree remove + git worktree prune 无损回退。`;
 
   const recommendedCommands = coupled.verifyCommands.length > 0

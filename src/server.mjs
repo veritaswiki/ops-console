@@ -40,6 +40,7 @@ import { RunbookEngine } from './runbooks.mjs';
 import { handleServiceEmbedProxy } from './service-proxy.mjs';
 import { TelemetryStore } from './store.mjs';
 import { TimeSeriesStore } from './timeseries.mjs';
+import { IncrementalUpdater } from './updater.mjs';
 import {
   buildClearSessionCookie,
   buildSessionCookie,
@@ -329,6 +330,35 @@ export function createOpsConsole(options = {}) {
   });
   const staticCache = new Map();
   const staticInflight = new Map();
+  const updater = options.updater || new IncrementalUpdater({
+    config,
+    logger,
+    cache,
+    pluginManager,
+    eventBus,
+    repoDir: options.repoDir || PACKAGE_ROOT,
+    publicDir,
+    supervised: Boolean(options.supervised),
+    onAssetsInvalidated: () => {
+      staticCache.clear();
+      staticInflight.clear();
+    },
+    onConfigReloaded: (diff, nextCfg) => {
+      logger.setLevel(nextCfg.logging?.level || 'info', {
+        maxBytes: nextCfg.logging?.maxBytes,
+        maxFiles: nextCfg.logging?.maxFiles,
+      });
+      pluginManager.syncConfig(nextCfg);
+      cache.invalidate();
+      if (diff?.changedSections?.length > 0) {
+        logger.info('config_hot_reloaded', {
+          changedSections: diff.changedSections,
+          restartRequiredFields: diff.restartRequiredFields,
+        });
+      }
+    },
+    onRestartRequested: options.onRestartRequested || null,
+  });
   const allowIframe = Boolean(config.security?.allowIframe);
   const secHeaders = (isHtml = false) => getSecurityHeaders({ isHtml, allowIframe });
   const sendJson = (res, statusCode, payload, extraHeaders = {}, req = null) =>
@@ -758,6 +788,15 @@ export function createOpsConsole(options = {}) {
           opsConfigured: {
             health: Boolean(config.ops.healthScript || config.demo),
             backup: Boolean(config.ops.backupScript || config.demo),
+          },
+          updates: {
+            enabled: config.updates?.enabled !== false,
+            hotReloadEnabled: Boolean(
+              config.updates?.watchConfig || config.updates?.watchPlugins || config.updates?.watchPublic,
+            ),
+            assetsRevision: updater.assetsRevision,
+            currentCommit: updater.currentCommit ? updater.currentCommit.slice(0, 8) : null,
+            pendingRestart: updater.pendingRestart,
           },
         }, {}, req);
         return;
@@ -2786,6 +2825,102 @@ export function createOpsConsole(options = {}) {
         return;
       }
 
+      if (method === 'GET' && pathname === '/api/updates/status') {
+        const status = await updater.getStatus();
+        sendJson(res, 200, status, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/updates/check') {
+        const { data } = await readBody(req);
+        const result = await updater.checkForUpdates({
+          remote: data.remote,
+          branch: data.branch,
+          fetchRemote: data.fetchRemote !== false,
+        });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/updates/confirm') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const issued = updater.issueConfirmToken(String(data.action || 'apply'));
+        sendJson(res, 200, issued, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/updates/reload') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await updater.hotReload({
+          scopes: Array.isArray(data.scopes) ? data.scopes : undefined,
+          force: Boolean(data.force),
+          reason: String(data.reason || 'manual'),
+          actor: 'web',
+          moduleId: data.moduleId ? String(data.moduleId) : null,
+          prMeta: data.prMeta && typeof data.prMeta === 'object' ? data.prMeta : null,
+        });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/updates/apply') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await updater.applyIncrementalUpdate({
+          remote: data.remote,
+          branch: data.branch,
+          confirmToken: String(data.confirmToken || ''),
+          rebuildFrontend: Boolean(data.rebuildFrontend),
+          autoRestart: Boolean(data.autoRestart),
+          actor: 'web',
+          prMeta: data.prMeta && typeof data.prMeta === 'object' ? data.prMeta : null,
+        });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/updates/rollback') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await updater.rollbackToCommit({
+          commit: String(data.commit || ''),
+          confirmToken: String(data.confirmToken || ''),
+          autoRestart: Boolean(data.autoRestart),
+          actor: 'web',
+        });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/updates/restart') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Console is running in read-only mode' });
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await updater.triggerGracefulRestart({
+          confirmToken: String(data.confirmToken || ''),
+          reason: String(data.reason || 'manual'),
+          actor: 'web',
+        });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
       if (pathname.startsWith('/api/')) {
         sendJson(res, 404, { ok: false, error: `Unknown API route: ${method} ${pathname}` });
         return;
@@ -2807,6 +2942,7 @@ export function createOpsConsole(options = {}) {
           ok: false,
           error: err.message || 'Internal server error',
           ...(err.requiresConfirm ? { requiresConfirm: true } : {}),
+          ...(Array.isArray(err.dirtyFiles) ? { dirtyFiles: err.dirtyFiles } : {}),
         }, {}, req);
       } else if (!res.writableEnded) {
         res.end();
@@ -2834,6 +2970,7 @@ export function createOpsConsole(options = {}) {
       await linearCommander.init();
       await botFleet.init();
       await pluginManager.loadExternalPlugins();
+      await updater.init();
       await store.hydrateTimeSeries(timeseries, { limitPerSeries: config.fleet?.historyPoints || 60 });
       for (const host of hosts) {
         const srv = http.createServer(handleRequest);
@@ -2871,6 +3008,7 @@ export function createOpsConsole(options = {}) {
   }
 
   async function stop() {
+    updater.stopWatchers();
     logs.closeAllStreams();
     eventBus.closeAll();
     await probeRegistry.flush();
@@ -2910,6 +3048,7 @@ export function createOpsConsole(options = {}) {
     hub,
     logs,
     actions,
+    updater,
     servers,
     addresses,
     start,

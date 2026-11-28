@@ -72,6 +72,13 @@ export interface MetaResponse {
     role?: string;
     region?: string;
   }>;
+  updates?: {
+    enabled?: boolean;
+    hotReloadEnabled?: boolean;
+    assetsRevision?: string;
+    currentCommit?: string | null;
+    pendingRestart?: boolean;
+  };
 }
 
 export interface HostDisk {
@@ -2122,6 +2129,211 @@ export interface GithubOverviewResponse {
   worktrees: GithubWorktreeItem[];
   fetchedAt: string;
   warning?: string | null;
+}
+
+export type UpdateLayer =
+  | 'frontend'
+  | 'backend'
+  | 'plugins'
+  | 'deps'
+  | 'config'
+  | 'probe'
+  | 'docs'
+  | 'agent-declarative'
+  | 'module-hot-swap';
+
+export type UpdateStrategy =
+  | 'noop'
+  | 'hot-reload'
+  | 'hot-reload-with-build'
+  | 'module-hot-swap'
+  | 'rolling-restart';
+
+export type HotReloadScope =
+  | 'config'
+  | 'plugins'
+  | 'assets'
+  | 'agent-declarative'
+  | 'module-hot-swap';
+
+export interface UpdateFileChange {
+  status: string;
+  path: string;
+  oldPath: string | null;
+  layer: UpdateLayer;
+}
+
+export interface UpdatePlan {
+  totalFiles: number;
+  counts: Record<UpdateLayer, number>;
+  strategy: UpdateStrategy;
+  hotReloadOnly: boolean;
+  hotReloadScopes: HotReloadScope[];
+  needsDepsSync: boolean;
+  needsFrontendBuild: boolean;
+  requiresRestart: boolean;
+  summary: string;
+}
+
+export interface UpdateCommitItem {
+  sha: string;
+  shortSha: string;
+  date: string;
+  subject: string;
+}
+
+export interface UpdateGitInfo {
+  isGitRepo: boolean;
+  commit: string | null;
+  shortCommit: string | null;
+  branch: string | null;
+  dirty: boolean;
+  dirtyCount: number;
+  dirtyFiles: string[];
+}
+
+export interface UpdateHistoryRecord {
+  id: string;
+  ts: string;
+  kind: 'hot-reload' | 'incremental-apply' | 'rollback' | 'graceful-restart' | string;
+  status: string;
+  remote?: string;
+  branch?: string;
+  fromCommit?: string;
+  toCommit?: string;
+  strategy?: UpdateStrategy | string;
+  changedFilesCount?: number;
+  scopes?: HotReloadScope[];
+  hotReloadScopes?: HotReloadScope[];
+  reason?: string;
+  actor?: string;
+  assetsRevision?: string;
+  prNumber?: number | null;
+  prUrl?: string | null;
+}
+
+export interface UpdateCheckResponse {
+  ok?: boolean;
+  demo?: boolean;
+  checkedAt: string;
+  remote: string;
+  branch: string;
+  isGitRepo: boolean;
+  currentCommit: string | null;
+  shortCommit?: string | null;
+  remoteCommit: string | null;
+  shortRemoteCommit?: string | null;
+  ahead: number;
+  behind: number;
+  hasUpdate: boolean;
+  diverged: boolean;
+  dirty: boolean;
+  dirtyCount: number;
+  dirtyFiles: string[];
+  commits: UpdateCommitItem[];
+  changedFiles: UpdateFileChange[];
+  plan: UpdatePlan;
+  note?: string;
+}
+
+export interface HotReloadResponse {
+  ok?: boolean;
+  scopes: HotReloadScope[];
+  reason: string;
+  actor: string;
+  durationMs: number;
+  reloadCount: number;
+  assetsRevision: string;
+  restartRequiredFields: string[];
+  results: Record<string, unknown>;
+  ts: string;
+}
+
+export interface UpdateStatusResponse {
+  ok?: boolean;
+  version: string;
+  demo: boolean;
+  readOnly: boolean;
+  updatesEnabled: boolean;
+  remote: string;
+  branch: string;
+  configPath: string | null;
+  pluginsDir: string | null;
+  publicDir: string;
+  git: UpdateGitInfo;
+  assetsRevision: string;
+  assetsFileCount: number;
+  reloadCount: number;
+  hotReloadEnabled: boolean;
+  watchers: {
+    config: boolean;
+    plugins: boolean;
+    public: boolean;
+    debounceMs: number;
+  };
+  autoCheckIntervalSec: number;
+  allowSelfRestart: boolean;
+  supervised: boolean;
+  requireCriticalConfirm: boolean;
+  pendingRestart: boolean;
+  pendingRestartReason: string;
+  inFlight: string | null;
+  lastCheck: UpdateCheckResponse | null;
+  lastReload: HotReloadResponse | null;
+  lastPrApplied?: Record<string, unknown> | null;
+  lastModuleReload?: Record<string, unknown> | null;
+  extensionHooks: {
+    layers: string[];
+    sseEvents: string[];
+  };
+  history: UpdateHistoryRecord[];
+}
+
+export interface UpdateConfirmResponse {
+  ok?: boolean;
+  action: 'apply' | 'rollback' | 'restart';
+  confirmToken: string;
+  expiresInSec: number;
+  expiresAt: string;
+}
+
+export interface UpdateApplyResponse {
+  ok?: boolean;
+  demo?: boolean;
+  status: string;
+  fromCommit?: string;
+  toCommit?: string;
+  changedFiles?: UpdateFileChange[];
+  commits?: UpdateCommitItem[];
+  plan?: UpdatePlan;
+  reload?: HotReloadResponse;
+  restartRequired: boolean;
+  restartScheduled: boolean;
+  record?: UpdateHistoryRecord;
+}
+
+export interface UpdateRollbackResponse {
+  ok?: boolean;
+  status: string;
+  fromCommit: string;
+  toCommit: string;
+  changedFiles: UpdateFileChange[];
+  plan: UpdatePlan;
+  reload: HotReloadResponse;
+  restartRequired: boolean;
+  restartScheduled: boolean;
+  record: UpdateHistoryRecord;
+}
+
+export interface UpdateRestartResponse {
+  ok?: boolean;
+  scheduled: boolean;
+  demo?: boolean;
+  reason: string;
+  actor: string;
+  supervised: boolean;
+  commit: string | null;
+  ts: string;
 }
 
 

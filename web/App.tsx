@@ -28,6 +28,7 @@ import type {
   ViewId,
 } from './types';
 import { normalizeLogNavigation } from './lib/logs';
+import { parseHotUpdateSseEvent, type HotUpdateNotice } from './lib/updates';
 import {
   fetchA2AState,
   fetchAudit,
@@ -220,6 +221,13 @@ export function App() {
   const [commandOpen, setCommandOpen] = React.useState(false);
 
   const [meta, setMeta] = React.useState<MetaResponse | null>(null);
+  const [hotUpdateNotice, setHotUpdateNotice] = React.useState<HotUpdateNotice | null>(null);
+  const assetsRevisionRef = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (meta?.updates?.assetsRevision && !assetsRevisionRef.current) {
+      assetsRevisionRef.current = meta.updates.assetsRevision;
+    }
+  }, [meta?.updates?.assetsRevision]);
   const [snapshot, setSnapshot] = React.useState<SnapshotResponse | null>(null);
   const [probes, setProbes] = React.useState<ProbesResponse | null>(null);
   const [incidents, setIncidents] = React.useState<IncidentItem[]>([]);
@@ -437,6 +445,7 @@ export function App() {
     };
 
     const es = new EventSource('/api/events/stream');
+    let readyPollTimer: number | null = null;
     const eventTypes = [
       'probe_heartbeat',
       'alert_fired',
@@ -455,13 +464,59 @@ export function App() {
       'plugins_updated',
       'mcps_updated',
       'a2a_updated',
+      'config_reloaded',
+      'plugins_reloaded',
+      'agent_declarative_reloaded',
+      'update_applied',
+      'update_rolled_back',
     ];
     for (const type of eventTypes) {
       es.addEventListener(type, scheduleDeltaSync);
     }
 
+    const handleHotNotice = (eventType: string) => (evt: MessageEvent) => {
+      const notice = parseHotUpdateSseEvent(eventType, String(evt.data || ''), assetsRevisionRef.current);
+      if (!notice) return;
+      setHotUpdateNotice(notice);
+      if (eventType === 'module_reloaded' || eventType === 'pr_applied') {
+        scheduleDeltaSync();
+      }
+      if (eventType === 'server_restarting') {
+        if (readyPollTimer != null) window.clearInterval(readyPollTimer);
+        readyPollTimer = window.setInterval(() => {
+          fetch('/api/ready', { cache: 'no-store' })
+            .then((res) => {
+              if (res.ok) {
+                if (readyPollTimer != null) {
+                  window.clearInterval(readyPollTimer);
+                  readyPollTimer = null;
+                }
+                setHotUpdateNotice(null);
+                void loadSnapshot(true);
+                fetchMeta().then(setMeta).catch(() => {});
+                toast.success('控制面后端已完成平滑重启并恢复连接');
+              }
+            })
+            .catch(() => {
+              // keep waiting while restarting
+            });
+        }, 1200);
+      }
+    };
+
+    const hotEventTypes = ['assets_updated', 'server_restarting', 'module_reloaded', 'pr_applied'];
+    const hotHandlers = hotEventTypes.map((type) => {
+      const handler = handleHotNotice(type);
+      es.addEventListener(type, handler as EventListener);
+      return { type, handler };
+    });
+
     return () => {
       if (timer != null) window.clearTimeout(timer);
+      if (readyPollTimer != null) window.clearInterval(readyPollTimer);
+      for (const { type, handler } of hotHandlers) {
+        es.removeEventListener(type, handler as EventListener);
+      }
       es.close();
     };
   }, [loadSnapshot, loadOpsData, loadProbes, loadRecentAgentTasks]);
@@ -1416,6 +1471,38 @@ export function App() {
             <div className="border-b border-[var(--err)]/20 bg-[var(--err)]/5">
               <div className="max-w-[1200px] mx-auto px-4 sm:px-8 py-2 flex items-center justify-between gap-2 text-[12.5px] text-[var(--err)]">
                 <span className="truncate">快照同步异常：{syncError}</span>
+              </div>
+            </div>
+          )}
+
+          {hotUpdateNotice && (
+            <div
+              data-testid="hot-update-banner"
+              className="border-b border-[var(--accent)]/25 bg-[var(--accent)]/[0.06]"
+            >
+              <div className="max-w-[1200px] mx-auto px-4 sm:px-8 py-2 flex flex-wrap items-center justify-between gap-2 text-[12.5px] text-[var(--ink)]">
+                <span className="truncate font-medium">{hotUpdateNotice.message}</span>
+                <div className="flex items-center gap-2">
+                  {hotUpdateNotice.canReloadPage && (
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      onClick={() => window.location.reload()}
+                    >
+                      <RefreshCw className="size-3.5" strokeWidth={1.75} />
+                      立即无感刷新
+                    </Button>
+                  )}
+                  {hotUpdateNotice.kind !== 'restarting' && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setHotUpdateNotice(null)}
+                    >
+                      稍后
+                    </Button>
+                  )}
+                </div>
               </div>
             </div>
           )}

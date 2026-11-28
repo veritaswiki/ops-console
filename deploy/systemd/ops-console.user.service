@@ -15,6 +15,7 @@ Environment=OPS_CONSOLE_DATA_DIR=%h/.local/share/ops-console/data
 # Optional overrides (chmod 600): OPS_CONSOLE_WEB_KEY_FILE, OPS_CONSOLE_HOSTS, OPS_CONSOLE_READ_ONLY
 EnvironmentFile=-%h/.config/ops-console/env
 ExecStart=/usr/bin/env node %h/.local/share/ops-console/bin/ops-console.mjs
+ExecReload=/bin/kill -HUP $MAINPID
 UMask=0077
 Restart=always
 RestartSec=2

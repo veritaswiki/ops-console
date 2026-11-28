@@ -501,6 +501,17 @@
     "backupLastRunPath": "./data/backup-last-run.json",
     "alertsLogPath": "./data/alerts.log"
   },
+  "updates": {
+    "enabled": true,
+    "remote": "origin",
+    "branch": "main",
+    "watchConfig": true,
+    "watchPlugins": true,
+    "watchPublic": true,
+    "watchDebounceMs": 500,
+    "autoCheckIntervalSec": 0,
+    "allowSelfRestart": true
+  },
   "agentMatchers": [
     {
       "category": "orchestrator",

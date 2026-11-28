@@ -24,6 +24,7 @@ Environment=OPS_CONSOLE_DATA_DIR=/var/lib/ops-console
 # Environment=OPS_CONSOLE_WEB_KEY_FILE=%d/webkey
 EnvironmentFile=-/etc/ops-console/env
 ExecStart=/usr/bin/env node /opt/ops-console/bin/ops-console.mjs
+ExecReload=/bin/kill -HUP $MAINPID
 UMask=0077
 
 Restart=always
