@@ -15,6 +15,7 @@ import type {
   FleetMcpServer,
   McpFleetResponse,
   SnapshotResponse,
+  ToastHandler,
 } from '../types';
 import {
   deleteMcp,
@@ -25,6 +26,7 @@ import {
   toggleMcp,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import { formatRelativeAge } from '../utils/format';
 import {
   Button,
@@ -59,7 +61,7 @@ export function McpView({
   readOnly: boolean;
   initialNodeId?: string;
   onSnapshotChanged: () => void;
-  onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast: ToastHandler;
   onConfirm: (modal: ConfirmModalState) => void;
 }) {
   const fleetNodes = snapshot?.fleet?.nodes || [];
@@ -157,32 +159,46 @@ export function McpView({
   };
 
   const handleToggle = async (item: FleetMcpServer) => {
-    if (readOnly) {
-      onToast('只读模式已禁用 MCP 启停', 'err');
-      return;
-    }
+    if (guardReadOnly(readOnly, onToast, item.enabled ? '停用 MCP 服务' : '启用 MCP 服务')) return;
     setBusyId(`toggle:${item.id}`);
+    const prevEnabled = item.enabled;
+    const nextEnabled = !prevEnabled;
     try {
-      const nextEnabled = !item.enabled;
       const res = await toggleMcp(item.id, nextEnabled);
-      onToast(
-        `${item.name} 已${nextEnabled ? '启用' : '停用'}${res.queuedCommand ? '，已入队 mcp-sync 下发至节点' : ''}`,
-        'ok',
-      );
       await loadData();
       onSnapshotChanged();
+      onToast(
+        `${item.name} 已${nextEnabled ? '启用' : '停用'}${res.queuedCommand ? '，已排入节点同步队列' : ''}`,
+        'ok',
+        {
+          action: {
+            label: '撤销',
+            onClick: async () => {
+              try {
+                await toggleMcp(item.id, prevEnabled);
+                await loadData();
+                onSnapshotChanged();
+                onToast(`已恢复 ${item.name} 为${prevEnabled ? '启用' : '停用'}`, 'info');
+              } catch (undoErr) {
+                onToast(extractErrorMessage(undoErr, '撤销失败'), 'err');
+              }
+            },
+          },
+        },
+      );
     } catch (err) {
-      onToast(`切换失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '切换 MCP 状态失败'), 'err');
     } finally {
       setBusyId('');
     }
   };
 
   const handleDelete = (item: FleetMcpServer) => {
+    if (guardReadOnly(readOnly, onToast, '移除 MCP 服务')) return;
     onConfirm({
       open: true,
       title: `移除 MCP 服务：${item.name}`,
-      description: `将从 ${item.nodeName} (${item.nodeId}) 的控制面清单中移除该 MCP 配置。`,
+      description: `将从 ${item.nodeName} 的服务清单中移除该 MCP 配置。`,
       confirmLabel: '确认移除',
       danger: true,
       onConfirm: async () => {
@@ -192,7 +208,7 @@ export function McpView({
           await loadData();
           onSnapshotChanged();
         } catch (err) {
-          onToast(`移除失败：${(err as Error).message}`, 'err');
+          onToast(extractErrorMessage(err, '移除 MCP 服务失败'), 'err');
         }
       },
     });
@@ -208,19 +224,20 @@ export function McpView({
 
   const handleSyncSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (guardReadOnly(readOnly, onToast, '同步 MCP 配置')) return;
     if (!syncTarget || syncNodeIds.length === 0) return;
     setSyncBusy(true);
     try {
       const res = await syncMcpToNodes(syncTarget.id, syncNodeIds);
       onToast(
-        `已同步 ${syncTarget.name} 至 ${res.synced.length} 台设备（已入队 ${res.queuedCommands.length} 条 Pull-only 同步指令）`,
+        `已同步 ${syncTarget.name} 至 ${res.synced.length} 台设备（已排入 ${res.queuedCommands.length} 条节点同步任务）`,
         'ok',
       );
       setSyncTarget(null);
       await loadData();
       onSnapshotChanged();
     } catch (err) {
-      onToast(`跨节点同步失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '跨节点同步失败'), 'err');
     } finally {
       setSyncBusy(false);
     }
@@ -228,10 +245,7 @@ export function McpView({
 
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (readOnly) {
-      onToast('只读模式已禁用新增 MCP', 'err');
-      return;
-    }
+    if (guardReadOnly(readOnly, onToast, '新增 MCP 服务')) return;
     if (regForm.nodeIds.length === 0) {
       onToast('请至少选择一个目标设备节点', 'err');
       return;

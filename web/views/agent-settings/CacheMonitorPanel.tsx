@@ -31,6 +31,7 @@ import {
   updateCacheMonitorConfig,
 } from '../../api';
 import { cn, FOCUS_RING } from '../../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../../lib/ux-errors';
 import {
   classifyCacheHealth,
   extractDriftClues,
@@ -285,7 +286,7 @@ export function CacheMonitorPanel({
     bucketKey: string | null = null,
     mode: 'llm' | 'deterministic' | null = null,
   ) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '触发缓存归因分析')) return;
     const activeKey = bucketKey || '__top__';
     setAnalyzingKey(activeKey);
     try {
@@ -298,21 +299,21 @@ export function CacheMonitorPanel({
         onToast?.(
           res.skipReason === 'no_cache_samples'
             ? '当前窗口暂无可分析的缓存样本'
-            : `已跳过分析：${res.skipReason || 'cooldown'}`,
+            : `已跳过分析：${res.skipReason || '冷却中'}`,
           'info',
         );
       } else if (res.diagnosis) {
         setInspectedDiagnosis(res.diagnosis);
         onToast?.(
           res.diagnosis.mode === 'llm'
-            ? `已完成决策模型归因 (${res.diagnosis.model || DEFAULT_DECISION_MODEL})`
-            : '已完成确定性规则归因（0 token）',
+            ? `已完成智能模型归因（${res.diagnosis.model || DEFAULT_DECISION_MODEL}）`
+            : '已完成规则归因（未消耗 Token）',
           'ok',
         );
         void loadStatus(true);
       }
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '触发归因分析失败', 'err');
+      onToast?.(extractErrorMessage(err, '触发归因分析失败'), 'err');
     } finally {
       setAnalyzingKey(null);
     }

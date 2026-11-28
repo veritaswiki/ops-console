@@ -1,8 +1,14 @@
 import React from 'react';
 import { Copy, FlaskConical, Search, Stethoscope } from 'lucide-react';
-import type { MemoryCompareResponse, MemorySearchResultItem, SnapshotResponse } from '../types';
+import type {
+  MemoryCompareResponse,
+  MemorySearchResultItem,
+  SnapshotResponse,
+  ToastHandler,
+} from '../types';
 import { compareMemoryRetrieval, copyToClipboard, runMemoryDoctor, searchMemory } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import { formatCompactNumber, formatInteger } from '../utils/format';
 import {
   Button,
@@ -44,7 +50,7 @@ export function MemoryView({
   readOnly: boolean;
   activeProvider?: string | null;
   onProviderChange?: (provider: ProviderKey) => void;
-  onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast: ToastHandler;
 }) {
   const normalizeProvider = (raw?: string | null): ProviderKey =>
     raw === 'nmem' || raw === 'openviking' ? raw : 'all';
@@ -113,21 +119,18 @@ export function MemoryView({
   };
 
   const handleDoctor = async () => {
-    if (readOnly) {
-      onToast('只读模式已禁用官方自检命令', 'err');
-      return;
-    }
+    if (guardReadOnly(readOnly, onToast, '执行记忆引擎自检')) return;
     setDoctorBusy(true);
     try {
       const res = await runMemoryDoctor();
       const text =
         res.output ||
         res.raw ||
-        (res.results ? JSON.stringify(res.results, null, 2) : '已完成官方接口诊断。');
+        (res.results ? JSON.stringify(res.results, null, 2) : '已完成诊断检查。');
       setDoctorOutput(text);
-      onToast('记忆引擎官方自检已完成', 'ok');
+      onToast('记忆引擎自检已完成', 'ok');
     } catch (err) {
-      onToast(`自检失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '记忆引擎自检失败'), 'err');
     } finally {
       setDoctorBusy(false);
     }

@@ -20,6 +20,7 @@ import type {
   PluginCatalogItem,
   PluginsResponse,
   PluginTestResult,
+  ToastHandler,
 } from '../types';
 import {
   addCustomPlugin,
@@ -31,6 +32,7 @@ import {
   updatePluginConfig,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import { buildPluginsExportPayload } from '../lib/module-helpers';
 import { ModuleFrame } from '../modules/ModuleFrame';
 import {
@@ -141,7 +143,7 @@ export function PluginsView({
 }: {
   readOnly: boolean;
   onSnapshotChanged: () => void;
-  onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast: ToastHandler;
   onConfirm: (state: ConfirmModalState) => void;
 }) {
   const [catalog, setCatalog] = React.useState<PluginsResponse | null>(null);
@@ -230,10 +232,8 @@ export function PluginsView({
   }, [items, category, statusFilter, query]);
 
   const handleToggle = async (plugin: PluginCatalogItem, nextEnabled: boolean) => {
-    if (readOnly) {
-      onToast('只读模式下不可修改插件启停状态', 'err');
-      return;
-    }
+    if (guardReadOnly(readOnly, onToast, nextEnabled ? '启用插件' : '停用插件')) return;
+    const prevEnabled = plugin.enabled;
     const prevCatalog = catalog;
     if (catalog) {
       const nextItems = catalog.items.map((item) =>
@@ -260,12 +260,26 @@ export function PluginsView({
     setTogglingId(plugin.id);
     try {
       await togglePlugin(plugin.id, nextEnabled);
-      onToast(`${plugin.name} 已${nextEnabled ? '启用' : '停用'}`, 'ok');
       void loadCatalog(true);
       onSnapshotChanged();
+      onToast(`${plugin.name} 已${nextEnabled ? '启用' : '停用'}`, 'ok', {
+        action: {
+          label: '撤销',
+          onClick: async () => {
+            try {
+              await togglePlugin(plugin.id, prevEnabled);
+              void loadCatalog(true);
+              onSnapshotChanged();
+              onToast(`已恢复 ${plugin.name} 为${prevEnabled ? '启用' : '停用'}`, 'info');
+            } catch (undoErr) {
+              onToast(extractErrorMessage(undoErr, '撤销失败'), 'err');
+            }
+          },
+        },
+      });
     } catch (err) {
       if (prevCatalog) setCatalog(prevCatalog);
-      onToast(`操作失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '切换插件状态失败'), 'err');
     } finally {
       setTogglingId(null);
     }

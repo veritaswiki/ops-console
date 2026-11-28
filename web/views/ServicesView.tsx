@@ -11,9 +11,16 @@ import {
   RotateCw,
   Search,
 } from 'lucide-react';
-import type { LogNavigationRequest, MetaResponse, ServiceItem, SnapshotResponse } from '../types';
+import type {
+  LogNavigationRequest,
+  MetaResponse,
+  ServiceItem,
+  SnapshotResponse,
+  ToastHandler,
+} from '../types';
 import { executeServiceAction, issueConfirmToken } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import {
   filterServices,
   formatBytes,
@@ -89,7 +96,7 @@ export function ServicesView({
   onLayerChange?: (layer: LayerFilter) => void;
   onRefresh: () => Promise<void>;
   onOpenLogs: (unitOrRequest: string | LogNavigationRequest, level?: 'all' | 'error' | 'warn') => void;
-  onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast: ToastHandler;
   onConfirm: (modal: ConfirmModalState) => void;
 }) {
   const normalizeLayer = (raw?: string | null): LayerFilter =>
@@ -177,46 +184,58 @@ export function ServicesView({
     return t === 'err' || t === 'warn';
   }).length;
 
+  const runServiceAction = async (svc: ServiceItem, action: string, isCritical: boolean) => {
+    try {
+      let serverToken: string | undefined;
+      if (isCritical) {
+        const issued = await issueConfirmToken(svc.unit || svc.id, action);
+        serverToken = issued.confirmToken;
+      }
+      await executeServiceAction(svc.id, action, serverToken);
+      onToast(`服务「${svc.name || svc.id}」已完成${ACTION_LABELS[action] || action}`, 'ok');
+      await onRefresh();
+    } catch (err) {
+      onToast(extractErrorMessage(err, `执行${ACTION_LABELS[action] || action}失败`), 'err');
+    }
+  };
+
   const triggerAction = (svc: ServiceItem, action: string) => {
     if (!action) return;
-    if (readOnly) {
-      onToast('当前处于只读模式，已拦截写操作', 'err');
+    if (guardReadOnly(readOnly, onToast, `${ACTION_LABELS[action] || action}服务`)) {
       return;
     }
-    const isCritical = svc.risk === 'critical' || svc.critical;
+    const isCritical = Boolean(svc.risk === 'critical' || svc.critical);
     const isDestructive = action === 'stop' || (isCritical && action === 'restart');
-    const requireToken = isCritical && (action === 'stop' || action === 'restart')
-      ? `CONFIRM:${svc.id}`
-      : undefined;
+
+    // Tier 0: non-critical start/reload executes immediately without blocking modal
+    if (!isCritical && (action === 'start' || action === 'reload')) {
+      void runServiceAction(svc, action, false);
+      return;
+    }
+
+    const requireToken =
+      isCritical && (action === 'stop' || action === 'restart')
+        ? `CONFIRM:${svc.id}`
+        : undefined;
 
     onConfirm({
       open: true,
       title: `${ACTION_LABELS[action] || action}服务：${svc.name || svc.id}`,
-      description: `将对单元 ${svc.unit}（${svc.scope || 'user'}）执行 ${action} 操作，操作结果会写入不可变审计日志。`,
+      description: isCritical
+        ? `「${svc.name || svc.id}」属于核心关键服务，${ACTION_LABELS[action] || action}期间可能短暂影响关联功能，操作会写入审计记录。`
+        : `将对服务「${svc.name || svc.id}」（${svc.unit}）执行${ACTION_LABELS[action] || action}操作，并记录到审计日志。`,
       confirmLabel: `确认${ACTION_LABELS[action] || action}`,
       danger: isDestructive,
       requireToken,
-      onConfirm: async () => {
-        try {
-          let serverToken: string | undefined;
-          if (isCritical) {
-            const issued = await issueConfirmToken(svc.unit || svc.id, action);
-            serverToken = issued.confirmToken;
-          }
-          await executeServiceAction(svc.id, action, serverToken);
-          onToast(`服务 ${svc.name || svc.id} 已执行 ${ACTION_LABELS[action] || action}`, 'ok');
-          await onRefresh();
-        } catch (err) {
-          onToast(`操作失败：${(err as Error).message}`, 'err');
-        }
-      },
+      requireTokenLabel: requireToken ? '此为关键服务，请输入下方确认口令以防误操作' : undefined,
+      onConfirm: () => runServiceAction(svc, action, isCritical),
     });
   };
 
   return (
     <ModuleFrame
       title="受管服务"
-      description="systemd 单元状态、监听端口、HTTP 探针延迟与白名单生命周期控制，支持多维排序与单元详情展开。"
+      description="查看各服务运行状态、响应延迟与资源占用，支持快速查阅日志和安全的启停控制。"
       meta={`健康 ${healthyCount}/${allServices.length} · 异常 ${issueCount} · 显示 ${filtered.length} 项`}
     >
       {adminServices.length > 0 && (

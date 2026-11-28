@@ -98,6 +98,7 @@ import type {
   UpdateRollbackResponse,
   UpdateStatusResponse,
 } from './types';
+import { humanizeApiError } from './lib/ux-errors';
 
 interface ApiRequestOptions extends RequestInit {
   /** Optional short-TTL cache duration in ms for idempotent GET requests (default 0 = no cache). */
@@ -173,11 +174,25 @@ export async function apiRequest<T = unknown>(
     if (fetchOptions.body && !headers['Content-Type']) {
       headers['Content-Type'] = 'application/json';
     }
-    const res = await fetch(url, {
-      credentials: 'same-origin',
-      ...fetchOptions,
-      headers,
-    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        credentials: 'same-origin',
+        ...fetchOptions,
+        headers,
+      });
+    } catch (networkErr) {
+      if ((networkErr as Error)?.name === 'AbortError') {
+        throw networkErr;
+      }
+      const rawMsg = (networkErr as Error)?.message || 'Failed to fetch';
+      const err = new Error(humanizeApiError(rawMsg)) as Error & {
+        rawMessage?: string;
+        status?: number;
+      };
+      err.rawMessage = rawMsg;
+      throw err;
+    }
     const text = await res.text();
     let data: unknown = null;
     try {
@@ -187,8 +202,14 @@ export async function apiRequest<T = unknown>(
     }
     if (!res.ok) {
       const errObj = data as { error?: string; message?: string } | null;
-      const msg = errObj?.error || errObj?.message || `HTTP ${res.status}`;
-      const err = new Error(msg) as Error & { status?: number; payload?: unknown };
+      const rawMsg = errObj?.error || errObj?.message || `HTTP ${res.status}`;
+      const friendlyMsg = humanizeApiError(rawMsg, res.status);
+      const err = new Error(friendlyMsg) as Error & {
+        rawMessage?: string;
+        status?: number;
+        payload?: unknown;
+      };
+      err.rawMessage = rawMsg;
       err.status = res.status;
       err.payload = data;
       throw err;
@@ -1183,6 +1204,15 @@ export const settleA2ATask = (taskId: string) =>
     },
   );
 
+export const unsettleA2ATask = (taskId: string) =>
+  apiRequest<{ ok: boolean; task: A2ATaskRecord }>(
+    `/api/a2a/tasks/${encodeURIComponent(taskId)}/unsettle`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+  );
+
 export const snoozeA2ATask = (
   taskId: string,
   options: { minutes?: number; untilIso?: string } = {},
@@ -1192,6 +1222,15 @@ export const snoozeA2ATask = (
     {
       method: 'POST',
       body: JSON.stringify(options),
+    },
+  );
+
+export const unsnoozeA2ATask = (taskId: string) =>
+  apiRequest<{ ok: boolean; task: A2ATaskRecord }>(
+    `/api/a2a/tasks/${encodeURIComponent(taskId)}/unsnooze`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
     },
   );
 

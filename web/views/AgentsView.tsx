@@ -32,6 +32,7 @@ import type {
   DynamicModelCatalogResponse,
   LinearStateResponse,
   MagpieCatalogResponse,
+  ToastHandler,
 } from '../types';
 import {
   cancelA2ATask,
@@ -51,6 +52,8 @@ import {
   settleA2ATask,
   snoozeA2ATask,
   steerA2ATask,
+  unsettleA2ATask,
+  unsnoozeA2ATask,
   updateA2ATaskState,
 } from '../api';
 import {
@@ -91,16 +94,27 @@ import {
   loadNodeDraft,
   saveNodeDraft,
 } from '../lib/workspace-controls';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import { cn, FOCUS_RING } from '../lib/cn';
 import { countBtwAttention } from '../lib/btw';
-import { formatClock, formatDateTime } from '../utils/format';
+import {
+  formatClock,
+  formatDateTime,
+  formatDurationMs,
+  taskStateLabel,
+} from '../utils/format';
 import { AgentBtwDrawer } from '../components/AgentBtwDrawer';
 import { AgentSlashMenu } from '../components/AgentSlashMenu';
 import { ContextRailHost } from '../components/workspace/ContextRailHost';
 import { MobileNeedsYouStream } from '../components/workspace/MobileNeedsYouStream';
 import { NodeAgentModelSelector } from '../components/workspace/NodeAgentModelSelector';
 import { SessionRuntimeLane } from '../components/workspace/SessionRuntimeLane';
-import { Button, inputBaseClass, StatusIndicator } from '../components/ui';
+import {
+  Button,
+  inputBaseClass,
+  StatusIndicator,
+  type ConfirmModalState,
+} from '../components/ui';
 
 type WorkspaceMode = 'thread' | 'kanban';
 type ComposerExecutionMode = 'lead-router' | 'main-sub' | 'swarm' | 'plan';
@@ -121,10 +135,18 @@ const VALID_COMPOSER_EFFORTS = new Set<ComposerEffortLevel>([
 ]);
 
 const MODE_LABELS: Record<ComposerExecutionMode, string> = {
-  'lead-router': '自动路由',
+  'lead-router': '自动分配',
   'main-sub': '主从拆解',
-  swarm: 'Swarm 并行',
-  plan: '规划模式',
+  swarm: '多助手并行',
+  plan: '先规划再执行',
+};
+
+const EFFORT_LABELS: Record<ComposerEffortLevel, string> = {
+  low: '轻量',
+  medium: '均衡',
+  high: '深入',
+  xhigh: '深度',
+  max: '最高',
 };
 
 interface StarterSuggestion {
@@ -137,23 +159,23 @@ interface StarterSuggestion {
 const STARTER_SUGGESTIONS: readonly StarterSuggestion[] = [
   {
     title: '/status',
-    detail: '检查多机 Agent 集群与 Google A2A v0.3 连通态势',
+    detail: '查看在线助手与各设备节点的当前运行状态',
     prompt: '/status',
     executeImmediately: true,
   },
   {
-    title: '/plan 架构与变更评估',
-    detail: '以规划模式拆解服务变更风险、耦合文件与回滚方案',
+    title: '/plan 变更方案评估',
+    detail: '先梳理变更风险、影响范围与回滚方案，再决定执行',
     prompt: '/plan 评估核心服务配置变更风险并输出分步执行与回滚方案',
   },
   {
-    title: '/worktree 隔离分支开发',
-    detail: '在独立 Git Worktree 分支中安全实现并跑通单测',
+    title: '/worktree 独立分支开发',
+    detail: '在独立代码分支中开发并验证，不影响主分支',
     prompt: '/worktree feat/probe-watchdog 为多节点探针新增心跳延迟自愈告警',
   },
   {
     title: '/board',
-    detail: '切换至 Pending / Working / Done / Failed 拖拽看板',
+    detail: '切换至运行泳道，一览所有进行中与待处理任务',
     prompt: '/board',
     executeImmediately: true,
   },
@@ -201,35 +223,28 @@ function taskStatusTone(state: string): 'healthy' | 'degraded' | 'failed' | 'sta
   return 'standby';
 }
 
-function taskStatusLabel(state: string): string {
-  switch (state) {
-    case 'submitted':
-      return 'Pending';
-    case 'working':
-      return 'Working';
-    case 'completed':
-      return 'Done';
-    case 'failed':
-      return 'Failed';
-    case 'canceled':
-      return 'Canceled';
-    default:
-      return state;
-  }
-}
-
 function modeDisplayLabel(mode?: string | null): string {
-  if (!mode) return '自动路由';
+  if (!mode) return '自动分配';
   if (mode in MODE_LABELS) {
     return MODE_LABELS[mode as ComposerExecutionMode];
   }
   return mode;
 }
 
-function formatDurationMs(ms?: number | null): string {
-  if (ms == null || ms <= 0) return '-';
-  if (ms < 1000) return `${ms}ms`;
-  return `${(ms / 1000).toFixed(1)}s`;
+function effortDisplayLabel(level?: string | null): string {
+  if (!level) return '';
+  if (level in EFFORT_LABELS) {
+    return EFFORT_LABELS[level as ComposerEffortLevel];
+  }
+  return level;
+}
+
+function reviewVerdictLabel(verdict?: string | null): string {
+  const v = String(verdict || '').toLowerCase();
+  if (v === 'approve' || v === 'approved' || v === 'pass') return '通过';
+  if (v === 'block' || v === 'blocked' || v === 'reject') return '已拦截';
+  if (v === 'warn' || v === 'warning' || v === 'needs_attention') return '需关注';
+  return verdict || '已评审';
 }
 
 interface ArtifactBlock {
@@ -279,7 +294,8 @@ export interface AgentsViewProps {
   onOpenSettings?: (tab?: string) => void;
   onOpenProjectIssue?: (issueId?: string) => void;
   onOpenSelfEvolution?: () => void;
-  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast?: ToastHandler;
+  onConfirm?: (modal: ConfirmModalState) => void;
 }
 
 export function AgentsView({
@@ -295,6 +311,7 @@ export function AgentsView({
   onOpenProjectIssue,
   onOpenSelfEvolution,
   onToast,
+  onConfirm,
 }: AgentsViewProps) {
   const [a2aState, setA2aState] = React.useState<A2AStateResponse | null>(null);
   const [linearState, setLinearState] = React.useState<LinearStateResponse | null>(null);
@@ -666,8 +683,7 @@ export function AgentsView({
       slashCommand?: string;
       continueThread?: boolean;
     }) => {
-      if (readOnly) {
-        onToast?.('当前为只读模式，禁止派发 Agent 任务', 'err');
+      if (guardReadOnly(readOnly, onToast, '派发助手任务')) {
         return;
       }
       const cleanPrompt = opts.promptText.trim();
@@ -709,7 +725,7 @@ export function AgentsView({
           onSelectTask?.(res.task.id);
         }
       } catch (err) {
-        onToast?.(err instanceof Error ? err.message : '指令发送失败', 'err');
+        onToast?.(extractErrorMessage(err, '指令发送失败'), 'err');
       } finally {
         setSubmitting(false);
       }
@@ -755,7 +771,7 @@ export function AgentsView({
             setWorkspaceMode((prev) => {
               const next: WorkspaceMode = prev === 'kanban' ? 'thread' : 'kanban';
               onToast?.(
-                next === 'kanban' ? '已切换至任务生命周期看板' : '已切换至对话流视图',
+                next === 'kanban' ? '已切换至任务运行泳道' : '已切换至对话流',
                 'info',
               );
               return next;
@@ -769,7 +785,7 @@ export function AgentsView({
             setArmedWorktree('');
             setWorkspaceMode('thread');
             onSelectTask?.(null);
-            onToast?.('已开启全新对话线程', 'info');
+            onToast?.('已开始全新对话', 'info');
             focusComposer();
             return;
           }
@@ -848,23 +864,23 @@ export function AgentsView({
           case '/effort': {
             const level = (parsed.args[0] || '').toLowerCase() as ComposerEffortLevel;
             if (!VALID_COMPOSER_EFFORTS.has(level)) {
-              onToast?.('思考力度仅支持：low | medium | high | xhigh | max', 'err');
+              onToast?.('思考深度支持：low（轻量）/ medium（均衡）/ high（深入）/ xhigh（深度）/ max（最高）', 'err');
               return;
             }
             setReasoningEffort(level);
             setPrompt('');
-            onToast?.(`已调整思考力度：${level}`, 'ok');
+            onToast?.(`思考深度已调整为：${EFFORT_LABELS[level]}`, 'ok');
             return;
           }
           case '/mode': {
             const mode = (parsed.args[0] || '').toLowerCase() as ComposerExecutionMode;
             if (!VALID_COMPOSER_MODES.has(mode)) {
-              onToast?.('编排模式仅支持：lead-router | main-sub | swarm | plan', 'err');
+              onToast?.('协作方式支持：lead-router（自动分配）/ main-sub（主从拆解）/ swarm（多助手并行）/ plan（先规划再执行）', 'err');
               return;
             }
             setExecutionMode(mode);
             setPrompt('');
-            onToast?.(`已切换编排模式：${MODE_LABELS[mode]}`, 'ok');
+            onToast?.(`协作方式已切换为：${MODE_LABELS[mode]}`, 'ok');
             return;
           }
           case '/tasks': {
@@ -873,7 +889,7 @@ export function AgentsView({
             setPrompt('');
             const matched = filterAgentTasks(tasks, queryTerm);
             if (workspaceMode === 'kanban') {
-              onToast?.(`看板已过滤：匹配 ${matched.length} 项任务`, 'info');
+              onToast?.(`已筛选出 ${matched.length} 项任务`, 'info');
             } else {
               appendSystemCard({
                 id: makeCardId('tasks'),
@@ -906,12 +922,11 @@ export function AgentsView({
               createdAt: new Date().toISOString(),
               summary,
             });
-            onToast?.(`已标记整理 ${summary.turnCount} 轮对话上下文（原始记录保留）`, 'ok');
+            onToast?.(`已整理 ${summary.turnCount} 轮对话摘要（完整记录仍保留）`, 'ok');
             return;
           }
           case '/ping': {
-            if (readOnly) {
-              onToast?.('只读模式下不可发起实时 A2A 拨测', 'err');
+            if (guardReadOnly(readOnly, onToast, '检测助手连通性')) {
               return;
             }
             const arg = parsed.args[0];
@@ -922,7 +937,7 @@ export function AgentsView({
                 : leadAgent;
             const targetId = resolvedPeer?.id || arg;
             if (!targetId) {
-              onToast?.('用法：/ping <agentId>', 'err');
+              onToast?.('用法：/ping <助手或节点名称>', 'err');
               return;
             }
             setPrompt('');
@@ -938,12 +953,12 @@ export function AgentsView({
               });
               onToast?.(
                 pingRes.reachable
-                  ? `A2A 连通正常：${pingRes.agentName || targetId} (${pingRes.latencyMs ?? '-'}ms)`
-                  : `A2A 拨测失败：${pingRes.error || targetId}`,
+                  ? `连接正常：${pingRes.agentName || targetId}（延迟 ${pingRes.latencyMs ?? '-'}ms）`
+                  : `连接检测失败：${pingRes.error || targetId}`,
                 pingRes.reachable ? 'ok' : 'err',
               );
             } catch (err) {
-              onToast?.(err instanceof Error ? err.message : 'A2A 拨测失败', 'err');
+              onToast?.(extractErrorMessage(err, '连接检测失败'), 'err');
             } finally {
               setSubmitting(false);
             }
@@ -952,12 +967,12 @@ export function AgentsView({
           case '/handoff': {
             const arg = parsed.args[0];
             if (!arg) {
-              onToast?.('用法：/handoff <目标 Agent ID 或节点 ID>', 'err');
+              onToast?.('用法：/handoff <目标助手或设备名>', 'err');
               return;
             }
             const targetPeer = resolveAgentByToken(arg, agents);
             if (!targetPeer) {
-              onToast?.(`未找到可交接的 Agent：${arg}`, 'err');
+              onToast?.(`未找到可交接的助手：${arg}`, 'err');
               return;
             }
             setSelectedTarget(targetPeer.id);
@@ -977,7 +992,7 @@ export function AgentsView({
                 await handoffA2ASession(matchingSession.id, targetPeer.id);
                 await loadState();
               } catch (err) {
-                onToast?.(err instanceof Error ? err.message : '会话交接失败', 'err');
+                onToast?.(extractErrorMessage(err, '会话交接失败'), 'err');
                 setSubmitting(false);
                 return;
               } finally {
@@ -996,7 +1011,7 @@ export function AgentsView({
               contextId: activeTask?.contextId || matchingSession?.contextId || null,
             });
             onToast?.(
-              `会话上下文已交接至 ${shortAgentName(targetPeer.name)} (${targetPeer.nodeId})`,
+              `后续对话已交接给 ${shortAgentName(targetPeer.name)}（${targetPeer.nodeName || targetPeer.nodeId}）`,
               'ok',
             );
             return;
@@ -1005,7 +1020,7 @@ export function AgentsView({
             if (!parsed.rest) {
               setExecutionMode('plan');
               setPrompt('');
-              onToast?.('已切换至规划模式，请输入待评估任务', 'ok');
+              onToast?.('已切换为「先规划再执行」，请输入你的需求', 'ok');
               return;
             }
             await dispatchTaskPayload({
@@ -1025,7 +1040,7 @@ export function AgentsView({
             if (!taskBody) {
               setArmedWorktree(branch);
               setPrompt('');
-              onToast?.(`已锁定 Worktree 分支 ${branch}，请输入任务内容`, 'ok');
+              onToast?.(`已指定独立开发分支 ${branch}，请输入任务内容`, 'ok');
               return;
             }
             await dispatchTaskPayload({
@@ -1054,7 +1069,7 @@ export function AgentsView({
               setBtwContextTaskId(activeTask?.id || null);
               setBtwInitialThreadId(null);
               setBtwOpen(true);
-              onToast?.('只读模式下仅可查看 BTW 旁支与审批记录', 'err');
+              onToast?.('只读模式下仅可查看旁支问答与审批记录', 'err');
               return;
             }
             setSubmitting(true);
@@ -1071,9 +1086,9 @@ export function AgentsView({
               setBtwInitialThreadId(opened.thread.id);
               setBtwOpen(true);
               await loadState();
-              onToast?.(`已开启隔离 BTW 旁支 ${opened.thread.id}（零污染主线）`, 'ok');
+              onToast?.('已开启旁支问答（不影响当前主对话）', 'ok');
             } catch (err) {
-              onToast?.(err instanceof Error ? err.message : '开启 BTW 旁支失败', 'err');
+              onToast?.(extractErrorMessage(err, '开启旁支问答失败'), 'err');
             } finally {
               setSubmitting(false);
             }
@@ -1211,27 +1226,45 @@ export function AgentsView({
     }
   };
 
-  const handleCancelTask = async (taskId: string) => {
-    if (readOnly || cancelingTaskId) return;
-    setCancelingTaskId(taskId);
-    try {
-      await cancelA2ATask(taskId);
-      await loadState();
-      onTasksUpdated?.();
-      onToast?.(`已停止任务 ${taskId}`, 'info');
-    } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '取消失败', 'err');
-    } finally {
-      setCancelingTaskId(null);
+  const executeCancelTask = React.useCallback(
+    async (taskId: string) => {
+      if (cancelingTaskId) return;
+      setCancelingTaskId(taskId);
+      try {
+        await cancelA2ATask(taskId);
+        await loadState();
+        onTasksUpdated?.();
+        onToast?.('已停止任务执行', 'info');
+      } catch (err) {
+        onToast?.(extractErrorMessage(err, '停止任务失败'), 'err');
+      } finally {
+        setCancelingTaskId(null);
+      }
+    },
+    [cancelingTaskId, loadState, onTasksUpdated, onToast],
+  );
+
+  const handleCancelTask = (taskId: string) => {
+    if (guardReadOnly(readOnly, onToast, '停止任务') || cancelingTaskId) return;
+    if (onConfirm) {
+      onConfirm({
+        open: true,
+        title: '停止正在执行的任务？',
+        description: '停止后会立即中断当前执行，尚未完成的中间步骤可能无法继续。',
+        confirmLabel: '确认停止',
+        danger: true,
+        onConfirm: () => executeCancelTask(taskId),
+      });
+      return;
     }
+    void executeCancelTask(taskId);
   };
 
   const handleMoveTaskState = async (
     taskId: string,
     targetState: KanbanCanonicalTaskState,
   ) => {
-    if (readOnly) {
-      onToast?.('只读模式下不可修改任务状态', 'err');
+    if (guardReadOnly(readOnly, onToast, '修改任务状态')) {
       return;
     }
     setMovingTaskId(taskId);
@@ -1240,9 +1273,9 @@ export function AgentsView({
       await updateA2ATaskState(taskId, targetState, 'workspace-lifecycle-update');
       await loadState();
       onTasksUpdated?.();
-      onToast?.(`任务 ${taskId} 已更新为 ${taskStatusLabel(targetState)}`, 'ok');
+      onToast?.(`任务状态已更新为「${taskStateLabel(targetState)}」`, 'ok');
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '状态更新失败', 'err');
+      onToast?.(extractErrorMessage(err, '状态更新失败'), 'err');
     } finally {
       setOptimisticStates((prev) => {
         const next = { ...prev };
@@ -1269,7 +1302,8 @@ export function AgentsView({
 
   const handleQueueTurn = React.useCallback(
     async (taskId: string, queuedPrompt: string) => {
-      if (readOnly || !queuedPrompt.trim()) return;
+      if (guardReadOnly(readOnly, onToast, '追加下一轮指令')) return;
+      if (!queuedPrompt.trim()) return;
       setBusyControlTaskId(taskId);
       try {
         await queueA2ATaskTurn(taskId, {
@@ -1281,7 +1315,7 @@ export function AgentsView({
         onTasksUpdated?.();
         onToast?.('已加入下一轮执行队列', 'ok');
       } catch (err) {
-        onToast?.(err instanceof Error ? err.message : '加入队列失败', 'err');
+        onToast?.(extractErrorMessage(err, '加入队列失败'), 'err');
       } finally {
         setBusyControlTaskId(null);
       }
@@ -1291,15 +1325,16 @@ export function AgentsView({
 
   const handleSteerTask = React.useCallback(
     async (taskId: string, instruction: string) => {
-      if (readOnly || !instruction.trim()) return;
+      if (guardReadOnly(readOnly, onToast, '发送中途调整指令')) return;
+      if (!instruction.trim()) return;
       setBusyControlTaskId(taskId);
       try {
         await steerA2ATask(taskId, instruction.trim());
         await loadState();
         onTasksUpdated?.();
-        onToast?.('已注入运行中纠偏指令', 'ok');
+        onToast?.('已发送中途调整指令', 'ok');
       } catch (err) {
-        onToast?.(err instanceof Error ? err.message : '注入指令失败', 'err');
+        onToast?.(extractErrorMessage(err, '发送调整指令失败'), 'err');
       } finally {
         setBusyControlTaskId(null);
       }
@@ -1307,9 +1342,8 @@ export function AgentsView({
     [readOnly, loadState, onTasksUpdated, onToast],
   );
 
-  const handleRestartTask = React.useCallback(
+  const executeRestartTask = React.useCallback(
     async (taskId: string, freshContext: boolean) => {
-      if (readOnly) return;
       setBusyControlTaskId(taskId);
       try {
         const res = await restartA2ATask(taskId, { freshContext });
@@ -1319,27 +1353,62 @@ export function AgentsView({
           onSelectTask?.(res.task.id);
           setWorkspaceMode('thread');
         }
-        onToast?.(freshContext ? '已开启干净上下文新线程（保留父线程谱系）' : '已重启任务执行', 'ok');
+        onToast?.(
+          freshContext ? '已用全新上下文重新开始（原对话保留在历史中）' : '已重新执行任务',
+          'ok',
+        );
       } catch (err) {
-        onToast?.(err instanceof Error ? err.message : '重启任务失败', 'err');
+        onToast?.(extractErrorMessage(err, '重新执行失败'), 'err');
       } finally {
         setBusyControlTaskId(null);
       }
     },
-    [readOnly, loadState, onTasksUpdated, onSelectTask, onToast],
+    [loadState, onTasksUpdated, onSelectTask, onToast],
+  );
+
+  const handleRestartTask = React.useCallback(
+    async (taskId: string, freshContext: boolean) => {
+      if (guardReadOnly(readOnly, onToast, '重新执行任务')) return;
+      if (freshContext && onConfirm) {
+        onConfirm({
+          open: true,
+          title: '用全新上下文重新开始？',
+          description: '将不继承此前对话的上下文重新执行本任务，原有历史记录仍会保留。',
+          confirmLabel: '确认重跑',
+          onConfirm: () => executeRestartTask(taskId, true),
+        });
+        return;
+      }
+      await executeRestartTask(taskId, freshContext);
+    },
+    [readOnly, onToast, onConfirm, executeRestartTask],
   );
 
   const handleSettleTask = React.useCallback(
     async (taskId: string) => {
-      if (readOnly) return;
+      if (guardReadOnly(readOnly, onToast, '标记任务已处理')) return;
       setBusyControlTaskId(taskId);
       try {
         await settleA2ATask(taskId);
         await loadState();
         onTasksUpdated?.();
-        onToast?.('已将线程标记为已处理', 'ok');
+        onToast?.('已标记为处理完成', 'ok', {
+          action: {
+            label: '撤销',
+            onClick: async () => {
+              try {
+                await unsettleA2ATask(taskId);
+                await loadState();
+                onTasksUpdated?.();
+                onToast?.('已恢复为待关注状态', 'info');
+              } catch (undoErr) {
+                onToast?.(extractErrorMessage(undoErr, '撤销失败'), 'err');
+              }
+            },
+          },
+        });
       } catch (err) {
-        onToast?.(err instanceof Error ? err.message : '标记已处理失败', 'err');
+        onToast?.(extractErrorMessage(err, '标记已处理失败'), 'err');
       } finally {
         setBusyControlTaskId(null);
       }
@@ -1349,15 +1418,29 @@ export function AgentsView({
 
   const handleSnoozeTask = React.useCallback(
     async (taskId: string, minutes: number) => {
-      if (readOnly) return;
+      if (guardReadOnly(readOnly, onToast, '延后提醒')) return;
       setBusyControlTaskId(taskId);
       try {
         await snoozeA2ATask(taskId, { minutes });
         await loadState();
         onTasksUpdated?.();
-        onToast?.(`已静默提醒 ${minutes} 分钟（新审批或完成将提前唤醒）`, 'info');
+        onToast?.(`已延后提醒 ${minutes} 分钟（完成或需要审批时会提前提醒）`, 'info', {
+          action: {
+            label: '撤销延后',
+            onClick: async () => {
+              try {
+                await unsnoozeA2ATask(taskId);
+                await loadState();
+                onTasksUpdated?.();
+                onToast?.('已取消延后提醒', 'info');
+              } catch (undoErr) {
+                onToast?.(extractErrorMessage(undoErr, '取消延后失败'), 'err');
+              }
+            },
+          },
+        });
       } catch (err) {
-        onToast?.(err instanceof Error ? err.message : '静默失败', 'err');
+        onToast?.(extractErrorMessage(err, '延后提醒失败'), 'err');
       } finally {
         setBusyControlTaskId(null);
       }
@@ -1367,15 +1450,15 @@ export function AgentsView({
 
   const handleCompactTask = React.useCallback(
     async (taskId: string) => {
-      if (readOnly) return;
+      if (guardReadOnly(readOnly, onToast, '精简上下文')) return;
       setBusyControlTaskId(taskId);
       try {
         await compactA2ATask(taskId);
         await loadState();
         onTasksUpdated?.();
-        onToast?.('已标记压缩上下文（原始步骤完整保留）', 'ok');
+        onToast?.('已精简上下文（完整记录仍保留）', 'ok');
       } catch (err) {
-        onToast?.(err instanceof Error ? err.message : '上下文压缩失败', 'err');
+        onToast?.(extractErrorMessage(err, '精简上下文失败'), 'err');
       } finally {
         setBusyControlTaskId(null);
       }
@@ -1384,12 +1467,27 @@ export function AgentsView({
   );
 
   const handleOpenNewThread = () => {
+    const previousDraft = prompt;
+    const previousTaskId = activeTaskId;
     setWorkspaceMode('thread');
     setSystemCards([]);
     setArmedWorktree('');
+    setPrompt('');
     onSelectTask?.(null);
     if (typeof window !== 'undefined') {
       clearNodeDraft(window.localStorage, activeDraftNodeId, activeTaskId);
+    }
+    if (previousDraft.trim()) {
+      onToast?.('已开始全新对话', 'info', {
+        action: {
+          label: '恢复草稿',
+          onClick: () => {
+            if (previousTaskId) onSelectTask?.(previousTaskId);
+            setPrompt(previousDraft);
+            focusComposer();
+          },
+        },
+      });
     }
     focusComposer();
   };
@@ -1406,19 +1504,19 @@ export function AgentsView({
             {card.kind === 'help' && (
               <>
                 <Terminal className="size-3.5 text-[var(--accent)]" strokeWidth={1.75} />
-                <span>斜杠命令与 @agent 路由手册</span>
+                <span>快捷指令与 @ 助手用法</span>
               </>
             )}
             {card.kind === 'status' && (
               <>
                 <Activity className="size-3.5 text-[var(--accent)]" strokeWidth={1.75} />
-                <span>多机 Agent 集群 · Google A2A v{card.protocolVersion}</span>
+                <span>在线助手与设备状态</span>
               </>
             )}
             {card.kind === 'ping' && (
               <>
                 <Radio className="size-3.5 text-[var(--accent)]" strokeWidth={1.75} />
-                <span>A2A AgentCard 实时拨测 · {card.result.agentName || card.result.agentId}</span>
+                <span>连通性检测 · {card.result.agentName || card.result.agentId}</span>
               </>
             )}
             {card.kind === 'tasks' && (
@@ -1432,13 +1530,13 @@ export function AgentsView({
             {card.kind === 'compact' && (
               <>
                 <Layers className="size-3.5 text-[var(--accent)]" strokeWidth={1.75} />
-                <span>上下文精简摘要 · {card.summary.turnCount} 轮对话</span>
+                <span>对话摘要 · {card.summary.turnCount} 轮</span>
               </>
             )}
             {card.kind === 'handoff' && (
               <>
                 <Sparkles className="size-3.5 text-[var(--accent)]" strokeWidth={1.75} />
-                <span>会话控制权交接完成</span>
+                <span>对话已交接至新助手</span>
               </>
             )}
           </div>
@@ -1484,9 +1582,8 @@ export function AgentsView({
               ))}
             </div>
             <p className="text-[12px] text-[var(--ink-subtle)] pt-2 border-t border-[var(--border-subtle)]">
-              快捷路由：输入 <code className="font-mono text-[var(--ink)]">@agent-id</code> 或{' '}
-              <code className="font-mono text-[var(--ink)]">@node-id</code>{' '}
-              可呼出节点联想菜单并自动将任务路由至对应设备的 Agent。
+              提示：输入 <code className="font-mono text-[var(--ink)]">@</code>{' '}
+              可直接点选目标助手或设备，把任务交给对应机器执行。
             </p>
           </div>
         )}
@@ -1495,18 +1592,18 @@ export function AgentsView({
           <div className="space-y-3">
             <div className="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[12px] text-[var(--ink-muted)] tabular-nums">
               <span className="text-[var(--ok)]">
-                {card.onlineAgents}/{card.totalAgents} 在线 Agent
+                {card.onlineAgents}/{card.totalAgents} 位助手在线
               </span>
               <span aria-hidden="true">·</span>
-              <span>{card.nodesWithAgents} 设备节点</span>
+              <span>{card.nodesWithAgents} 台设备</span>
               <span aria-hidden="true">·</span>
               <span>
-                任务 {card.activeTasks} 活跃 / {card.completedTasks} 完成 / {card.totalTasks} 总计
+                任务 {card.activeTasks} 进行中 / {card.completedTasks} 已完成 / 共 {card.totalTasks}
               </span>
               <span aria-hidden="true">·</span>
-              <span>主控 {card.leadName}</span>
+              <span>默认助手 {card.leadName}</span>
               <span aria-hidden="true">·</span>
-              <span>模式 {modeDisplayLabel(card.mode)}</span>
+              <span>方式 {modeDisplayLabel(card.mode)}</span>
             </div>
             <div className="divide-y divide-[var(--border-subtle)] border-t border-[var(--border-subtle)]">
               {card.agents.map((peer) => {
@@ -1527,7 +1624,7 @@ export function AgentsView({
                         {shortAgentName(peer.name)}
                       </span>
                       <span className="font-mono text-[11px] text-[var(--ink-subtle)] truncate">
-                        {peer.nodeId} · {peer.modelHint || peer.harness}
+                        {peer.nodeName || peer.nodeId} · {peer.modelHint || peer.harness}
                       </span>
                     </div>
                     <div className="flex items-center gap-2 shrink-0 font-mono text-[11px] text-[var(--ink-subtle)] tabular-nums">
@@ -1541,7 +1638,7 @@ export function AgentsView({
                             FOCUS_RING,
                           )}
                         >
-                          拨测
+                          测速
                         </button>
                       )}
                     </div>
@@ -1557,13 +1654,13 @@ export function AgentsView({
             <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono tabular-nums">
               <StatusIndicator
                 status={card.result.reachable ? 'healthy' : 'failed'}
-                label={card.result.reachable ? 'AgentCard 可达' : '不可达'}
+                label={card.result.reachable ? '连接正常' : '暂不可达'}
               />
               <span aria-hidden="true" className="text-[var(--ink-subtle)]">
                 ·
               </span>
               <span className="text-[var(--ink-muted)]">
-                RTT {card.result.latencyMs != null ? `${card.result.latencyMs}ms` : '-'}
+                延迟 {card.result.latencyMs != null ? `${card.result.latencyMs}ms` : '-'}
               </span>
               {card.result.nodeId && (
                 <>
@@ -1573,17 +1670,9 @@ export function AgentsView({
                   <span className="text-[var(--ink-subtle)]">{card.result.nodeId}</span>
                 </>
               )}
-              {card.result.protocol && (
-                <>
-                  <span aria-hidden="true" className="text-[var(--ink-subtle)]">
-                    ·
-                  </span>
-                  <span className="text-[var(--ink-subtle)]">{card.result.protocol}</span>
-                </>
-              )}
             </div>
             {card.result.error && (
-              <p className="text-[12px] text-[var(--err)] font-mono break-words">
+              <p className="text-[12px] text-[var(--err)] break-words">
                 {card.result.error}
               </p>
             )}
@@ -1598,13 +1687,14 @@ export function AgentsView({
         {card.kind === 'tasks' && (
           <div className="space-y-2">
             {card.matched.length === 0 ? (
-              <p className="text-[12.5px] text-[var(--ink-muted)]">未匹配到符合条件的任务。</p>
+              <p className="text-[12.5px] text-[var(--ink-muted)]">未找到匹配的任务。</p>
             ) : (
               <div className="divide-y divide-[var(--border-subtle)]">
                 {card.matched.map((item) => (
                   <button
                     key={item.id}
                     type="button"
+                    title={item.id}
                     onClick={() => onSelectTask?.(item.id)}
                     className={cn(
                       'w-full py-2 flex items-center justify-between gap-3 text-left hover:bg-[var(--surface-hover)] px-2 -mx-2 rounded-lg transition-colors cursor-pointer',
@@ -1615,14 +1705,14 @@ export function AgentsView({
                       <p className="text-[13px] font-medium text-[var(--ink)] truncate">
                         {item.prompt}
                       </p>
-                      <p className="font-mono text-[11px] text-[var(--ink-subtle)] tabular-nums truncate">
-                        {item.id} · {shortAgentName(item.workerAgentName || item.leadAgentName)} ·{' '}
+                      <p className="text-[11px] text-[var(--ink-subtle)] tabular-nums truncate">
+                        {shortAgentName(item.workerAgentName || item.leadAgentName)} ·{' '}
                         {item.workerNodeId}
                       </p>
                     </div>
                     <StatusIndicator
                       status={taskStatusTone(item.state)}
-                      label={taskStatusLabel(item.state)}
+                      label={taskStateLabel(item.state)}
                     />
                   </button>
                 ))}
@@ -1631,7 +1721,7 @@ export function AgentsView({
             <div className="pt-2 border-t border-[var(--border-subtle)] flex justify-end">
               <Button variant="secondary" size="sm" onClick={() => setWorkspaceMode('kanban')}>
                 <KanbanSquare className="size-3.5" strokeWidth={1.75} />
-                在生命周期看板查看
+                在运行泳道查看
               </Button>
             </div>
           </div>
@@ -1640,24 +1730,18 @@ export function AgentsView({
         {card.kind === 'compact' && (
           <div className="space-y-2.5 text-[12.5px]">
             <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 font-mono text-[11.5px] text-[var(--ink-muted)] tabular-nums">
-              <span>完成 {card.summary.completedCount}</span>
+              <span>已完成 {card.summary.completedCount}</span>
               <span aria-hidden="true">·</span>
-              <span>活跃 {card.summary.activeCount}</span>
+              <span>进行中 {card.summary.activeCount}</span>
               <span aria-hidden="true">·</span>
               <span>失败 {card.summary.failedCount}</span>
-              {card.summary.contextId && (
-                <>
-                  <span aria-hidden="true">·</span>
-                  <span>{card.summary.contextId}</span>
-                </>
-              )}
             </div>
             {card.summary.agents.length > 0 && (
               <p className="text-[12px] text-[var(--ink-muted)]">
-                参与 Agent：{card.summary.agents.join(' / ')}
+                参与助手：{card.summary.agents.join(' / ')}
                 {card.summary.models.length > 0 && ` · 模型：${card.summary.models.join(' / ')}`}
                 {card.summary.branches.length > 0 &&
-                  ` · Worktree：${card.summary.branches.join(', ')}`}
+                  ` · 独立分支：${card.summary.branches.join(', ')}`}
               </p>
             )}
             {card.summary.highlights.length > 0 && (
@@ -1675,16 +1759,13 @@ export function AgentsView({
         {card.kind === 'handoff' && (
           <div className="space-y-1 text-[12.5px] text-[var(--ink-muted)]">
             <p className="text-[var(--ink)]">
-              后续任务将默认路由至{' '}
+              后续任务将默认交给{' '}
               <span className="font-medium">{card.targetName}</span>（
-              <span className="font-mono text-[12px]">{card.targetNode}</span> /{' '}
-              <span className="font-mono text-[12px]">{card.targetId}</span>）。
+              <span className="font-mono text-[12px]">{card.targetNode}</span>）继续处理。
             </p>
-            {(card.sessionTitle || card.contextId) && (
-              <p className="font-mono text-[11.5px] text-[var(--ink-subtle)]">
-                {card.sessionTitle ? `会话：${card.sessionTitle}` : ''}
-                {card.sessionTitle && card.contextId ? ' · ' : ''}
-                {card.contextId ? `Context：${card.contextId}` : ''}
+            {card.sessionTitle && (
+              <p className="text-[11.5px] text-[var(--ink-subtle)]">
+                所属对话：{card.sessionTitle}
               </p>
             )}
           </div>
@@ -1729,11 +1810,11 @@ export function AgentsView({
           <div className="mb-2 pb-2 border-b border-[var(--border-subtle)] flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-[11.5px] text-[var(--ink-muted)]">
             {executionMode === 'plan' && (
               <span className="inline-flex items-center gap-1 text-[var(--accent)]">
-                <span>规划模式</span>
+                <span>先规划再执行</span>
                 <button
                   type="button"
                   onClick={() => setExecutionMode('lead-router')}
-                  aria-label="退出规划模式"
+                  aria-label="切回自动分配"
                   className="hover:text-[var(--ink)] cursor-pointer"
                 >
                   <X className="size-3" strokeWidth={1.75} />
@@ -1742,12 +1823,12 @@ export function AgentsView({
             )}
             {modelOverride && (
               <span className="inline-flex items-center gap-1">
-                <span className="text-[var(--ink-subtle)]">模型:</span>
+                <span className="text-[var(--ink-subtle)]">指定模型:</span>
                 <span className="text-[var(--ink)]">{modelOverride}</span>
                 <button
                   type="button"
                   onClick={() => setModelOverride('')}
-                  aria-label="清除模型覆盖"
+                  aria-label="恢复默认模型"
                   className="text-[var(--ink-subtle)] hover:text-[var(--ink)] cursor-pointer"
                 >
                   <X className="size-3" strokeWidth={1.75} />
@@ -1761,7 +1842,7 @@ export function AgentsView({
                 <button
                   type="button"
                   onClick={() => setArmedWorktree('')}
-                  aria-label="取消 Worktree 分支"
+                  aria-label="取消独立分支"
                   className="text-[var(--ink-subtle)] hover:text-[var(--ink)] cursor-pointer"
                 >
                   <X className="size-3" strokeWidth={1.75} />
@@ -1771,8 +1852,8 @@ export function AgentsView({
             {mentionInfo.matchedAgent && (
               <span className="inline-flex items-center gap-1 text-[var(--accent)]">
                 <span>
-                  路由 → {shortAgentName(mentionInfo.matchedAgent.name)} (
-                  {mentionInfo.matchedAgent.nodeId})
+                  指定助手 → {shortAgentName(mentionInfo.matchedAgent.name)} (
+                  {mentionInfo.matchedAgent.nodeName || mentionInfo.matchedAgent.nodeId})
                 </span>
               </span>
             )}
@@ -1792,10 +1873,10 @@ export function AgentsView({
           onKeyDown={handleComposerKeyDown}
           placeholder={
             activeTask
-              ? '继续追问当前线程，输入 / 使用斜杠命令，或 @agent 切换执行节点...'
-              : '输入任务描述，输入 / 调用斜杠命令（/plan、/worktree、/status），或 @agent 指定节点...'
+              ? '继续补充说明，输入 / 调用快捷指令，或 @ 指定助手...'
+              : '描述你想完成的任务，输入 / 使用快捷指令（如 /plan、/worktree），或 @ 指定助手...'
           }
-          aria-label="输入 Agent 指令"
+          aria-label="输入任务指令"
           data-testid="agent-console-input"
           className="w-full resize-none bg-transparent text-[16px] sm:text-[14.5px] leading-relaxed text-[var(--ink)] placeholder:text-[var(--ink-subtle)] focus:outline-none"
         />
@@ -1993,28 +2074,22 @@ export function AgentsView({
               )}
               aria-hidden="true"
             />
-            <span className="text-[var(--ink-muted)]">{onlineAgentCount} 在线 Agent</span>
+            <span className="text-[var(--ink-muted)]">{onlineAgentCount} 位助手在线</span>
             <span aria-hidden="true">·</span>
-            <span>{nodeGroups.length} 设备节点</span>
-            <span aria-hidden="true">·</span>
-            <span>Google A2A v{a2aState?.architecture?.protocolVersion || '0.3'}</span>
+            <span>{nodeGroups.length} 台设备</span>
             {a2aState?.signing && (
               <>
                 <span aria-hidden="true">·</span>
                 <span
                   data-testid="agent-signing-status"
-                  title={`签名算法 ${a2aState.signing.algorithm} · Key ${a2aState.signing.keyId} · 来源 ${a2aState.signing.keySource}`}
+                  title={`协议 A2A v${a2aState?.architecture?.protocolVersion || '0.3'} · ${a2aState.signing.algorithm} · Key ${a2aState.signing.keyId}`}
                   className={cn(
                     'inline-flex items-center gap-1',
                     a2aState.signing.configured ? 'text-[var(--ok)]' : 'text-[var(--ink-subtle)]',
                   )}
                 >
                   <ShieldCheck className="size-3.5 shrink-0" strokeWidth={1.75} />
-                  <span>
-                    {a2aState.signing.configured
-                      ? `HMAC (${a2aState.signing.keyId})`
-                      : 'HMAC 临时密钥'}
-                  </span>
+                  <span>{a2aState.signing.configured ? '通信已签名' : '临时签名'}</span>
                 </span>
               </>
             )}
@@ -2050,8 +2125,8 @@ export function AgentsView({
                       }
                     }
                   }}
-                  placeholder="搜索任务 ID / 历史..."
-                  aria-label="按任务 ID 或提示词搜索"
+                  placeholder="搜索任务内容或记录..."
+                  aria-label="搜索任务内容或记录"
                   className={cn(inputBaseClass, 'h-8 w-full pl-8 pr-7')}
                 />
                 <button
@@ -2076,8 +2151,8 @@ export function AgentsView({
               <Button
                 variant="ghost"
                 size="icon"
-                aria-label="搜索任务 ID 或提示词"
-                title="搜索任务 ID 或提示词"
+                aria-label="搜索历史任务"
+                title="搜索历史任务"
                 data-testid="agent-header-search-toggle"
                 onClick={() => {
                   setHeaderSearchOpen(true);
@@ -2100,7 +2175,7 @@ export function AgentsView({
             }}
           >
             <GitBranch className="size-3.5" strokeWidth={1.75} />
-            BTW 侧聊
+            支线讨论
             {btwGlobalCounts.attentionCount > 0 ? (
               <span className="inline-flex items-center gap-1 font-mono text-[11px] text-[var(--warn)] tabular-nums">
                 <span className="h-1.5 w-1.5 rounded-full bg-[var(--warn)]" aria-hidden="true" />
@@ -2128,19 +2203,19 @@ export function AgentsView({
               variant="ghost"
               size="sm"
               data-testid="agent-self-evolution-btn"
-              title="打开模块热插拔与自进化 PR 流水线"
+              title="查看系统更新与自动升级"
               onClick={onOpenSelfEvolution}
             >
               <Sparkles className="size-3.5" strokeWidth={1.75} />
-              <span className="hidden lg:inline">自进化</span>
+              <span className="hidden lg:inline">系统更新</span>
             </Button>
           )}
 
           <Button
             variant={contextRailOpen ? 'secondary' : 'ghost'}
             size="icon"
-            aria-label={contextRailOpen ? '收起上下文侧栏' : '展开上下文侧栏'}
-            title="上下文侧栏 (⌘])"
+            aria-label={contextRailOpen ? '收起详情侧栏' : '展开详情侧栏'}
+            title="详情侧栏 (⌘])"
             data-testid="agent-context-rail-toggle"
             onClick={() => setContextRailOpen((prev) => !prev)}
           >
@@ -2151,8 +2226,8 @@ export function AgentsView({
             <Button
               variant="ghost"
               size="icon"
-              aria-label="打开 Agent 与 A2A 设置"
-              title="Agent 与 A2A 设置"
+              aria-label="助手与协作设置"
+              title="助手与协作设置"
               onClick={() => onOpenSettings('agents')}
             >
               <Settings className="size-4" strokeWidth={1.75} />
@@ -2212,10 +2287,10 @@ export function AgentsView({
           <div className="w-full max-w-[760px] mx-auto space-y-6">
             <div className="text-center space-y-2">
               <h1 className="text-[26px] sm:text-[32px] font-semibold tracking-tight text-[var(--ink)] text-balance">
-                今天想让 Agent 完成什么？
+                今天想让助手完成什么？
               </h1>
               <p className="text-[13.5px] text-[var(--ink-muted)] text-pretty">
-                支持自然语言任务、/ 斜杠命令与 @agent 多设备节点协同调度
+                直接描述需求即可，也可输入 / 使用快捷指令，或 @ 指定某台设备的助手
               </p>
             </div>
 
@@ -2302,10 +2377,13 @@ export function AgentsView({
           <div className="space-y-6" data-testid="agent-thread-stream">
             {activeTask && (
               <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
-                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 min-w-0 text-[12px] font-mono text-[var(--ink-subtle)] tabular-nums">
+                <div
+                  className="flex flex-wrap items-center gap-x-2.5 gap-y-1 min-w-0 text-[12px] font-mono text-[var(--ink-subtle)] tabular-nums"
+                  title={activeTask.contextId ? `会话 ID：${activeTask.contextId}` : activeTask.id}
+                >
                   <StatusIndicator
                     status={taskStatusTone(activeTask.state)}
-                    label={taskStatusLabel(activeTask.state)}
+                    label={taskStateLabel(activeTask.state)}
                   />
                   <span aria-hidden="true">·</span>
                   <span className="text-[var(--ink-muted)] truncate">
@@ -2313,12 +2391,6 @@ export function AgentsView({
                   </span>
                   <span aria-hidden="true">·</span>
                   <span>{activeTask.workerNodeId}</span>
-                  {activeTask.contextId && (
-                    <>
-                      <span aria-hidden="true">·</span>
-                      <span className="truncate max-w-[180px]">{activeTask.contextId}</span>
-                    </>
-                  )}
                   <span aria-hidden="true">·</span>
                   <span>{threadTasks.length} 轮对话</span>
                 </div>
@@ -2340,7 +2412,7 @@ export function AgentsView({
                     >
                       {KANBAN_LIFECYCLE_COLUMNS.map((col) => (
                         <option key={col.id} value={col.id}>
-                          {col.label} · {col.subtitle}
+                          {col.label}
                         </option>
                       ))}
                     </select>
@@ -2351,7 +2423,7 @@ export function AgentsView({
                     onClick={() => setWorkspaceMode('kanban')}
                   >
                     <KanbanSquare className="size-3.5" strokeWidth={1.75} />
-                    看板
+                    运行泳道
                   </Button>
                 </div>
               </div>
@@ -2388,10 +2460,13 @@ export function AgentsView({
                     }
                     className="space-y-3.5 text-[14px] leading-relaxed text-[var(--ink)]"
                   >
-                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums">
+                    <div
+                      className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums"
+                      title={task.id}
+                    >
                       <StatusIndicator
                         status={taskStatusTone(task.state)}
-                        label={taskStatusLabel(task.state)}
+                        label={taskStateLabel(task.state)}
                       />
                       <span aria-hidden="true">·</span>
                       <span className="font-medium text-[var(--ink)]">
@@ -2403,18 +2478,14 @@ export function AgentsView({
                           <span aria-hidden="true">·</span>
                           <span className="text-[var(--ink-muted)]">
                             {task.appliedModel}
-                            {task.modelSource === 'magpie-agent'
-                              ? ' [Magpie]'
-                              : task.modelSource === 'manual'
-                                ? ' [指定]'
-                                : ''}
+                            {task.modelSource === 'manual' ? '（指定）' : ''}
                           </span>
                         </>
                       )}
                       {task.appliedEffort && (
                         <>
                           <span aria-hidden="true">/</span>
-                          <span>{task.appliedEffort}</span>
+                          <span>{effortDisplayLabel(task.appliedEffort)}</span>
                         </>
                       )}
                       {task.signed && (
@@ -2446,8 +2517,6 @@ export function AgentsView({
                       )}
                       <span aria-hidden="true">·</span>
                       <span>{formatDurationMs(task.durationMs)}</span>
-                      <span aria-hidden="true">·</span>
-                      <span>{task.id}</span>
                     </div>
 
                     {task.steps && task.steps.length > 0 && (
@@ -2572,7 +2641,7 @@ export function AgentsView({
                               className="size-4 text-[var(--ok-dot)] shrink-0"
                               strokeWidth={1.75}
                             />
-                            <span>DSH 专家会审 · {shortAgentName(task.dshReview.reviewerName)}</span>
+                            <span>专家复核 · {shortAgentName(task.dshReview.reviewerName)}</span>
                           </div>
                           <div className="flex items-center gap-2 font-mono text-[12px] tabular-nums">
                             <span className="font-semibold text-[var(--ink)]">
@@ -2590,7 +2659,7 @@ export function AgentsView({
                                     : 'text-[var(--warn)]',
                               )}
                             >
-                              {task.dshReview.verdict}
+                              {reviewVerdictLabel(task.dshReview.verdict)}
                             </span>
                           </div>
                         </div>
@@ -2654,7 +2723,7 @@ export function AgentsView({
                                     ? `已截断预览 · 省略 ${previewInfo.omittedChars} 字符`
                                     : `共 ${previewInfo.totalChars} 字符`}
                                   {task.outputSpills && task.outputSpills.length > 0
-                                    ? ` · ${task.outputSpills.length} 个 Spill 产物`
+                                    ? ` · ${task.outputSpills.length} 份完整输出附件`
                                     : ''}
                                 </span>
                                 <div className="flex items-center gap-2">
@@ -2684,7 +2753,7 @@ export function AgentsView({
                                         FOCUS_RING,
                                       )}
                                     >
-                                      右侧栏查看 Spill
+                                      在侧栏查看附件
                                     </button>
                                   )}
                                 </div>
@@ -2696,7 +2765,7 @@ export function AgentsView({
                     ) : isTaskRunning ? (
                       <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-3 text-[13px] text-[var(--ink-muted)] flex items-center gap-2">
                         <span className="h-2 w-2 rounded-full bg-[var(--warn-dot)] animate-pulse" />
-                        <span>正在通过 Google A2A 协议执行任务，轨迹实时回传中...</span>
+                        <span>助手正在处理任务，执行进度将实时同步...</span>
                       </div>
                     ) : null}
 
@@ -2808,7 +2877,7 @@ export function AgentsView({
                               )}
                             >
                               <GitBranch className="size-3.5" strokeWidth={1.75} />
-                              <span>BTW 侧聊</span>
+                              <span>支线讨论</span>
                               {taskBtw.total > 0 && (
                                 <span className="font-mono text-[11px] tabular-nums">
                                   ({taskBtw.attentionCount > 0 ? `${taskBtw.attentionCount} 待审` : taskBtw.total})

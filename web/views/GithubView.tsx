@@ -29,9 +29,11 @@ import type {
   GithubPullRequestItem,
   GithubWorkflowRunItem,
   LinearStateResponse,
+  ToastHandler,
 } from '../types';
 import { getIssueStatusMeta } from '../lib/linear-projects';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import { formatDateTime, formatRelativeAge } from '../utils/format';
 import { ModuleFrame } from '../modules/ModuleFrame';
 import {
@@ -116,7 +118,7 @@ export function GithubView({
 }: {
   readOnly?: boolean;
   onOpenAgentTask?: (taskId: string) => void;
-  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast?: ToastHandler;
 }) {
   const [overview, setOverview] = React.useState<GithubOverviewResponse | null>(null);
   const [linearState, setLinearState] = React.useState<LinearStateResponse | null>(null);
@@ -183,7 +185,7 @@ export function GithubView({
 
   const handleSaveGithub = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '保存 GitHub 同步配置')) return;
     setSavingGithub(true);
     try {
       await updateLinearGithubConfig({
@@ -199,21 +201,21 @@ export function GithubView({
       setConfigOpen(false);
       await loadState(true);
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '保存 GitHub 配置失败', 'err');
+      onToast?.(extractErrorMessage(err, '保存 GitHub 配置失败'), 'err');
     } finally {
       setSavingGithub(false);
     }
   };
 
   const handleSyncGithub = async () => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '同步 GitHub 数据')) return;
     setSyncingGithub(true);
     try {
       const res = await syncLinearGithub(githubDraft.syncDirection);
-      onToast?.(res.summary || `GitHub 同步完成 (${res.mode})`, 'ok');
+      onToast?.(res.summary || 'GitHub 同步完成', 'ok');
       await loadState(true);
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : 'GitHub 同步失败', 'err');
+      onToast?.(extractErrorMessage(err, 'GitHub 同步失败'), 'err');
     } finally {
       setSyncingGithub(false);
     }
@@ -224,17 +226,14 @@ export function GithubView({
     payload: Parameters<typeof dispatchGithubAgent>[0],
     successLabel: string,
   ) => {
-    if (readOnly) {
-      onToast?.('当前处于只读模式，已拦截派发操作', 'err');
-      return;
-    }
+    if (guardReadOnly(readOnly, onToast, '派发助手任务')) return;
     setDispatchingKey(key);
     try {
       const res = await dispatchGithubAgent(payload);
-      onToast?.(`${successLabel}：已创建任务 ${res.task.id}`, 'ok');
+      onToast?.(`${successLabel}：已开启对话`, 'ok');
       onOpenAgentTask?.(res.task.id);
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '派发 Agent 失败', 'err');
+      onToast?.(extractErrorMessage(err, '派发助手失败'), 'err');
     } finally {
       setDispatchingKey(null);
     }

@@ -45,18 +45,31 @@ export interface NodeAgentModelSelectorProps {
 const ALL_NODES_VALUE = 'all';
 
 const EXECUTION_MODE_OPTIONS = [
-  { value: 'lead-router', label: '自动路由' },
+  { value: 'lead-router', label: '自动分配' },
   { value: 'main-sub', label: '主从拆解' },
-  { value: 'swarm', label: 'Swarm 并行' },
-  { value: 'plan', label: '规划模式' },
+  { value: 'swarm', label: '多助手并行' },
+  { value: 'plan', label: '先规划再执行' },
 ] as const;
 
 const LEGACY_MODE_LABELS: Record<string, string> = {
-  'lead-router': '自动路由',
+  'lead-router': '自动分配',
   'main-sub': '主从拆解',
-  swarm: 'Swarm 并行',
-  plan: '规划模式',
+  swarm: '多助手并行',
+  plan: '先规划再执行',
 };
+
+const EFFORT_LABELS: Record<string, string> = {
+  minimal: '极速',
+  low: '轻量',
+  medium: '均衡',
+  high: '深入',
+  xhigh: '深度',
+  max: '最高',
+};
+
+function formatEffortLabel(value: string): string {
+  return EFFORT_LABELS[value] || value;
+}
 
 function fieldLabelClass(): string {
   return 'text-[11px] font-medium tracking-wide text-[var(--ink-subtle)]';
@@ -284,23 +297,23 @@ export function NodeAgentModelSelector({
             </option>
             {nodeOptions.map((node) => (
               <option key={node.nodeId} value={node.nodeId}>
-                {node.name || node.nodeId} · {node.modelCount} 模型 · {node.agentCount} Agent
+                {node.name || node.nodeId} · {node.modelCount} 模型 · {node.agentCount} 助手
               </option>
             ))}
           </NativeSelect>
         </label>
 
         <label className="min-w-0 space-y-1">
-          <span className={fieldLabelClass()}>目标 Agent</span>
+          <span className={fieldLabelClass()}>执行助手</span>
           <NativeSelect
             data-testid="agent-target-select"
-            aria-label="选择目标 Agent"
+            aria-label="选择执行助手"
             value={selectedTarget}
             disabled={locked}
             onChange={(event) => onSelectTarget(event.target.value)}
             className="text-[16px] sm:text-[13px]"
           >
-            <option value="auto">自动选择 · {leadAgentName || 'Lead 调度'}</option>
+            <option value="auto">自动选择 · {leadAgentName || '主控调度'}</option>
             {targetOptions.map((option) => (
               <option key={option.value} value={option.value} title={option.meta}>
                 {option.label}
@@ -326,11 +339,11 @@ export function NodeAgentModelSelector({
                 ? `默认 · ${resolvedDefaultModelLabel}`
                 : '选择模型或沿用默认'
             }
-            searchPlaceholder="搜索模型 / provider / 路由组…"
+            searchPlaceholder="搜索模型或分组…"
             emptyText={
               catalog
-                ? '当前节点与 Agent 下无在线模型'
-                : '模型目录加载中，可先沿用 Agent 默认配置'
+                ? '当前节点与助手下无在线模型'
+                : '模型目录加载中，可先沿用默认配置'
             }
             disabled={locked}
             headerSlot={quickNodeButtons}
@@ -343,28 +356,28 @@ export function NodeAgentModelSelector({
 
       <div className="grid grid-cols-2 gap-2.5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,2fr)]">
         <label className="min-w-0 space-y-1">
-          <span className={fieldLabelClass()}>思考强度</span>
+          <span className={fieldLabelClass()}>思考深度</span>
           <NativeSelect
             data-testid="agent-effort-select"
-            aria-label="选择思考强度"
+            aria-label="选择思考深度"
             value={effort}
             disabled={locked}
             onChange={(event) => onSelectEffort(event.target.value)}
-            className="font-mono text-[16px] sm:text-[13px]"
+            className="text-[16px] sm:text-[13px]"
           >
             {effortOptions.map((option) => (
               <option key={option} value={option}>
-                effort: {option}
+                {formatEffortLabel(option)}
               </option>
             ))}
           </NativeSelect>
         </label>
 
         <label className="min-w-0 space-y-1">
-          <span className={fieldLabelClass()}>编排模式</span>
+          <span className={fieldLabelClass()}>协作方式</span>
           <NativeSelect
             data-testid="agent-mode-select"
-            aria-label="选择执行编排模式"
+            aria-label="选择协作方式"
             value={executionMode}
             disabled={locked}
             onChange={(event) => onSelectExecutionMode(event.target.value)}
@@ -386,7 +399,7 @@ export function NodeAgentModelSelector({
             {leadAgentName ? (
               <>
                 <span aria-hidden="true">·</span>
-                <span>Lead {leadAgentName}</span>
+                <span>主控 {leadAgentName}</span>
               </>
             ) : null}
             {!hasOnlineSelection ? (
@@ -401,7 +414,7 @@ export function NodeAgentModelSelector({
               className="text-[11.5px] text-[var(--ink-subtle)] tabular-nums"
               title={offlineNodeNames.join(' · ')}
             >
-              {offlineNodeCount} 个节点离线 · 已隐藏模型
+              {offlineNodeCount} 个节点离线，已自动隐藏其模型
             </div>
           ) : null}
         </div>

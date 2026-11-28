@@ -37,7 +37,7 @@ test('getModulesGroupedByDomain organizes 4 operational domains and places Setti
   assert.equal(grouped.length, MODULE_DOMAINS.length);
   assert.deepEqual(
     grouped.map((g) => g.domain.title),
-    ['Harness', '监控与观测', '基础设施', '运维与审计'],
+    ['智能体', '监控与观测', '基础设施', '运维与审计'],
   );
   assert.equal(grouped[0].domain.id, 'agent');
   assert.equal(grouped[0].modules[0].label, 'Agent');

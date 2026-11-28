@@ -21,6 +21,7 @@ import type {
   MetaResponse,
   ServiceItem,
   SnapshotResponse,
+  ToastHandler,
 } from '../types';
 import { buildLogStreamUrl, copyToClipboard, fetchLogs } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
@@ -83,7 +84,7 @@ export interface LogStreamPanelProps {
   requestNonce?: number;
   onFilterChange?: (state: LogFilterState) => void;
   onCountsChange?: (counts: { total: number; error: number; warn: number; info: number }) => void;
-  onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast: ToastHandler;
 }
 
 export function LogStreamPanel({
@@ -434,9 +435,27 @@ export function LogStreamPanel({
   };
 
   const handleDeletePreset = (id: string) => {
+    const removedIndex = presets.findIndex((item) => item.id === id);
+    if (removedIndex < 0) return;
+    const removed = presets[removedIndex];
     const updated = presets.filter((item) => item.id !== id);
     setPresets(updated);
     persistSavedPresets(updated);
+    onToast(`已删除筛选视图「${removed.name}」`, 'info', {
+      action: {
+        label: '撤销',
+        onClick: () => {
+          setPresets((current) => {
+            if (current.some((item) => item.id === removed.id)) return current;
+            const restored = [...current];
+            restored.splice(Math.min(removedIndex, restored.length), 0, removed);
+            const bounded = restored.slice(0, 8);
+            persistSavedPresets(bounded);
+            return bounded;
+          });
+        },
+      },
+    });
   };
 
   const exportJsonl = () => {

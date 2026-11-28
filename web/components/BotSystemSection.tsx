@@ -7,25 +7,35 @@ import type {
   BotItem,
   BotRole,
   LinearProjectItem,
+  ToastHandler,
 } from '../types';
 import { cn } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import { formatDateTime } from '../utils/format';
-import { Button, EmptyState, inputBaseClass, KpiStrip, Panel, StatusIndicator } from './ui';
+import {
+  Button,
+  EmptyState,
+  inputBaseClass,
+  KpiStrip,
+  Panel,
+  StatusIndicator,
+  type ConfirmModalState,
+} from './ui';
 
 const CHANNEL_OPTIONS: ReadonlyArray<{ value: BotChannel; label: string }> = [
-  { value: 'github', label: 'GitHub Webhook / App' },
-  { value: 'telegram', label: 'Telegram Bot' },
-  { value: 'discord', label: 'Discord Bot' },
-  { value: 'slack', label: 'Slack App' },
+  { value: 'github', label: 'GitHub' },
+  { value: 'telegram', label: 'Telegram' },
+  { value: 'discord', label: 'Discord' },
+  { value: 'slack', label: 'Slack' },
   { value: 'webhook', label: '通用 Webhook' },
 ];
 
 const ROLE_OPTIONS: ReadonlyArray<{ value: BotRole; label: string }> = [
-  { value: 'commander-bridge', label: '总指挥直连桥接 (Commander Bridge)' },
-  { value: 'triage-intake', label: '需求分诊入队 (Triage Intake)' },
-  { value: 'pr-reviewer', label: 'PR 评审守门员 (PR Reviewer)' },
-  { value: 'ops-alerter', label: '运维告警建单 (Ops Alerter)' },
-  { value: 'custom', label: '自定义自动化 Bot' },
+  { value: 'commander-bridge', label: '主控助手直连' },
+  { value: 'triage-intake', label: '需求分诊入队' },
+  { value: 'pr-reviewer', label: 'PR 评审守门' },
+  { value: 'ops-alerter', label: '运维告警建单' },
+  { value: 'custom', label: '自定义机器人' },
 ];
 
 function channelLabel(ch: string): string {
@@ -33,7 +43,7 @@ function channelLabel(ch: string): string {
 }
 
 function roleLabel(role: string): string {
-  return ROLE_OPTIONS.find((r) => r.value === role)?.label.split(' (')[0] || role;
+  return ROLE_OPTIONS.find((r) => r.value === role)?.label || role;
 }
 
 export function BotSystemSection({
@@ -43,13 +53,15 @@ export function BotSystemSection({
   readOnly = false,
   onReload,
   onToast,
+  onConfirm,
 }: {
   botsState: BotFleetResponse | null;
   projects: LinearProjectItem[];
   availableAgents: Array<{ id: string; name: string; role: string; harness: string }>;
   readOnly?: boolean;
   onReload: () => Promise<void>;
-  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast?: ToastHandler;
+  onConfirm?: (modal: ConfirmModalState) => void;
 }) {
   const [creating, setCreating] = React.useState(false);
   const [busyBotId, setBusyBotId] = React.useState<string | null>(null);
@@ -96,7 +108,8 @@ export function BotSystemSection({
 
   const handleCreateBot = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (readOnly || !form.name.trim()) return;
+    if (guardReadOnly(readOnly, onToast, '创建机器人')) return;
+    if (!form.name.trim()) return;
     setCreating(true);
     try {
       const res = await createBot({
@@ -121,14 +134,14 @@ export function BotSystemSection({
       }));
       await onReload();
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '建立 Bot 失败', 'err');
+      onToast?.(extractErrorMessage(err, '建立 Bot 失败'), 'err');
     } finally {
       setCreating(false);
     }
   };
 
   const handleQuickCreateGithubBot = async () => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '创建 GitHub 机器人')) return;
     setCreating(true);
     try {
       const repoName = liveIntegrations?.repoFullName || '当前仓库';
@@ -148,28 +161,42 @@ export function BotSystemSection({
       onToast?.(`已建立 Bot：${res.bot.name}`, 'ok');
       await onReload();
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '建立 GitHub Bot 失败', 'err');
+      onToast?.(extractErrorMessage(err, '建立 GitHub Bot 失败'), 'err');
     } finally {
       setCreating(false);
     }
   };
 
   const handleToggleBot = async (bot: BotItem) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, bot.enabled ? '停用机器人' : '启用机器人')) return;
+    const prevEnabled = bot.enabled;
+    const nextEnabled = !prevEnabled;
     setBusyBotId(bot.id);
     try {
-      await updateBot(bot.id, { enabled: !bot.enabled });
-      onToast?.(`${bot.name} 已${bot.enabled ? '停用' : '启用'}`, 'ok');
+      await updateBot(bot.id, { enabled: nextEnabled });
       await onReload();
+      onToast?.(`${bot.name} 已${nextEnabled ? '启用' : '停用'}`, 'ok', {
+        action: {
+          label: '撤销',
+          onClick: async () => {
+            try {
+              await updateBot(bot.id, { enabled: prevEnabled });
+              await onReload();
+              onToast?.(`已恢复 ${bot.name} 为${prevEnabled ? '启用' : '停用'}`, 'info');
+            } catch (undoErr) {
+              onToast?.(extractErrorMessage(undoErr, '撤销失败'), 'err');
+            }
+          },
+        },
+      });
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '切换 Bot 状态失败', 'err');
+      onToast?.(extractErrorMessage(err, '切换 Bot 状态失败'), 'err');
     } finally {
       setBusyBotId(null);
     }
   };
 
-  const handleDeleteBot = async (bot: BotItem) => {
-    if (readOnly) return;
+  const executeDeleteBot = async (bot: BotItem) => {
     setBusyBotId(bot.id);
     try {
       await deleteBot(bot.id);
@@ -177,15 +204,32 @@ export function BotSystemSection({
       onToast?.(`已删除 Bot：${bot.name}`, 'info');
       await onReload();
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '删除 Bot 失败', 'err');
+      onToast?.(extractErrorMessage(err, '删除 Bot 失败'), 'err');
     } finally {
       setBusyBotId(null);
     }
   };
 
+  const handleDeleteBot = (bot: BotItem) => {
+    if (guardReadOnly(readOnly, onToast, '删除机器人')) return;
+    if (onConfirm) {
+      onConfirm({
+        open: true,
+        title: `删除 Bot「${bot.name}」？`,
+        description: '删除后该机器人将停止接收外部事件，原有事件记录仍会保留。',
+        confirmLabel: '确认删除',
+        danger: true,
+        onConfirm: () => executeDeleteBot(bot),
+      });
+      return;
+    }
+    void executeDeleteBot(bot);
+  };
+
   const handleTrigger = async (e: React.FormEvent, bot: BotItem) => {
     e.preventDefault();
-    if (readOnly || !triggerMessage.trim()) return;
+    if (guardReadOnly(readOnly, onToast, '模拟触发机器人')) return;
+    if (!triggerMessage.trim()) return;
     setBusyBotId(bot.id);
     try {
       const res = await triggerBotEvent(bot.id, {
@@ -196,13 +240,13 @@ export function BotSystemSection({
       });
       const createdId = res.createdIssue?.identifier ? ` → 已建单 ${res.createdIssue.identifier}` : '';
       const subCount = res.dispatchResult?.createdSubIssues?.length || 0;
-      const dispatchedMsg = subCount > 0 ? ` · 总指挥拆解 ${subCount} 个子任务` : '';
+      const dispatchedMsg = subCount > 0 ? ` · 主控助手拆解 ${subCount} 个子任务` : '';
       onToast?.(`${bot.name} 已响应事件${createdId}${dispatchedMsg}`, 'ok');
       setTriggerTitle('');
       setTriggerMessage('');
       await onReload();
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '触发 Bot 事件失败', 'err');
+      onToast?.(extractErrorMessage(err, '触发 Bot 事件失败'), 'err');
     } finally {
       setBusyBotId(null);
     }
@@ -226,16 +270,16 @@ export function BotSystemSection({
             sub: '支持 GitHub / Telegram / Discord / Slack / Webhook',
           },
           {
-            label: '自动建 Linear Issue',
+            label: '自动创建任务',
             value: String(summary.totalIssuesCreated),
             numeric: { primary: summary.totalIssuesCreated },
-            sub: '自动写入项目分诊或待执行队列',
+            sub: '自动写入任务看板待处理队列',
           },
           {
-            label: '移交总指挥派发',
+            label: '移交主控派发',
             value: String(summary.totalTasksDispatched),
             numeric: { primary: summary.totalTasksDispatched },
-            sub: 'Bot 触发 → 总指挥拆解 → Worker 执行',
+            sub: 'Bot 接单 → 主控拆解 → 助手执行',
             tone: summary.totalTasksDispatched > 0 ? 'ok' : 'muted',
           },
         ]}
@@ -467,7 +511,7 @@ export function BotSystemSection({
                   onChange={(e) => setForm((f) => ({ ...f, autoCreateIssue: e.target.checked }))}
                   className="accent-[var(--accent)]"
                 />
-                <span>收到事件自动建 Linear Issue</span>
+                <span>收到事件自动创建任务</span>
               </label>
               <label className="inline-flex items-center gap-2 cursor-pointer select-none">
                 <input
@@ -477,7 +521,7 @@ export function BotSystemSection({
                   onChange={(e) => setForm((f) => ({ ...f, autoDispatchCommander: e.target.checked }))}
                   className="accent-[var(--accent)]"
                 />
-                <span>自动移交总指挥拆解派发</span>
+                <span>自动移交主控助手拆解派发</span>
               </label>
             </div>
 
@@ -500,7 +544,7 @@ export function BotSystemSection({
         {/* Registered Bots List + Inline Event Trigger */}
         <Panel
           title={`Bot 集群 (${bots.length})`}
-          description="启停各渠道 Bot，或直接模拟外部消息验证「Bot 接单 → 自动建 Linear Issue → 总指挥带队派发」全链路。"
+          description="启停各渠道机器人，或发送模拟消息验证「接收消息 → 自动建单 → 主控派发」全链路。"
           className="xl:col-span-7"
           bodyClassName="p-0"
         >
@@ -508,7 +552,7 @@ export function BotSystemSection({
             <div className="p-6 space-y-3 text-center">
               <EmptyState
                 title="暂无已注册 Bot"
-                message="当前为真实运行态（已移除演示假数据）。可在左侧创建多渠道 Bot，或一键接入本仓库 GitHub Bot。"
+                message="尚未添加任何机器人。可在左侧创建多渠道 Bot，或一键接入本仓库的 GitHub 评审 Bot。"
               />
               {!readOnly && (
                 <Button
@@ -626,7 +670,7 @@ export function BotSystemSection({
                             type="text"
                             value={triggerTitle}
                             onChange={(e) => setTriggerTitle(e.target.value)}
-                            placeholder="可选：自定义 Linear Issue 标题"
+                            placeholder="可选：自定义任务标题"
                             className={cn('sm:col-span-2 h-8 px-2.5 text-[12.5px]', inputBaseClass)}
                           />
                           <select
@@ -647,7 +691,7 @@ export function BotSystemSection({
                             required
                             value={triggerMessage}
                             onChange={(e) => setTriggerMessage(e.target.value)}
-                            placeholder="输入模拟触发指令或外部 Webhook 负载..."
+                            placeholder="输入模拟消息或指令内容..."
                             data-testid="bot-trigger-message-input"
                             className={cn('flex-1 h-8 px-2.5 text-[12.5px]', inputBaseClass)}
                           />
@@ -659,7 +703,7 @@ export function BotSystemSection({
                             data-testid="bot-trigger-submit-btn"
                           >
                             <Send className="size-3.5" />
-                            {isBusy ? '执行中...' : '发送触发事件'}
+                            {isBusy ? '执行中...' : '发送测试消息'}
                           </Button>
                         </div>
 
@@ -670,7 +714,7 @@ export function BotSystemSection({
                             onChange={(e) => setTriggerDispatch(e.target.checked)}
                             className="accent-[var(--accent)]"
                           />
-                          <span>建单后立即调用总指挥拆解子任务并派发至 A2A Worker</span>
+                          <span>建单后立即由主控助手拆解并派发执行</span>
                         </label>
                       </form>
                     )}

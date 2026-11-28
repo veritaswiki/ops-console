@@ -25,9 +25,12 @@ import type {
   MetaResponse,
   ProbesResponse,
   SnapshotResponse,
+  ToastOptions,
+  ToastTone,
   ViewId,
 } from './types';
 import { normalizeLogNavigation } from './lib/logs';
+import { extractErrorMessage } from './lib/ux-errors';
 import { parseHotUpdateSseEvent, type HotUpdateNotice } from './lib/updates';
 import {
   fetchA2AState,
@@ -39,7 +42,7 @@ import {
   logoutSession,
 } from './api';
 import { cn, FOCUS_RING } from './lib/cn';
-import { formatClock, statusLabel } from './utils/format';
+import { formatClock, formatRelativeAge, statusLabel, taskStateLabel } from './utils/format';
 import {
   Button,
   CommandPalette,
@@ -155,23 +158,6 @@ function readInitialNavSubMenus(): Record<string, boolean> {
   }
 }
 
-function sidebarTaskStateLabel(state: string): string {
-  switch (state) {
-    case 'submitted':
-      return '排队中';
-    case 'working':
-      return '执行中';
-    case 'completed':
-      return '已完成';
-    case 'failed':
-      return '失败';
-    case 'canceled':
-      return '已取消';
-    default:
-      return state;
-  }
-}
-
 function readInitialSidebarCollapsed(): boolean {
   try {
     return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === '1';
@@ -246,6 +232,7 @@ export function App() {
   const sidebarAgentSearchRef = React.useRef<HTMLInputElement>(null);
 
   const [pollMs, setPollMs] = React.useState<number>(10000);
+  const [sseConnected, setSseConnected] = React.useState<boolean>(false);
   const [loading, setLoading] = React.useState<boolean>(true);
   const [refreshing, setRefreshing] = React.useState<boolean>(false);
   const [syncError, setSyncError] = React.useState<string>('');
@@ -261,15 +248,36 @@ export function App() {
   const [mcpInitialNode, setMcpInitialNode] = React.useState<string>('');
   const [confirmState, setConfirmState] = React.useState<ConfirmModalState | null>(null);
 
-  const pushToast = React.useCallback((text: string, tone: 'info' | 'ok' | 'err' = 'info') => {
-    if (tone === 'ok') {
-      toast.success(text);
-    } else if (tone === 'err') {
-      toast.error(text);
-    } else {
-      toast(text);
-    }
-  }, []);
+  const pushToast = React.useCallback(
+    (text: string, tone: ToastTone = 'info', options?: ToastOptions) => {
+      const toastData: Parameters<typeof toast>[1] = {};
+      if (options?.description) {
+        toastData.description = options.description;
+      }
+      if (options?.duration != null) {
+        toastData.duration = options.duration;
+      } else if (options?.action) {
+        // Give users extra time to click Undo / recovery actions
+        toastData.duration = 6000;
+      }
+      if (options?.action) {
+        toastData.action = {
+          label: options.action.label,
+          onClick: () => {
+            void options.action!.onClick();
+          },
+        };
+      }
+      if (tone === 'ok') {
+        toast.success(text, toastData);
+      } else if (tone === 'err') {
+        toast.error(text, toastData);
+      } else {
+        toast(text, toastData);
+      }
+    },
+    [],
+  );
 
   React.useEffect(() => {
     applyTheme(theme);
@@ -469,6 +477,8 @@ export function App() {
     };
 
     const es = new EventSource('/api/events/stream');
+    es.onopen = () => setSseConnected(true);
+    es.onerror = () => setSseConnected(false);
     let readyPollTimer: number | null = null;
     const eventTypes = [
       'probe_heartbeat',
@@ -497,6 +507,7 @@ export function App() {
       'update_rolled_back',
     ];
     const handleDeltaEvent = (eventType: string) => () => {
+      setSseConnected(true);
       pendingEventsRef.current.add(eventType);
       scheduleDeltaSync();
     };
@@ -550,6 +561,7 @@ export function App() {
         es.removeEventListener(type, handler as EventListener);
       }
       es.close();
+      setSseConnected(false);
     };
   }, [loadSnapshot, loadOpsData, loadProbes, loadRecentAgentTasks]);
 
@@ -660,7 +672,7 @@ export function App() {
       await logoutSession();
       window.location.reload();
     } catch (err) {
-      pushToast(`退出失败：${(err as Error).message}`, 'err');
+      pushToast(`退出失败：${extractErrorMessage(err)}`, 'err');
     }
   };
 
@@ -743,20 +755,18 @@ export function App() {
       list.push(
         {
           id: `log-err:${svc.id}`,
-          label: `${name} · Error 日志`,
-          group: '日志级别快筛',
+          label: `${name} · 错误日志`,
+          group: '日志快筛',
           keywords: ['error', 'err', '错误', '故障', '异常', 'log', 'logs', '日志', svc.id, unit, name],
-          meta: unit,
-          shortcut: 'ERROR',
+          meta: '仅看错误',
           onSelect: () => handleOpenLogs(unit, 'error'),
         },
         {
           id: `log-warn:${svc.id}`,
-          label: `${name} · Warn 日志`,
-          group: '日志级别快筛',
+          label: `${name} · 警告日志`,
+          group: '日志快筛',
           keywords: ['warn', 'warning', '警告', '告警', '降级', 'log', 'logs', '日志', svc.id, unit, name],
-          meta: unit,
-          shortcut: 'WARN',
+          meta: '仅看警告',
           onSelect: () => handleOpenLogs(unit, 'warn'),
         },
       );
@@ -768,8 +778,8 @@ export function App() {
       const cmdText = proc.cmd || proc.command || proc.comm || '';
       list.push({
         id: `agent-pid:${proc.pid}`,
-        label: `PID ${proc.pid} · ${cat}`,
-        group: 'Agent 运行时进程',
+        label: `${cat} (进程 ${proc.pid})`,
+        group: '运行中的智能体进程',
         keywords: [
           String(proc.pid),
           `pid ${proc.pid}`,
@@ -782,8 +792,7 @@ export function App() {
           proc.comm || '',
           cmdText,
         ],
-        meta: cmdText,
-        shortcut: proc.cpu != null ? `CPU ${Number(proc.cpu).toFixed(1)}%` : undefined,
+        meta: proc.cpu != null ? `CPU ${Number(proc.cpu).toFixed(1)}%` : cmdText,
         onSelect: () => handleSelectAgentPid(proc.pid),
       });
     }
@@ -791,10 +800,9 @@ export function App() {
     list.push(
       {
         id: 'action:refresh',
-        label: '立即刷新全栈快照',
+        label: '立即刷新全部数据',
         group: '快捷操作',
         keywords: ['refresh', 'reload', 'sync', '刷新', '同步'],
-        shortcut: 'Sync',
         onSelect: () => {
           loadSnapshot(true);
           loadProbes();
@@ -878,7 +886,7 @@ export function App() {
           task.workerAgentName,
           task.workerNodeId,
           task.state,
-          sidebarTaskStateLabel(task.state),
+          taskStateLabel(task.state),
         ]
           .filter(Boolean)
           .join(' ')
@@ -1032,8 +1040,8 @@ export function App() {
                       }
                     }
                   }}
-                  placeholder="搜索任务 ID / 提示词..."
-                  aria-label="搜索 Agent 任务 ID 或提示词"
+                  placeholder="搜索历史任务..."
+                  aria-label="搜索历史任务"
                   data-testid="sidebar-agent-search"
                   className={cn(
                     'h-7 w-full rounded-md border border-[var(--border)] bg-[var(--bg)] pl-7 pr-6 text-[16px] sm:text-[11.5px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)]',
@@ -1074,13 +1082,13 @@ export function App() {
                         : task.state === 'failed' || task.state === 'canceled'
                           ? 'bg-[var(--err-dot)]'
                           : 'bg-[var(--muted-dot)]';
-                  const shortId = task.id.length > 14 ? task.id.slice(-10) : task.id;
+                  const relativeTs = formatRelativeAge(task.updatedAt || task.createdAt);
                   return (
                     <button
                       key={task.id}
                       type="button"
                       onClick={() => handleOpenAgentThread(task.id)}
-                      title={`${task.id} · ${task.prompt || ''}`}
+                      title={`${task.prompt || task.id} (${task.id})`}
                       className={cn(
                         'w-full flex flex-col gap-0.5 px-2 py-1.5 rounded-md text-left cursor-pointer transition-colors min-w-0',
                         FOCUS_RING,
@@ -1091,12 +1099,16 @@ export function App() {
                     >
                       <span className="flex items-center gap-1.5 min-w-0 text-[12px] leading-snug">
                         <span className={cn('h-1.5 w-1.5 rounded-full shrink-0', dotClass)} aria-hidden="true" />
-                        <span className="truncate">{task.prompt || task.id}</span>
+                        <span className="truncate">{task.prompt || '未命名任务'}</span>
                       </span>
-                      <span className="flex items-center gap-1.5 pl-3 text-[10.5px] font-mono text-[var(--ink-subtle)] tabular-nums min-w-0">
-                        <span className="truncate">{shortId}</span>
-                        <span aria-hidden="true">·</span>
-                        <span className="shrink-0">{sidebarTaskStateLabel(task.state)}</span>
+                      <span className="flex items-center gap-1.5 pl-3 text-[10.5px] text-[var(--ink-subtle)] tabular-nums min-w-0">
+                        <span className="shrink-0">{taskStateLabel(task.state)}</span>
+                        {relativeTs !== '-' && (
+                          <>
+                            <span aria-hidden="true">·</span>
+                            <span className="truncate">{relativeTs}</span>
+                          </>
+                        )}
                       </span>
                     </button>
                   );
@@ -1318,8 +1330,8 @@ export function App() {
             {demoMode && readOnly
               ? '演示模式 · 只读保护'
               : demoMode
-                ? '演示模式 · 仿真连接器'
-                : '只读观测模式'}
+                ? '演示模式'
+                : '只读模式'}
           </div>
         )}
         <PWAInstallButton />
@@ -1390,19 +1402,34 @@ export function App() {
             key={slot.id}
             data-slot-id={slot.id}
             className={cn(
-              'hidden xl:inline-block font-mono text-[11.5px] tabular-nums whitespace-nowrap px-1.5 select-none',
+              'hidden xl:inline-flex items-center gap-1.5 font-mono text-[11.5px] tabular-nums whitespace-nowrap px-1.5 select-none',
               syncError ? 'text-[var(--err)]' : 'text-[var(--ink-subtle)]',
             )}
-            title={syncError || lastSyncedAt}
+            title={
+              syncError
+                ? `同步异常：${syncError}`
+                : sseConnected
+                  ? `实时推送已连接 · 最近同步 ${lastSyncedAt || ''}`
+                  : `最近同步 ${lastSyncedAt || ''}`
+            }
           >
-            {syncError
-              ? '同步异常'
-              : lastSyncedAt
-                ? formatClock(lastSyncedAt)
-                : '同步中...'}
+            {sseConnected && !syncError && (
+              <span className="h-1.5 w-1.5 rounded-full bg-[var(--ok-dot)] shrink-0" aria-hidden="true" />
+            )}
+            <span>
+              {syncError
+                ? '同步异常'
+                : lastSyncedAt
+                  ? `${sseConnected ? '实时 · ' : ''}${formatClock(lastSyncedAt)}`
+                  : '同步中...'}
+            </span>
           </span>
         );
       case 'telemetry-poll-interval':
+        // Rule 1 & 2: when live SSE push is healthy, system auto-updates — hide manual polling dropdown
+        if (sseConnected && !syncError) {
+          return null;
+        }
         return (
           <NativeSelect
             key={slot.id}
@@ -1413,9 +1440,9 @@ export function App() {
             onChange={(e) => setPollMs(Number(e.target.value))}
             className="hidden sm:block bg-[var(--surface-elevated)] text-[var(--ink-muted)] hover:text-[var(--ink)] cursor-pointer"
           >
-            <option value="0">手动</option>
-            <option value="10000">10s</option>
-            <option value="30000">30s</option>
+            <option value="0">手动刷新</option>
+            <option value="10000">每 10 秒</option>
+            <option value="30000">每 30 秒</option>
           </NativeSelect>
         );
       case 'telemetry-manual-refresh':
@@ -1425,8 +1452,8 @@ export function App() {
             variant="secondary"
             size="sm"
             disabled={refreshing}
-            aria-label="手动刷新数据"
-            title="立即同步遥测快照"
+            aria-label="立即刷新数据"
+            title="立即刷新数据"
             data-slot-id={slot.id}
             onClick={() => {
               loadSnapshot(true);
@@ -1586,7 +1613,7 @@ export function App() {
           {syncError && !isHarnessView && (
             <div className="border-b border-[var(--err)]/20 bg-[var(--err)]/5">
               <div className="max-w-[1200px] mx-auto px-4 sm:px-8 py-2 flex items-center justify-between gap-2 text-[12.5px] text-[var(--err)]">
-                <span className="truncate">快照同步异常：{syncError}</span>
+                <span className="truncate">数据同步异常：{syncError}</span>
               </div>
             </div>
           )}
@@ -1725,6 +1752,7 @@ export function App() {
                         handleSelectView('ops');
                       }}
                       onToast={pushToast}
+                      onConfirm={setConfirmState}
                     />
                   )}
                   {view === 'projects' && (
@@ -1735,6 +1763,7 @@ export function App() {
                       onClearFocusedIssue={() => setFocusedProjectIssueId(null)}
                       onOpenAgentTask={handleOpenAgentThread}
                       onToast={pushToast}
+                      onConfirm={setConfirmState}
                     />
                   )}
                   {view === 'graph' && (
@@ -1747,6 +1776,7 @@ export function App() {
                     <BotsView
                       readOnly={readOnly}
                       onToast={pushToast}
+                      onConfirm={setConfirmState}
                     />
                   )}
                   {view === 'github' && (

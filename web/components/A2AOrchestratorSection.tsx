@@ -28,6 +28,7 @@ import type {
   OrchestrationMode,
   ReasoningEffort,
   SnapshotResponse,
+  ToastHandler,
 } from '../types';
 import {
   cancelA2ATask,
@@ -58,7 +59,8 @@ import {
   getModelsForNodeAgent,
   getOnlineNodeOptions,
 } from '../lib/model-catalog';
-import { formatRelativeAge } from '../utils/format';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
+import { formatRelativeAge, taskStateLabel } from '../utils/format';
 import { AgentBtwDrawer } from './AgentBtwDrawer';
 import { EFFORT_OPTIONS, MODEL_PRESETS } from './AgentOrchestrationCanvas';
 import {
@@ -148,16 +150,6 @@ function taskStateStatus(state: string): string {
   return 'standby';
 }
 
-function taskStateLabel(state: string): string {
-  if (state === 'completed') return '已完成';
-  if (state === 'working') return '执行中';
-  if (state === 'reviewing') return 'DSH 会审中';
-  if (state === 'submitted') return '已提交';
-  if (state === 'failed') return '失败';
-  if (state === 'canceled') return '已取消';
-  return state;
-}
-
 export function A2AOrchestratorSection({
   snapshot,
   readOnly,
@@ -170,7 +162,7 @@ export function A2AOrchestratorSection({
   snapshot: SnapshotResponse | null;
   readOnly: boolean;
   onSnapshotChanged: () => void;
-  onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast: ToastHandler;
   onConfirm: (modal: ConfirmModalState) => void;
   modelCatalog?: DynamicModelCatalogResponse | null;
   catalogRevision?: number;
@@ -304,31 +296,50 @@ export function A2AOrchestratorSection({
 
   const handleSetLead = async (agentId: string) => {
     if (!agentId) return;
-    if (readOnly) {
-      onToast('只读模式已禁用切换主 Agent', 'err');
-      return;
-    }
+    if (guardReadOnly(readOnly, onToast, '切换默认主助手')) return;
+    const prevLeadId = state?.leadAgentId || '';
+    const prevLeadName = state?.agents.find((a) => a.id === prevLeadId)?.name || prevLeadId;
     setBusyKey(`lead:${agentId}`);
     try {
       const res = await setLeadA2AAgent(agentId);
-      onToast(`已选举「${res.leadAgent?.name || agentId}」为当前主 Agent (Lead Harness)`, 'ok');
       await loadAll();
       onSnapshotChanged();
+      onToast(
+        `已将「${res.leadAgent?.name || agentId}」设为默认主助手`,
+        'ok',
+        prevLeadId && prevLeadId !== agentId
+          ? {
+              action: {
+                label: '撤销',
+                onClick: async () => {
+                  try {
+                    await setLeadA2AAgent(prevLeadId);
+                    await loadAll();
+                    onSnapshotChanged();
+                    onToast(`已恢复默认主助手为「${prevLeadName}」`, 'info');
+                  } catch (undoErr) {
+                    onToast(extractErrorMessage(undoErr, '恢复默认主助手失败'), 'err');
+                  }
+                },
+              },
+            }
+          : undefined,
+      );
     } catch (err) {
-      onToast(`切换主 Agent 失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '切换主助手失败'), 'err');
     } finally {
       setBusyKey('');
     }
   };
 
   const handleUpdateConfig = async (patch: Record<string, unknown>) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '修改调度策略')) return;
     try {
       await updateA2AOrchestrationConfig(patch);
       await loadAll();
-      onToast('编排调度策略已更新并持久化', 'ok');
+      onToast('调度策略已更新并保存', 'ok');
     } catch (err) {
-      onToast(`更新策略失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '更新策略失败'), 'err');
     }
   };
 
@@ -338,30 +349,40 @@ export function A2AOrchestratorSection({
       await saveA2ATopologyPositions(positions);
       await loadAll();
     } catch (err) {
-      onToast(`保存画布布局失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '保存画布布局失败'), 'err');
     }
   };
 
   const handleUpsertRule = async (payload: Parameters<typeof upsertA2ARoutingRule>[0]) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '保存路由规则')) return;
     try {
       const res = await upsertA2ARoutingRule(payload);
-      onToast(`已保存路由策略「${res.rule.name}」(${res.rule.targetModel} · ${res.rule.reasoningEffort})`, 'ok');
+      onToast(`已保存路由策略「${res.rule.name}」（${res.rule.targetModel} · ${res.rule.reasoningEffort}）`, 'ok');
       await loadAll();
     } catch (err) {
-      onToast(`保存路由失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '保存路由规则失败'), 'err');
     }
   };
 
-  const handleDeleteRule = async (ruleId: string) => {
-    if (readOnly) return;
-    try {
-      await deleteA2ARoutingRule(ruleId);
-      onToast('已移除该可视化路由边', 'ok');
-      await loadAll();
-    } catch (err) {
-      onToast(`删除路由失败：${(err as Error).message}`, 'err');
-    }
+  const handleDeleteRule = async (ruleId: string): Promise<void> => {
+    if (guardReadOnly(readOnly, onToast, '删除路由规则')) return;
+    const rule = routingRules.find((r) => r.id === ruleId);
+    onConfirm({
+      open: true,
+      title: `移除路由规则${rule?.name ? `「${rule.name}」` : ''}？`,
+      description: '移除后匹配该条件的任务将交由默认主助手自动路由。',
+      confirmLabel: '确认移除',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await deleteA2ARoutingRule(ruleId);
+          onToast('已移除该路由规则', 'info');
+          await loadAll();
+        } catch (err) {
+          onToast(extractErrorMessage(err, '移除路由规则失败'), 'err');
+        }
+      },
+    });
   };
 
   const handleDiscoverLocal = async () => {
@@ -370,13 +391,13 @@ export function A2AOrchestratorSection({
       const res = await discoverLocalA2AAgents();
       const outdated = res.items.filter((i) => i.updateAvailable).length;
       onToast(
-        `扫描完成：共识别 ${res.discoveredCount} 个已安装 Harness（新纳入 ${res.newlyRegistered} 个${outdated > 0 ? `，${outdated} 个有新版本` : ''}）`,
+        `扫描完成：发现 ${res.discoveredCount} 个本机助手（新接入 ${res.newlyRegistered} 个${outdated > 0 ? `，${outdated} 个有新版本` : ''}）`,
         'ok',
       );
       await loadAll();
       onSnapshotChanged();
     } catch (err) {
-      onToast(`自动发现失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '自动发现失败'), 'err');
     } finally {
       setBusyKey('');
     }
@@ -387,14 +408,14 @@ export function A2AOrchestratorSection({
     try {
       const res = await discoverA2AAgent(agent.id);
       if (res.ok) {
-        onToast(`${agent.name}：${res.summary || 'Agent Card 验证通过'}`, 'ok');
+        onToast(`${agent.name}：${res.summary || '连通性检查通过'}`, 'ok');
       } else {
-        onToast(`${agent.name} Agent Card 探活失败：${res.error || '不可达'}`, 'err');
+        onToast(`${agent.name} 探活失败：${res.error || '服务暂不可达'}`, 'err');
       }
       await loadAll();
       onSnapshotChanged();
     } catch (err) {
-      onToast(`Agent Card 探活失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '助手探活失败'), 'err');
     } finally {
       setBusyKey('');
     }
@@ -404,25 +425,22 @@ export function A2AOrchestratorSection({
     agentId: string,
     patch: Parameters<typeof updateA2AAgent>[1],
   ) => {
-    if (readOnly) {
-      onToast('只读模式已禁用修改 Agent 配置', 'err');
-      return;
-    }
+    if (guardReadOnly(readOnly, onToast, '修改助手配置')) return;
     setBusyKey(`agent:${agentId}`);
     try {
       await updateA2AAgent(agentId, patch);
       await loadAll();
       onSnapshotChanged();
-      onToast('Agent 参数已更新', 'ok');
+      onToast('助手参数已更新', 'ok');
     } catch (err) {
-      onToast(`更新失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '更新助手参数失败'), 'err');
     } finally {
       setBusyKey('');
     }
   };
 
   const handleToggleBoundMcp = async (agent: A2AAgentPeer, mcpId: string) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '调整助手工具绑定')) return;
     const has = agent.boundMcpIds.includes(mcpId);
     const next = has
       ? agent.boundMcpIds.filter((id) => id !== mcpId)
@@ -431,9 +449,10 @@ export function A2AOrchestratorSection({
   };
 
   const handleDeleteAgent = (agent: A2AAgentPeer) => {
+    if (guardReadOnly(readOnly, onToast, '移除助手')) return;
     onConfirm({
       open: true,
-      title: `移除外部 A2A Agent：${agent.name}`,
+      title: `移除助手：${agent.name}`,
       description: `将从调度网络移除 ${agent.nodeName} 上的 ${agent.harness} 接入点，不会停止该节点本地进程。`,
       confirmLabel: '确认移除',
       danger: true,
@@ -444,7 +463,7 @@ export function A2AOrchestratorSection({
           await loadAll();
           onSnapshotChanged();
         } catch (err) {
-          onToast(`移除失败：${(err as Error).message}`, 'err');
+          onToast(extractErrorMessage(err, '移除助手失败'), 'err');
         }
       },
     });
@@ -452,12 +471,9 @@ export function A2AOrchestratorSection({
 
   const handleDispatchSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (readOnly) {
-      onToast('只读模式已禁用派发任务', 'err');
-      return;
-    }
+    if (guardReadOnly(readOnly, onToast, '派发任务')) return;
     if (!prompt.trim()) {
-      onToast('请输入需要主 Agent 编排或委派的任务指令', 'err');
+      onToast('请输入需要派发的任务内容', 'err');
       return;
     }
     setDispatchBusy(true);
@@ -472,21 +488,21 @@ export function A2AOrchestratorSection({
       });
       const t = res.task;
       onToast(
-        `任务 ${t.id} 已路由至 ${t.workerAgentName} (${t.appliedModel || 'auto'} · ${t.appliedEffort || 'med'})${t.dshReview ? ` · DSH ${t.dshReview.score}分` : ''}`,
+        `任务已派发给 ${t.workerAgentName}（${t.appliedModel || '自动选模'} · ${t.appliedEffort || '中等'}）${t.dshReview ? ` · 评审 ${t.dshReview.score} 分` : ''}`,
         t.state === 'failed' ? 'err' : 'ok',
       );
       setPrompt('');
       setExpandedTaskIds((prev) => ({ ...prev, [t.id]: true }));
       await loadAll();
     } catch (err) {
-      onToast(`任务派发失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '任务派发失败'), 'err');
     } finally {
       setDispatchBusy(false);
     }
   };
 
   const handleTriggerDshReview = async () => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '触发专家评审')) return;
     setBusyKey('dsh-trial');
     try {
       const dshAgent = agents.find((a) => a.harness === 'dsh-expert');
@@ -498,33 +514,42 @@ export function A2AOrchestratorSection({
         requireDshReview: true,
       });
       onToast(
-        `DSH 专家评审完成：${res.task.dshReview?.score ?? 92}/100 (${res.task.dshReview?.verdict || 'approve'})`,
+        `专家评审完成：${res.task.dshReview?.score ?? 92}/100`,
         'ok',
       );
       setStudioTab('canvas');
       setExpandedTaskIds((prev) => ({ ...prev, [res.task.id]: true }));
       await loadAll();
     } catch (err) {
-      onToast(`DSH 评审触发失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '触发评审失败'), 'err');
     } finally {
       setBusyKey('');
     }
   };
 
-  const handleCancelTask = async (taskId: string) => {
-    if (readOnly) return;
-    try {
-      await cancelA2ATask(taskId);
-      onToast(`已取消任务 ${taskId}`, 'ok');
-      await loadAll();
-    } catch (err) {
-      onToast(`取消失败：${(err as Error).message}`, 'err');
-    }
+  const handleCancelTask = (taskId: string) => {
+    if (guardReadOnly(readOnly, onToast, '中止任务')) return;
+    onConfirm({
+      open: true,
+      title: '中止该任务？',
+      description: '中止后将立即停止当前执行，已完成的部分上下文会被保留。',
+      confirmLabel: '确认中止',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await cancelA2ATask(taskId);
+          onToast('已中止任务', 'info');
+          await loadAll();
+        } catch (err) {
+          onToast(extractErrorMessage(err, '中止任务失败'), 'err');
+        }
+      },
+    });
   };
 
   const handleRegisterSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '接入外部助手')) return;
     setRegBusy(true);
     try {
       const res = await registerA2AAgent({
@@ -538,13 +563,13 @@ export function A2AOrchestratorSection({
         setAsLead: regForm.setAsLead,
         description: regForm.description.trim() || undefined,
       });
-      onToast(`已注册外部 Harness「${res.agent.name}」至 A2A 编排网`, 'ok');
+      onToast(`已接入助手「${res.agent.name}」`, 'ok');
       setRegOpen(false);
       setRegForm((prev) => ({ ...prev, name: '', rpcUrl: '', description: '', setAsLead: false }));
       await loadAll();
       onSnapshotChanged();
     } catch (err) {
-      onToast(`注册失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '接入助手失败'), 'err');
     } finally {
       setRegBusy(false);
     }
@@ -552,7 +577,8 @@ export function A2AOrchestratorSection({
 
   const handleAddSkillSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (readOnly || !skillForm.name.trim()) return;
+    if (guardReadOnly(readOnly, onToast, '新增技能')) return;
+    if (!skillForm.name.trim()) return;
     setBusyKey('add-skill');
     try {
       const res = await upsertA2ASkill({
@@ -562,51 +588,77 @@ export function A2AOrchestratorSection({
         description: skillForm.description.trim(),
         assignedAgentIds: state?.leadAgentId ? [state.leadAgentId] : [],
       });
-      onToast(`已安装 Skill「${res.skill.name}」v${res.skill.version}`, 'ok');
+      onToast(`已安装技能「${res.skill.name}」v${res.skill.version}`, 'ok');
       setSkillOpen(false);
       setSkillForm({ name: '', version: '1.0.0', provider: 'dsh-plugin', description: '' });
       await loadAll();
     } catch (err) {
-      onToast(`新增 Skill 失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '新增技能失败'), 'err');
     } finally {
       setBusyKey('');
     }
   };
 
   const handleToggleSkillAgent = async (skill: A2ASkillCatalogItem, agentId: string) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '调整技能绑定')) return;
     try {
       await updateA2ASkill(skill.id, { toggleAgentId: agentId });
       await loadAll();
     } catch (err) {
-      onToast(`更新 Skill 挂载失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '更新技能绑定失败'), 'err');
     }
   };
 
   const handleToggleSkillEnabled = async (skill: A2ASkillCatalogItem) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, skill.enabled ? '停用技能' : '启用技能')) return;
+    const prevEnabled = skill.enabled;
+    const nextEnabled = !prevEnabled;
     try {
-      await updateA2ASkill(skill.id, { enabled: !skill.enabled });
+      await updateA2ASkill(skill.id, { enabled: nextEnabled });
       await loadAll();
+      onToast(`已${nextEnabled ? '启用' : '停用'}技能「${skill.name}」`, 'ok', {
+        action: {
+          label: '撤销',
+          onClick: async () => {
+            try {
+              await updateA2ASkill(skill.id, { enabled: prevEnabled });
+              await loadAll();
+              onToast(`已恢复技能「${skill.name}」状态`, 'info');
+            } catch (undoErr) {
+              onToast(extractErrorMessage(undoErr, '撤销失败'), 'err');
+            }
+          },
+        },
+      });
     } catch (err) {
-      onToast(`切换 Skill 状态失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '切换技能状态失败'), 'err');
     }
   };
 
-  const handleDeleteSkill = async (skill: A2ASkillCatalogItem) => {
-    if (readOnly) return;
-    try {
-      await deleteA2ASkill(skill.id);
-      onToast(`已移除 Skill「${skill.name}」`, 'ok');
-      await loadAll();
-    } catch (err) {
-      onToast(`删除 Skill 失败：${(err as Error).message}`, 'err');
-    }
+  const handleDeleteSkill = (skill: A2ASkillCatalogItem) => {
+    if (guardReadOnly(readOnly, onToast, '移除技能')) return;
+    onConfirm({
+      open: true,
+      title: `移除技能「${skill.name}」？`,
+      description: '移除后关联助手将不再加载该技能。',
+      confirmLabel: '确认移除',
+      danger: true,
+      onConfirm: async () => {
+        try {
+          await deleteA2ASkill(skill.id);
+          onToast(`已移除技能「${skill.name}」`, 'info');
+          await loadAll();
+        } catch (err) {
+          onToast(extractErrorMessage(err, '移除技能失败'), 'err');
+        }
+      },
+    });
   };
 
   const handleCreateSession = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (readOnly || !sessionForm.title.trim()) return;
+    if (guardReadOnly(readOnly, onToast, '创建跨端会话')) return;
+    if (!sessionForm.title.trim()) return;
     setBusyKey('add-session');
     try {
       const res = await createA2ASession({
@@ -616,43 +668,43 @@ export function A2AOrchestratorSection({
         primaryAgentId: sessionForm.primaryAgentId || state?.leadAgentId || undefined,
         syncedNodes: fleetNodes.filter((n) => n.status !== 'offline').slice(0, 3).map((n) => n.id),
       });
-      onToast(`已创建跨端对齐会话 ${res.session.contextId}`, 'ok');
+      onToast(`已创建跨端同步会话「${res.session.title || res.session.contextId}」`, 'ok');
       setSessionOpen(false);
       setSessionForm({ title: '', syncMode: 'a2a-context-bus', gitBranch: '', primaryAgentId: '' });
       await loadAll();
     } catch (err) {
-      onToast(`创建会话失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '创建会话失败'), 'err');
     } finally {
       setBusyKey('');
     }
   };
 
   const handleSyncSession = async (sess: A2ASessionRecord) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '同步会话')) return;
     setBusyKey(`sync:${sess.id}`);
     try {
       const res = await syncA2ASession(sess.id);
-      onToast(`会话 ${res.session.contextId} 已完成全端同步 (rev.${res.session.revision})`, 'ok');
+      onToast(`会话已完成全端同步（第 ${res.session.revision} 版）`, 'ok');
       await loadAll();
     } catch (err) {
-      onToast(`同步失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '同步会话失败'), 'err');
     } finally {
       setBusyKey('');
     }
   };
 
   const handleHandoffSession = async (sess: A2ASessionRecord) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '交接会话')) return;
     const targetId = handoffDrafts[sess.id];
     if (!targetId || targetId === sess.primaryAgentId) return;
     setBusyKey(`handoff:${sess.id}`);
     try {
       const res = await handoffA2ASession(sess.id, targetId);
       const nextAgent = agents.find((a) => a.id === res.session.primaryAgentId);
-      onToast(`会话 ${res.session.contextId} 已无损接力至 ${nextAgent?.name || targetId}`, 'ok');
+      onToast(`会话已无损交接给 ${nextAgent?.name || targetId}`, 'ok');
       await loadAll();
     } catch (err) {
-      onToast(`接力失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '交接会话失败'), 'err');
     } finally {
       setBusyKey('');
     }
@@ -678,20 +730,20 @@ export function A2AOrchestratorSection({
           asymmetric
           cells={[
             {
-              label: '主 Agent (Lead Harness)',
+              label: '默认主助手',
               meta: `${modeLabel(cfg?.mode)} · ${leadAgent?.harness || '未指定'}`,
-              value: leadAgent ? leadAgent.name : '待选举',
+              value: leadAgent ? leadAgent.name : '待选定',
               ratioPct: onlinePct,
-              sub: `无内置自有 Harness · 主模型 ${cfg?.mainModel || 'gpt-5-codex'} (${cfg?.mainEffort || 'high'})`,
+              sub: `默认主模型 ${cfg?.mainModel || 'gpt-5-codex'}（${cfg?.mainEffort || 'high'}）`,
               tone: leadAgent ? 'ok' : 'warn',
             },
             {
-              label: '纳管外部 Agent',
+              label: '已接入助手',
               value: `${summary.onlineAgents}/${summary.totalAgents}`,
               numeric: { primary: summary.onlineAgents, denominator: summary.totalAgents },
               sub: summary.outdatedAgents
-                ? `${summary.outdatedAgents} 个 Harness 有新版本可升级`
-                : `覆盖 ${summary.nodesWithAgents} 台节点与 DSH 插件`,
+                ? `${summary.outdatedAgents} 个助手有新版本可升级`
+                : `覆盖 ${summary.nodesWithAgents} 台节点与专家插件`,
               tone: summary.outdatedAgents ? 'warn' : 'ok',
             },
             {
@@ -1094,8 +1146,8 @@ export function A2AOrchestratorSection({
       {studioTab === 'agents' && (
         <div className="space-y-6">
           <Panel
-            title="主 Agent (Lead Harness) 选举控制面"
-            description="无内置自有 Harness：可随时将 Codex CLI / Pi / Claude Code / Gemini CLI 等任意节点外部 Harness 切换为主 Agent，并自动重锚定路由拓扑。"
+            title="默认主助手设置"
+            description="可随时将任意节点的 Codex CLI、Pi、Claude Code 或 Gemini CLI 设为默认主助手，路由拓扑将自动重新连接。"
           >
             <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
               <div className="min-w-0 flex-1 space-y-1">
@@ -1917,7 +1969,7 @@ export function A2AOrchestratorSection({
                   onChange={(e) => setRegForm((s) => ({ ...s, setAsLead: e.target.checked }))}
                   className="accent-[var(--accent)]"
                 />
-                <span>接入后立即选举为当前主 Agent (Lead Harness)</span>
+                <span>接入后立即设为默认主助手</span>
               </label>
 
               <div className="pt-3 flex items-center justify-end gap-2">
@@ -1925,7 +1977,7 @@ export function A2AOrchestratorSection({
                   取消
                 </Button>
                 <Button type="submit" variant="primary" size="md" disabled={regBusy || readOnly}>
-                  {regBusy ? '正在接入...' : '注册 A2A Peer'}
+                  {regBusy ? '正在接入...' : '确认接入助手'}
                 </Button>
               </div>
             </form>

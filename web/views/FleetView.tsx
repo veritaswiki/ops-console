@@ -12,7 +12,13 @@ import {
   Send,
   Trash2,
 } from 'lucide-react';
-import type { FleetNode, ProbeCommandItem, ProbesResponse, SnapshotResponse } from '../types';
+import type {
+  FleetNode,
+  ProbeCommandItem,
+  ProbesResponse,
+  SnapshotResponse,
+  ToastHandler,
+} from '../types';
 import {
   copyToClipboard,
   enqueueProbeCommand,
@@ -23,6 +29,7 @@ import {
   submitMobileCheckin,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import {
   latencyTierVar,
   searchFleetNodes,
@@ -83,7 +90,7 @@ export function FleetView({
   onRefreshProbes: () => Promise<void>;
   onOpenNodeMcps?: (nodeId: string) => void;
   onOpenA2A?: () => void;
-  onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast: ToastHandler;
   onConfirm: (modal: ConfirmModalState) => void;
 }) {
   const nodes = snapshot?.fleet?.nodes || [];
@@ -183,37 +190,41 @@ export function FleetView({
     };
   }, [selectedNode?.id, loadNodeCommands]);
 
+  const PROBE_COMMAND_LABELS: Record<
+    'health-check' | 'collect-diag' | 'rotate-heartbeat' | 'mcp-sync',
+    string
+  > = {
+    'health-check': '健康巡检',
+    'collect-diag': '采集诊断信息',
+    'rotate-heartbeat': '刷新心跳周期',
+    'mcp-sync': '同步工具列表',
+  };
+
   const handleEnqueueCommand = async (
     command: 'health-check' | 'collect-diag' | 'rotate-heartbeat' | 'mcp-sync',
   ) => {
     if (!selectedNode) return;
-    if (readOnly) {
-      onToast('只读模式已禁用探针指令下发', 'err');
-      return;
-    }
+    if (guardReadOnly(readOnly, onToast, '下发节点指令')) return;
     setCmdBusy(command);
     try {
       await enqueueProbeCommand(selectedNode.id, command);
-      onToast(`指令 ${command} 已入队，将在节点下次心跳拉取执行`, 'ok');
+      onToast(`已排入「${PROBE_COMMAND_LABELS[command]}」，节点下次心跳时将自动执行`, 'ok');
       await loadNodeCommands(selectedNode.id);
     } catch (err) {
-      onToast(`指令入队失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '指令下发失败'), 'err');
     } finally {
       setCmdBusy(null);
     }
   };
 
   const handleElectNodeHarnessAsLead = async (agentId: string, name: string) => {
-    if (readOnly) {
-      onToast('只读模式已禁用切换主 Agent', 'err');
-      return;
-    }
+    if (guardReadOnly(readOnly, onToast, '切换默认主助手')) return;
     try {
       await setLeadA2AAgent(agentId);
-      onToast(`已将 ${name} 设为当前全网主 Agent (Lead Harness)`, 'ok');
+      onToast(`已将 ${name} 设为默认主助手`, 'ok');
       await onRefresh();
     } catch (err) {
-      onToast(`切换主 Agent 失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '切换主助手失败'), 'err');
     }
   };
 
@@ -273,10 +284,7 @@ export function FleetView({
 
   const handleCheckinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (readOnly) {
-      onToast('只读模式已禁用移动端签到', 'err');
-      return;
-    }
+    if (guardReadOnly(readOnly, onToast, '移动端签到')) return;
     setCheckinBusy(true);
     try {
       await submitMobileCheckin({
@@ -291,7 +299,7 @@ export function FleetView({
       onToast(`终端 ${checkinForm.name} 签到成功`, 'ok');
       await onRefresh();
     } catch (err) {
-      onToast(`签到失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '签到失败'), 'err');
     } finally {
       setCheckinBusy(false);
     }
@@ -299,10 +307,7 @@ export function FleetView({
 
   const handleEnrollSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (readOnly) {
-      onToast('只读模式已禁用探针注册', 'err');
-      return;
-    }
+    if (guardReadOnly(readOnly, onToast, '注册新探针')) return;
     if (!enrollForm.id.trim() || !enrollForm.name.trim()) {
       onToast('请填写探针 ID 与设备名称', 'err');
       return;
@@ -325,13 +330,14 @@ export function FleetView({
       onToast(`探针 ${enrollForm.name} 已注册，请保存一次性令牌`, 'ok');
       await Promise.all([onRefresh(), onRefreshProbes()]);
     } catch (err) {
-      onToast(`注册失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '注册探针失败'), 'err');
     } finally {
       setEnrollBusy(false);
     }
   };
 
   const handleRevokeProbe = (probeId: string, name?: string) => {
+    if (guardReadOnly(readOnly, onToast, '吊销探针令牌')) return;
     onConfirm({
       open: true,
       title: `吊销探针令牌：${name || probeId}`,
@@ -344,7 +350,7 @@ export function FleetView({
           onToast(`已吊销探针 ${name || probeId}`, 'ok');
           await Promise.all([onRefresh(), onRefreshProbes()]);
         } catch (err) {
-          onToast(`吊销失败：${(err as Error).message}`, 'err');
+          onToast(extractErrorMessage(err, '吊销探针失败'), 'err');
         }
       },
     });
@@ -398,16 +404,16 @@ export function FleetView({
             tone: offlineCount > 0 ? 'warn' : 'ok',
           },
           {
-            label: '主动推送探针',
+            label: '在线探针',
             value: String(probedCount),
             numeric: { primary: probedCount },
-            sub: '零开放入站端口 · Push-only 心跳',
+            sub: '设备主动上报心跳，无需开放端口',
           },
           {
             label: '已登记凭证',
             value: String(enrolledList.length),
             numeric: { primary: enrolledList.length },
-            sub: 'SHA-256 令牌摘要存储',
+            sub: '仅保存加密令牌摘要，不存明文',
           },
         ]}
       />
@@ -726,10 +732,10 @@ export function FleetView({
                 <TabsPanel value="harnesses" className="space-y-3">
                   {nodeHarnesses.length === 0 ? (
                     <EmptyState
-                      message="该节点尚未注册外部 A2A Agent Harness。"
+                      message="该节点尚未接入 AI 助手。"
                       action={
                         onOpenA2A
-                          ? { label: '前往接入外部 Harness', onClick: onOpenA2A }
+                          ? { label: '前往接入助手', onClick: onOpenA2A }
                           : undefined
                       }
                     />
@@ -749,7 +755,7 @@ export function FleetView({
                               </div>
                               <div className="flex items-center justify-between gap-2">
                                 <span className="font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums truncate">
-                                  {h.harness} · {isLead ? '主 Agent' : 'Worker'} · {h.skillsCount ?? 0} skills · {(h.boundMcpIds || []).length} MCP
+                                  {h.harness} · {isLead ? '主助手' : '协作者'} · {h.skillsCount ?? 0} 技能 · {(h.boundMcpIds || []).length} 工具
                                 </span>
                                 {!isLead && !readOnly && (
                                   <button
@@ -757,7 +763,7 @@ export function FleetView({
                                     onClick={() => void handleElectNodeHarnessAsLead(h.id, h.name)}
                                     className="font-mono text-[11.5px] text-[var(--accent)] hover:underline cursor-pointer shrink-0"
                                   >
-                                    设为主 Agent
+                                    设为主助手
                                   </button>
                                 )}
                               </div>
@@ -769,7 +775,7 @@ export function FleetView({
                         <div className="pt-2 border-t border-[var(--border-subtle)]">
                           <Button variant="secondary" size="sm" onClick={onOpenA2A}>
                             <ExternalLink className="size-3.5" strokeWidth={1.75} />
-                            打开 A2A 主从调度中心
+                            打开多助手协作中心
                           </Button>
                         </div>
                       )}
@@ -1051,7 +1057,7 @@ export function FleetView({
 
       <Panel
         title="节点接入与探针凭证管理"
-        description="注册零开放入站端口的 Push-only 探针，或通过移动端快速上报位置与电量。"
+        description="添加无需开放入站端口的节点探针，或通过手机快速上报当前位置与电量。"
       >
         <Tabs defaultValue="enroll">
           <TabsList className="ui-tabs-list mb-5">

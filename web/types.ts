@@ -30,6 +30,21 @@ export type ViewId =
 
 export type StatusTone = 'ok' | 'warn' | 'err' | 'muted';
 
+export type ToastTone = 'info' | 'ok' | 'err';
+
+export interface ToastAction {
+  label: string;
+  onClick: () => void | Promise<void>;
+}
+
+export interface ToastOptions {
+  action?: ToastAction;
+  description?: string;
+  duration?: number;
+}
+
+export type ToastHandler = (text: string, tone?: ToastTone, options?: ToastOptions) => void;
+
 export interface MetaResponse {
   appName?: string;
   version?: string;

@@ -60,10 +60,10 @@ export interface ConsoleModule {
 }
 
 export const MODULE_DOMAINS: readonly ModuleDomainConfig[] = [
-  { id: 'agent', title: 'Harness', description: 'Agent 对话与执行、任务看板、分配图谱、GitHub 与 Bot', primary: true },
+  { id: 'agent', title: '智能体', description: 'Agent 对话与执行、任务看板、分配图谱、GitHub 与 Bot', primary: true },
   { id: 'observe', title: '监控与观测', description: '系统总览、节点与探针及告警中心' },
   { id: 'infra', title: '基础设施', description: '受管服务、插件接入、全节点 MCP、记忆引擎与网络' },
-  { id: 'operate', title: '运维与审计', description: '统一日志追踪、定时任务、Runbook 与操作审计' },
+  { id: 'operate', title: '运维与审计', description: '统一日志追踪、定时任务、预案与操作审计' },
 ] as const;
 
 export const loadAlertsView = () => import('../views/AlertsView');
@@ -88,16 +88,16 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     id: 'agents',
     domain: 'agent',
     label: 'Agent',
-    shortDesc: '极简 Agent 对话与执行入口：居中输入框搭配模型/Harness 选择，即刻下发任务',
+    shortDesc: '极简 Agent 对话与执行入口：输入需求并按需选择节点与模型，即刻派发任务',
     chord: 'g',
-    keywords: ['agent', 'agents', 'harness', 'codex', 'claude', 'pi', 'antigravity', '对话', '执行', '调度'],
+    keywords: ['agent', 'agents', 'harness', 'codex', 'claude', 'pi', 'antigravity', '智能体', '对话', '执行', '调度'],
     icon: MessageSquare,
     dataDeps: ['snapshot'],
     eager: true,
     prefetch: loadAgentsView,
     benchmarks: {
       references: ['Codex App', 'Antigravity', 'Claude Code'],
-      migratedCapabilities: ['极简居中输入框与行内模型/Harness 选择', '左侧栏可折叠历史任务线程'],
+      migratedCapabilities: ['极简居中输入框与行内节点/模型选择', '左侧栏可折叠历史任务线程'],
     },
   },
   {
@@ -218,7 +218,7 @@ export const CONSOLE_MODULES: readonly ConsoleModule[] = [
     id: 'alerts',
     domain: 'observe',
     label: '告警中心',
-    shortDesc: '多档静默倒计时、批量 Ack、规则搜索过滤、30 天 SLA 与复盘',
+    shortDesc: '维护静默倒计时、批量确认告警、规则筛选、30 天可用性与复盘',
     chord: 'a',
     keywords: ['alerts', 'sla', 'incident', 'postmortem', '告警', '告警与事件', '事件', '复盘', '规则'],
     icon: Bell,

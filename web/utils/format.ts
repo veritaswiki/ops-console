@@ -226,3 +226,102 @@ export function classifyLatency(latencyMs?: number | null): LatencyScaleInfo | n
   return { tier: 'critical', label: '瓶颈', pct, ms };
 }
 
+/**
+ * Single source of truth for Agent/A2A task lifecycle labels across sidebar,
+ * workspace lanes, kanban cards, and drawers.
+ */
+export function taskStateLabel(state?: string | null): string {
+  switch (String(state || '').toLowerCase()) {
+    case 'submitted':
+    case 'pending':
+    case 'queued':
+      return '排队中';
+    case 'working':
+    case 'running':
+    case 'in_progress':
+      return '执行中';
+    case 'reviewing':
+      return '评审中';
+    case 'completed':
+    case 'done':
+      return '已完成';
+    case 'failed':
+    case 'error':
+      return '执行失败';
+    case 'canceled':
+    case 'cancelled':
+      return '已取消';
+    default:
+      return state ? String(state) : '未知';
+  }
+}
+
+export function taskStateTone(state?: string | null): StatusTone {
+  switch (String(state || '').toLowerCase()) {
+    case 'completed':
+    case 'done':
+      return 'ok';
+    case 'working':
+    case 'running':
+    case 'in_progress':
+    case 'reviewing':
+    case 'submitted':
+    case 'pending':
+    case 'queued':
+      return 'warn';
+    case 'failed':
+    case 'error':
+    case 'canceled':
+    case 'cancelled':
+      return 'err';
+    default:
+      return 'muted';
+  }
+}
+
+export function formatDurationMs(ms?: number | null): string {
+  if (ms == null || !Number.isFinite(Number(ms))) return '-';
+  const value = Math.max(0, Number(ms));
+  if (value < 1000) return `${Math.round(value)}ms`;
+  const sec = value / 1000;
+  if (sec < 60) return `${sec >= 10 ? sec.toFixed(0) : sec.toFixed(1)}s`;
+  const totalSec = Math.round(sec);
+  const mins = Math.floor(totalSec / 60);
+  const remSec = totalSec % 60;
+  if (mins < 60) return remSec > 0 ? `${mins}m ${remSec}s` : `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  return remMins > 0 ? `${hours}h ${remMins}m` : `${hours}h`;
+}
+
+export function formatShortTime(ts?: string | number | null): string {
+  if (!ts) return '-';
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return String(ts);
+  const now = new Date();
+  const sameDay =
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate();
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mi = String(d.getMinutes()).padStart(2, '0');
+  if (sameDay) return `${hh}:${mi}`;
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${mm}-${dd} ${hh}:${mi}`;
+}
+
+export function contextBudgetPercent(used?: number | null, limit?: number | null): number {
+  const u = Number(used);
+  const l = Number(limit);
+  if (!Number.isFinite(u) || !Number.isFinite(l) || l <= 0) return 0;
+  return clampPercent((u / l) * 100);
+}
+
+export function budgetToneClass(pct: number): string {
+  if (pct >= 85) return 'text-[var(--err)]';
+  if (pct >= 65) return 'text-[var(--warn)]';
+  return 'text-[var(--ink-muted)]';
+}
+
+

@@ -25,6 +25,7 @@ import type {
   RunbooksResponse,
   SnapshotResponse,
   TimerItem,
+  ToastHandler,
   UpdateCheckResponse,
   UpdateStatusResponse,
 } from '../types';
@@ -46,6 +47,7 @@ import {
   validateConfigStudio,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import {
   auditEntriesToCsv,
   filterAuditEntries,
@@ -78,9 +80,9 @@ const AUDIT_OUTCOME_OPTIONS = [
 
 const OPS_TABS = [
   { value: 'tasks', label: '巡检与定时任务' },
-  { value: 'runbooks', label: 'Runbook 自愈预案' },
-  { value: 'studio', label: '配置中心与 RBAC' },
-  { value: 'updates', label: '增量更新与热重载' },
+  { value: 'runbooks', label: '自动修复预案' },
+  { value: 'studio', label: '配置与权限' },
+  { value: 'updates', label: '系统更新与热重载' },
 ] as const;
 
 type OpsTab = (typeof OPS_TABS)[number]['value'];
@@ -105,7 +107,7 @@ export function OpsView({
   onTabChange?: (tab: OpsTab) => void;
   onRefresh: () => Promise<void>;
   onRefreshOps: () => Promise<void>;
-  onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast: ToastHandler;
   onConfirm: (modal: ConfirmModalState) => void;
 }) {
   const normalizeOpsTab = (raw?: string | null): OpsTab =>
@@ -245,29 +247,29 @@ export function OpsView({
   };
 
   const handleHotReload = async (scopes: HotReloadScope[], label: string) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, label)) return;
     setUpdateBusy(`reload:${scopes.join(',')}`);
     try {
       const res = await triggerHotReload({ scopes, force: scopes.includes('assets'), reason: 'manual' });
       await Promise.all([loadUpdateStatus(), onRefresh()]);
-      onToast(`${label}完成 (${res.durationMs}ms · rev ${res.assetsRevision.slice(0, 8)})`, 'ok');
+      onToast(`${label}完成（耗时 ${res.durationMs}ms）`, 'ok');
     } catch (err) {
-      onToast(err instanceof Error ? err.message : `${label}失败`, 'err');
+      onToast(extractErrorMessage(err, `${label}失败`), 'err');
     } finally {
       setUpdateBusy(null);
     }
   };
 
   const handleApplyUpdate = () => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '执行系统更新')) return;
     const strategyLabel = updateCheck?.plan
       ? UPDATE_STRATEGY_META[updateCheck.plan.strategy].label
-      : '增量拉取与热重载';
+      : '增量拉取并热更新';
     onConfirm({
       open: true,
-      title: '确认执行增量更新',
-      description: `将从 ${updateStatus?.remote || 'origin'}/${updateStatus?.branch || 'main'} 以 fast-forward 增量拉取并按分层策略「${strategyLabel}」执行热更新。${autoRestartOpt ? '若涉及后端核心变更将自动安排平滑重启。' : ''}`,
-      confirmLabel: '确认增量更新',
+      title: '确认更新系统版本？',
+      description: `将从远端分支拉取最新代码并按「${strategyLabel}」方式生效。${autoRestartOpt ? '若包含后端变更，系统会自动平滑重启。' : ''}`,
+      confirmLabel: '确认更新',
       danger: Boolean(updateCheck?.plan?.requiresRestart),
       onConfirm: async () => {
         setUpdateBusy('apply');
@@ -287,12 +289,12 @@ export function OpsView({
             res.status === 'up-to-date'
               ? '当前已是最新版本'
               : res.restartRequired
-                ? '增量拉取完成，后端核心变更待平滑重启生效'
-                : '增量更新已零停机热生效',
+                ? '更新已拉取，重启后端服务后生效'
+                : '系统更新已完成并无感生效',
             'ok',
           );
         } catch (err) {
-          onToast(err instanceof Error ? err.message : '增量更新失败', 'err');
+          onToast(extractErrorMessage(err, '系统更新失败'), 'err');
         } finally {
           setUpdateBusy(null);
         }
@@ -301,13 +303,16 @@ export function OpsView({
   };
 
   const handleRollbackCommit = (commit: string) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '回滚系统版本')) return;
+    const shortCommit = commit.slice(0, 8);
     onConfirm({
       open: true,
-      title: `确认回滚至 ${commit.slice(0, 8)}`,
-      description: '将执行 git reset --hard 回滚到历史提交，并立即热重载静态资源、插件与配置。',
+      title: `回滚系统至版本 ${shortCommit}？`,
+      description: '回滚会将当前代码强制重置为该历史版本并重载前端与配置，请确认该版本稳定可用。',
       confirmLabel: '确认回滚',
       danger: true,
+      requireToken: shortCommit,
+      requireTokenLabel: '为防误操作，请输入目标版本号以确认回滚',
       onConfirm: async () => {
         setUpdateBusy(`rollback:${commit}`);
         try {
@@ -324,12 +329,12 @@ export function OpsView({
           await Promise.all([loadUpdateStatus(), onRefresh()]);
           onToast(
             res.restartRequired
-              ? `已回滚至 ${res.toCommit.slice(0, 8)}，待平滑重启后端`
-              : `已回滚至 ${res.toCommit.slice(0, 8)} 并完成热重载`,
+              ? `已回滚至 ${res.toCommit.slice(0, 8)}，重启后端后完全生效`
+              : `已回滚至 ${res.toCommit.slice(0, 8)} 并自动生效`,
             'ok',
           );
         } catch (err) {
-          onToast(err instanceof Error ? err.message : '回滚失败', 'err');
+          onToast(extractErrorMessage(err, '版本回滚失败'), 'err');
         } finally {
           setUpdateBusy(null);
         }
@@ -338,14 +343,14 @@ export function OpsView({
   };
 
   const handleGracefulRestart = () => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '平滑重启后端')) return;
     onConfirm({
       open: true,
-      title: '确认平滑重启控制面后端',
+      title: '确认平滑重启控制台服务？',
       description: updateStatus?.supervised
-        ? '当前运行于 supervisor 模式，进程关闭后会由守护父进程自动拉起新版本，浏览器将自动重连。'
-        : '将向当前进程发起平滑退出；请确认已由 systemd (Restart=always) 或守护进程托管。',
-      confirmLabel: '立即平滑重启',
+        ? '当前受守护进程托管，关闭后会自动拉起新版本，页面将在几秒内自动恢复连接。'
+        : '将向当前服务发起平滑重启；请确认系统已配置自动拉起（如 systemd 托管）。',
+      confirmLabel: '立即重启',
       danger: true,
       onConfirm: async () => {
         setUpdateBusy('restart');
@@ -356,9 +361,9 @@ export function OpsView({
             confirmToken = issued.confirmToken;
           }
           await triggerGracefulRestart({ confirmToken, reason: 'manual-ops-view' });
-          onToast('平滑重启已安排，等待后端重新就绪…', 'info');
+          onToast('已触发平滑重启，等待服务重新就绪…', 'info');
         } catch (err) {
-          onToast(err instanceof Error ? err.message : '触发平滑重启失败', 'err');
+          onToast(extractErrorMessage(err, '触发平滑重启失败'), 'err');
         } finally {
           setUpdateBusy(null);
         }
@@ -375,76 +380,90 @@ export function OpsView({
     }
   };
 
+  const executeOpsAction = async (action: 'health-check' | 'backup', label: string) => {
+    setOpsBusy(action);
+    try {
+      const res = await runOpsAction(action);
+      setOpsOutput(res.output || res.message || `${label}已完成。`);
+      onToast(`${label}已完成`, 'ok');
+      await Promise.all([onRefresh(), onRefreshOps()]);
+    } catch (err) {
+      onToast(extractErrorMessage(err, `${label}失败`), 'err');
+    } finally {
+      setOpsBusy(null);
+    }
+  };
+
   const handleRunOps = (action: 'health-check' | 'backup') => {
-    if (readOnly) {
-      onToast('只读模式已禁用运维命令执行', 'err');
+    const label = action === 'health-check' ? '全栈健康巡检' : '配置与状态快照备份';
+    if (guardReadOnly(readOnly, onToast, `执行${label}`)) {
       return;
     }
-    const label = action === 'health-check' ? '全栈健康巡检' : '配置与状态快照备份';
+    // Tier 0: health-check is read-only diagnostic — run immediately without modal interruption
+    if (action === 'health-check') {
+      void executeOpsAction('health-check', label);
+      return;
+    }
     onConfirm({
       open: true,
-      title: `执行运维任务：${label}`,
-      description: `确认在控制面主机执行受限白名单任务「${label}」？执行记录将记入审计日志。`,
-      confirmLabel: '确认执行',
-      onConfirm: async () => {
-        setOpsBusy(action);
-        try {
-          const res = await runOpsAction(action);
-          setOpsOutput(res.output || res.message || `${label} 已完成。`);
-          onToast(`${label} 执行完成`, 'ok');
-          await Promise.all([onRefresh(), onRefreshOps()]);
-        } catch (err) {
-          onToast(`${label} 失败：${(err as Error).message}`, 'err');
-        } finally {
-          setOpsBusy(null);
-        }
-      },
+      title: `执行${label}？`,
+      description: '将生成一份当前配置与运行状态的备份快照，操作记录会写入审计日志。',
+      confirmLabel: '开始备份',
+      onConfirm: () => executeOpsAction('backup', label),
     });
   };
 
   const handleTimerAction = (timer: TimerItem, action: string) => {
     if (!action) return;
-    if (readOnly) {
-      onToast('只读模式已禁用定时器操作', 'err');
+    if (guardReadOnly(readOnly, onToast, '操作定时任务')) {
       return;
     }
+    const timerActionLabel =
+      action === 'start'
+        ? '立即运行'
+        : action === 'stop'
+          ? '停止'
+          : action === 'enable'
+            ? '启用'
+            : action === 'disable'
+              ? '停用'
+              : action;
     onConfirm({
       open: true,
-      title: `定时器操作：${timer.name || timer.unit}`,
-      description: `确认对定时任务 ${timer.unit} 执行 ${action} 操作？`,
-      confirmLabel: '确认执行',
+      title: `${timerActionLabel}定时任务：${timer.name || timer.unit}`,
+      description: `确认对定时任务「${timer.name || timer.unit}」执行${timerActionLabel}操作？`,
+      confirmLabel: `确认${timerActionLabel}`,
       danger: action === 'stop' || action === 'disable',
       onConfirm: async () => {
         try {
           await executeTimerAction(timer.unit, action);
-          onToast(`定时器 ${timer.unit} 已执行 ${action}`, 'ok');
+          onToast(`定时任务「${timer.name || timer.unit}」已${timerActionLabel}`, 'ok');
           await Promise.all([onRefresh(), onRefreshOps()]);
         } catch (err) {
-          onToast(`操作失败：${(err as Error).message}`, 'err');
+          onToast(extractErrorMessage(err, '操作定时任务失败'), 'err');
         }
       },
     });
   };
 
   const handleTriggerRunbook = (rbId: string, rbName: string) => {
-    if (readOnly) {
-      onToast('只读模式已禁用 Runbook 执行', 'err');
+    if (guardReadOnly(readOnly, onToast, '执行自动修复预案')) {
       return;
     }
     onConfirm({
       open: true,
-      title: `执行 Runbook：${rbName}`,
-      description: '将按编排顺序依次执行白名单诊断与恢复动作，受每小时自动熔断次数约束，并记录完整审计轨迹。',
-      confirmLabel: '确认执行预案',
+      title: `执行预案：${rbName}`,
+      description: '将按顺序运行内置诊断与恢复步骤，受安全频率上限保护并全程记录审计日志。',
+      confirmLabel: '开始执行',
       onConfirm: async () => {
         setRunningRbId(rbId);
         try {
           const res = await runRunbook(rbId);
           setLatestExecution(res.run);
-          onToast(`Runbook「${rbName}」执行${res.run.ok ? '成功' : '部分异常'}`, res.run.ok ? 'ok' : 'err');
+          onToast(`预案「${rbName}」执行${res.run.ok ? '成功' : '部分异常'}`, res.run.ok ? 'ok' : 'err');
           await Promise.all([loadRunbooks(), onRefreshOps(), onRefresh()]);
         } catch (err) {
-          onToast(`Runbook 执行失败：${(err as Error).message}`, 'err');
+          onToast(extractErrorMessage(err, '执行预案失败'), 'err');
         } finally {
           setRunningRbId(null);
         }

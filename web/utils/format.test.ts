@@ -1,17 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
+  budgetToneClass,
   clampPercent,
   classifyLatency,
+  contextBudgetPercent,
   countLogLevels,
   filterFleetNodes,
   filterServices,
   formatBytes,
   formatCompactNumber,
+  formatDurationMs,
   formatInteger,
+  formatShortTime,
   formatUptime,
   statusLabel,
   statusTone,
+  taskStateLabel,
+  taskStateTone,
 } from './format.ts';
 import {
   buildFullGraph,
@@ -236,5 +242,35 @@ test('force-directed auto-layout by degree and health avoids overlaps and priori
   const okNode = healthLayout.nodes.find((n) => n.id === 'ok-1')!;
   assert.ok(errNode.y < okNode.y, 'failed node should be positioned above healthy nodes');
 });
+
+test('taskStateLabel, taskStateTone, formatDurationMs, formatShortTime, and contextBudget helpers stay consistent', () => {
+  assert.equal(taskStateLabel('submitted'), '排队中');
+  assert.equal(taskStateLabel('working'), '执行中');
+  assert.equal(taskStateLabel('reviewing'), '评审中');
+  assert.equal(taskStateLabel('completed'), '已完成');
+  assert.equal(taskStateLabel('failed'), '执行失败');
+  assert.equal(taskStateLabel('canceled'), '已取消');
+  assert.equal(taskStateTone('completed'), 'ok');
+  assert.equal(taskStateTone('working'), 'warn');
+  assert.equal(taskStateTone('reviewing'), 'warn');
+  assert.equal(taskStateTone('failed'), 'err');
+
+  assert.equal(formatDurationMs(null), '-');
+  assert.equal(formatDurationMs(240), '240ms');
+  assert.equal(formatDurationMs(2450), '2.5s');
+  assert.equal(formatDurationMs(75_000), '1m 15s');
+  assert.equal(formatDurationMs(3_900_000), '1h 5m');
+
+  assert.equal(formatShortTime(null), '-');
+  assert.match(formatShortTime('2025-01-02T03:04:05.000Z'), /^\d{2}-\d{2} \d{2}:\d{2}$/);
+
+  assert.equal(contextBudgetPercent(6500, 10000), 65);
+  assert.equal(contextBudgetPercent(12000, 10000), 100);
+  assert.equal(contextBudgetPercent(100, 0), 0);
+  assert.equal(budgetToneClass(50), 'text-[var(--ink-muted)]');
+  assert.equal(budgetToneClass(70), 'text-[var(--warn)]');
+  assert.equal(budgetToneClass(90), 'text-[var(--err)]');
+});
+
 
 
