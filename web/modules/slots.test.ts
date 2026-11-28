@@ -34,7 +34,7 @@ test('UI slot registries maintain unique IDs, deterministic ordering, and typed 
   assert.equal(sectionIds.size, SETTINGS_SECTION_SLOTS.length);
   assert.deepEqual(
     SETTINGS_SECTION_SLOTS.map((slot) => slot.id),
-    ['general', 'multi-device', 'orchestration', 'governance', 'gateway'],
+    ['general', 'multi-device', 'orchestration', 'governance', 'gateway', 'cache'],
   );
   assert.ok(SETTINGS_SECTION_SLOTS.every((slot) => slot.kind === 'settings-section'));
 

@@ -236,6 +236,7 @@ export function auditEntriesToCsv(entries: AuditEntry[]): string {
 
 export interface OverviewPanelPrefs {
   metrics: boolean;
+  cache: boolean;
   graph: boolean;
   connectors: boolean;
   storageEvents: boolean;
@@ -243,6 +244,7 @@ export interface OverviewPanelPrefs {
 
 export const DEFAULT_OVERVIEW_PREFS: OverviewPanelPrefs = {
   metrics: true,
+  cache: true,
   graph: true,
   connectors: true,
   storageEvents: true,
@@ -254,6 +256,7 @@ export function parseOverviewPrefs(raw: string | null | undefined): OverviewPane
     const parsed = JSON.parse(raw) as Partial<OverviewPanelPrefs>;
     return {
       metrics: typeof parsed.metrics === 'boolean' ? parsed.metrics : true,
+      cache: typeof parsed.cache === 'boolean' ? parsed.cache : true,
       graph: typeof parsed.graph === 'boolean' ? parsed.graph : true,
       connectors: typeof parsed.connectors === 'boolean' ? parsed.connectors : true,
       storageEvents: typeof parsed.storageEvents === 'boolean' ? parsed.storageEvents : true,

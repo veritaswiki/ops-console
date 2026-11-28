@@ -339,6 +339,7 @@
       "webUrl": "http://127.0.0.1:3430",
       "cliBin": "magpie",
       "configHome": "",
+      "usageFile": "",
       "addr": "127.0.0.1:3426"
     },
     "nmem": {
@@ -513,6 +514,20 @@
     "watchDebounceMs": 500,
     "autoCheckIntervalSec": 0,
     "allowSelfRestart": true
+  },
+  "cacheMonitor": {
+    "enabled": true,
+    "advisorEnabled": true,
+    "decisionModel": "auto/deepseek-v4.1-flash",
+    "thresholdPct": 90,
+    "dropDeltaPct": 15,
+    "windowMinutes": 60,
+    "minSamples": 5,
+    "pollIntervalSec": 60,
+    "analysisIntervalMinutes": 30,
+    "cooldownMinutes": 15,
+    "maxCallsPerHour": 12,
+    "dailyTokenBudget": 120000
   },
   "agentMatchers": [
     {

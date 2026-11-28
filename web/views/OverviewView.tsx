@@ -1,6 +1,14 @@
 import React from 'react';
 import { Check, RotateCcw, SlidersHorizontal } from 'lucide-react';
 import type { IncidentItem, SnapshotResponse, StatusTone } from '../types';
+import type { CacheMonitorStatusResponse } from '../types';
+import { fetchCacheMonitorStatus } from '../api';
+import {
+  classifyCacheHealth,
+  extractDriftClues,
+  formatCacheHitPct,
+  sortCacheBuckets,
+} from '../lib/cache-monitor';
 import { cn, FOCUS_RING } from '../lib/cn';
 import {
   DEFAULT_OVERVIEW_PREFS,
@@ -31,6 +39,7 @@ const OVERVIEW_PREFS_KEY = 'ops-console-overview-prefs-v1';
 
 const PANEL_TOGGLE_ITEMS: ReadonlyArray<{ key: keyof OverviewPanelPrefs; label: string }> = [
   { key: 'metrics', label: '历史指标趋势' },
+  { key: 'cache', label: '缓存命中健康' },
   { key: 'graph', label: '架构依赖图谱' },
   { key: 'connectors', label: '插件与连接器' },
   { key: 'storageEvents', label: '存储与事件' },
@@ -59,15 +68,19 @@ export function OverviewView({
   onOpenLogs,
   onSelectAgentCategory,
   onOpenPlugins,
+  onOpenCacheMonitor,
 }: {
   snapshot: SnapshotResponse | null;
   incidents?: IncidentItem[];
   onOpenLogs: (unit: string) => void;
   onSelectAgentCategory: (category: string) => void;
   onOpenPlugins?: () => void;
+  onOpenCacheMonitor?: () => void;
 }) {
   const [graphFilter, setGraphFilter] = React.useState<GraphFilter>('all');
   const [customizeOpen, setCustomizeOpen] = React.useState(false);
+  const [cacheStatus, setCacheStatus] = React.useState<CacheMonitorStatusResponse | null>(null);
+  const [cacheError, setCacheError] = React.useState(false);
   const [panelPrefs, setPanelPrefs] = React.useState<OverviewPanelPrefs>(() => {
     try {
       return parseOverviewPrefs(window.localStorage.getItem(OVERVIEW_PREFS_KEY));
@@ -98,6 +111,25 @@ export function OverviewView({
   };
 
   const hiddenPanelsCount = PANEL_TOGGLE_ITEMS.filter((p) => !panelPrefs[p.key]).length;
+
+  React.useEffect(() => {
+    if (!panelPrefs.cache) return;
+    const controller = new AbortController();
+    setCacheError(false);
+    fetchCacheMonitorStatus(controller.signal)
+      .then((res) => {
+        if (!controller.signal.aborted) setCacheStatus(res);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setCacheError(true);
+      });
+    return () => controller.abort();
+  }, [panelPrefs.cache]);
+
+  const topCacheBuckets = React.useMemo(
+    () => sortCacheBuckets(cacheStatus?.buckets || [], 'anomaly').slice(0, 5),
+    [cacheStatus?.buckets],
+  );
 
   const host = snapshot?.host;
   const services = snapshot?.services?.items || [];
@@ -283,7 +315,10 @@ export function OverviewView({
           data-testid="overview-customize-btn"
         >
           <SlidersHorizontal className="size-3.5 text-[var(--ink-muted)]" strokeWidth={1.75} />
-          自定义面板{hiddenPanelsCount > 0 ? ` (${4 - hiddenPanelsCount}/4)` : ''}
+          自定义面板
+          {hiddenPanelsCount > 0
+            ? ` (${PANEL_TOGGLE_ITEMS.length - hiddenPanelsCount}/${PANEL_TOGGLE_ITEMS.length})`
+            : ''}
         </Button>
       }
     >
@@ -395,6 +430,135 @@ export function OverviewView({
         >
           <MetricsChart />
         </React.Suspense>
+      )}
+
+      {panelPrefs.cache && (
+        <Panel
+          title="运行时缓存命中健康"
+          description={
+            cacheStatus
+              ? `全网命中率 ${formatCacheHitPct(cacheStatus.summary.overallHitPct)} · 异常桶 ${cacheStatus.summary.anomalyCount} · 告警阈值 ${cacheStatus.config.thresholdPct}% · 远端节点 ${cacheStatus.summary.remoteNodeCount}`
+              : '实时聚合本机与远端探针的 Agent × 模型缓存命中率，异常桶支持一键下钻决策归因。'
+          }
+          actions={
+            onOpenCacheMonitor ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={onOpenCacheMonitor}
+                data-testid="overview-open-cache-monitor-btn"
+              >
+                监控与归因设置
+              </Button>
+            ) : undefined
+          }
+          bodyClassName="p-0"
+        >
+          <div data-testid="overview-cache-panel">
+            {!cacheStatus ? (
+              cacheError ? (
+                <EmptyState
+                  message="暂未获取到运行时缓存监控数据，可前往设置页检查监控状态。"
+                  action={
+                    onOpenCacheMonitor
+                      ? { label: '打开缓存监控设置', onClick: onOpenCacheMonitor }
+                      : undefined
+                  }
+                />
+              ) : (
+                <div className="p-5">
+                  <WidgetSkeleton heightClass="h-[88px]" label="正在读取缓存命中率汇总" />
+                </div>
+              )
+            ) : topCacheBuckets.length === 0 ? (
+              <EmptyState
+                message="当前窗口暂无 Agent × 模型缓存样本，Magpie 产生带缓存统计的调用后将自动呈现。"
+                action={
+                  onOpenCacheMonitor
+                    ? { label: '配置监控与阈值', onClick: onOpenCacheMonitor }
+                    : undefined
+                }
+              />
+            ) : (
+              <div>
+                {cacheStatus.recentDiagnoses[0] && (
+                  <div className="px-5 sm:px-6 py-2.5 border-b border-[var(--border-subtle)] bg-[var(--surface-subtle)]/55 flex flex-wrap items-center justify-between gap-2 text-[12.5px]">
+                    <div className="min-w-0 flex items-center gap-2">
+                      <StatusIndicator
+                        status={
+                          cacheStatus.recentDiagnoses[0].severity === 'critical'
+                            ? 'critical'
+                            : cacheStatus.recentDiagnoses[0].severity === 'warn'
+                              ? 'warn'
+                              : 'healthy'
+                        }
+                        label={cacheStatus.recentDiagnoses[0].mode === 'llm' ? '最新模型归因' : '最新规则归因'}
+                      />
+                      <span className="text-[var(--ink)] truncate">
+                        {cacheStatus.recentDiagnoses[0].summary}
+                      </span>
+                    </div>
+                    <span className="font-mono text-[11.5px] text-[var(--ink-subtle)]">
+                      {formatDateTime(cacheStatus.recentDiagnoses[0].createdAt)}
+                    </span>
+                  </div>
+                )}
+                <div className="divide-y divide-[var(--border-subtle)]">
+                  {topCacheBuckets.map((bucket) => {
+                    const health = classifyCacheHealth(
+                      bucket.cacheHitPct,
+                      cacheStatus.config.thresholdPct,
+                      bucket.requests,
+                      cacheStatus.config.minSamples,
+                    );
+                    const cacheBadgeStatus =
+                      health === 'critical'
+                        ? 'critical'
+                        : health === 'warn'
+                          ? 'warn'
+                          : health === 'healthy'
+                            ? 'healthy'
+                            : 'standby';
+                    const clues = extractDriftClues(bucket).slice(0, 2);
+                    return (
+                      <div
+                        key={bucket.key}
+                        className="px-5 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3 text-[13px]"
+                      >
+                        <div className="min-w-0 flex items-center gap-2">
+                          <span className="px-1.5 py-0.5 rounded bg-[var(--surface-subtle)] border border-[var(--border-subtle)] font-mono text-[11px] text-[var(--ink-muted)]">
+                            {bucket.nodeId}
+                          </span>
+                          <span className="font-medium text-[var(--ink)]">{bucket.agent}</span>
+                          <span className="font-mono text-[12px] text-[var(--ink-muted)] truncate">
+                            {bucket.model}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-3">
+                          {clues.map((clue) => (
+                            <span
+                              key={clue.key}
+                              className="text-[11.5px] px-2 py-0.5 rounded bg-[var(--warn)]/10 text-[var(--warn)]"
+                            >
+                              {clue.label} ×{clue.count}
+                            </span>
+                          ))}
+                          <span className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums">
+                            {formatCompactNumber(bucket.requests)} req
+                          </span>
+                          <StatusIndicator
+                            status={cacheBadgeStatus}
+                            label={formatCacheHitPct(bucket.cacheHitPct)}
+                          />
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+        </Panel>
       )}
 
       {panelPrefs.graph && (

@@ -1637,6 +1637,7 @@ export function App() {
                       onOpenLogs={handleOpenLogs}
                       onSelectAgentCategory={handleSelectAgentCategory}
                       onOpenPlugins={() => handleSelectView('plugins')}
+                      onOpenCacheMonitor={() => handleSelectView('agent-settings', 'cache')}
                     />
                   )}
                   {view === 'alerts' && (
@@ -1760,6 +1761,8 @@ export function App() {
                       readOnly={readOnly}
                       theme={theme}
                       onToggleTheme={toggleTheme}
+                      activeTab={viewSubTabs['agent-settings']}
+                      onTabChange={(next) => setViewSubTab('agent-settings', next)}
                       selectedCategory={agentCategory}
                       selectedPid={agentPid}
                       onSelectCategory={(cat) => {

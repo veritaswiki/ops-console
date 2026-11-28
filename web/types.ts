@@ -797,6 +797,25 @@ export interface FleetNode {
     carrier?: string;
   };
   tags?: string[];
+  cache?: {
+    collectedAt?: string | null;
+    windowMinutes?: number;
+    requests?: number;
+    tokensIn?: number;
+    tokensOut?: number;
+    cacheRead?: number;
+    cacheWrite?: number;
+    cacheHitPct?: number | null;
+    avgTtftMs?: number;
+    buckets?: Array<{
+      agent: string;
+      model: string;
+      requests: number;
+      cacheHitPct: number | null;
+      dropPct?: number;
+      avgTtftMs?: number;
+    }>;
+  } | null;
   services?: Array<{ name: string; status: string; unit?: string; role?: string; memoryMb?: number | null }>;
   watchedServices?: Array<{ name: string; status: string; unit?: string; role?: string; memoryMb?: number | null }>;
   mcps?: Array<{
@@ -1152,6 +1171,7 @@ export interface AlertsStateResponse {
 export interface GatewayTelemetryResponse {
   ok?: boolean;
   window: string;
+  source?: string;
   summary: {
     totalRequests: number;
     totalTokens: number;
@@ -1168,6 +1188,7 @@ export interface GatewayTelemetryResponse {
     tokensK: number;
     avgTtftMs: number;
     errorRatePct: number;
+    cacheHitPct?: number | null;
     costUsd: number;
     circuitState: string;
   }>;
@@ -2935,6 +2956,204 @@ export interface EvolutionProposalActionResponse {
   proposal: EvolutionProposal;
   reload?: HotReloadResponse | null;
   update?: UpdateApplyResponse | null;
+}
+
+export interface CacheMonitorConfig {
+  enabled: boolean;
+  advisorEnabled: boolean;
+  decisionModel: string;
+  thresholdPct: number;
+  dropDeltaPct: number;
+  windowMinutes: number;
+  minSamples: number;
+  pollIntervalSec: number;
+  analysisIntervalMinutes: number;
+  cooldownMinutes: number;
+  maxCallsPerHour: number;
+  dailyTokenBudget: number;
+}
+
+export interface CacheMonitorBucket {
+  key: string;
+  nodeId: string;
+  source: 'local' | 'probe';
+  agent: string;
+  model: string;
+  requests: number;
+  errorCount: number;
+  errorRatePct: number;
+  tokensIn: number;
+  tokensOut: number;
+  cacheRead: number;
+  cacheWrite: number;
+  totalTokens: number;
+  cacheHitPct: number | null;
+  baselineHitPct: number | null;
+  recentHitPct: number | null;
+  dropPct: number;
+  avgTtftMs: number;
+  p95LatencyMs: number;
+  systemDriftCount: number;
+  systemDeltaBytes: number;
+  toolsDriftCount: number;
+  toolsDeltaBytes: number;
+  routeSwitchCount: number;
+  epSwitchCount: number;
+  longGapCount: number;
+  avgSessionGapSec: number;
+  uniqueServedModels: string[];
+  uniqueProviders: string[];
+  endpoints: string[];
+  anomalyType: 'sustained_low' | 'sudden_drop' | 'sudden_drop_and_low' | null;
+  anomalySeverity: 'warn' | 'critical' | null;
+  lastSeenAt: string;
+}
+
+export interface CacheMonitorAnomaly {
+  key: string;
+  nodeId: string;
+  agent: string;
+  model: string;
+  anomalyType: 'sustained_low' | 'sudden_drop' | 'sudden_drop_and_low';
+  severity: 'warn' | 'critical';
+  cacheHitPct: number | null;
+  baselineHitPct: number | null;
+  recentHitPct: number | null;
+  dropPct: number;
+  thresholdPct: number;
+  requests: number;
+  driftSignals?: {
+    systemDriftCount: number;
+    systemDeltaBytes: number;
+    toolsDriftCount: number;
+    toolsDeltaBytes: number;
+    routeSwitchCount: number;
+    epSwitchCount: number;
+    longGapCount: number;
+  };
+  detectedAt: string;
+}
+
+export interface CacheMonitorRemoteNodeSummary {
+  nodeId: string;
+  label: string;
+  requests: number;
+  cacheHitPct: number | null;
+  avgTtftMs: number;
+  updatedAt: string | null;
+}
+
+export interface DecisionAdvisorAction {
+  title: string;
+  commandHint?: string;
+  risk: 'low' | 'medium' | 'high';
+  requiresApproval: boolean;
+}
+
+export interface DecisionAdvisorRootCause {
+  category: string;
+  confidence: number;
+  evidence: string;
+  explanation: string;
+}
+
+export interface DecisionAdvisorChartAnnotation {
+  label: string;
+  severity: 'info' | 'warn' | 'critical';
+  detail: string;
+}
+
+export interface DecisionAdvisorDiagnosis {
+  id: string;
+  domain: string;
+  key: string;
+  trigger: string;
+  mode: 'llm' | 'deterministic';
+  model: string | null;
+  configuredModel: string;
+  createdAt: string;
+  createdMs: number;
+  llmSkippedReason: string | null;
+  llmError: string | null;
+  latencyMs: number;
+  severity: 'info' | 'warn' | 'critical';
+  summary: string;
+  rootCauses: DecisionAdvisorRootCause[];
+  affectedScopes: string[];
+  chartAnnotation: DecisionAdvisorChartAnnotation | null;
+  suggestedActions: DecisionAdvisorAction[];
+  confidence: number;
+  inputTokens: number;
+  outputTokens: number;
+}
+
+export interface DecisionAdvisorBudget {
+  callsLastHour: number;
+  maxCallsPerHour: number;
+  callsRemaining: number;
+  tokensToday: number;
+  dailyTokenBudget: number;
+  tokensRemaining: number;
+  exhausted: boolean;
+  day: string;
+}
+
+export interface DecisionAdvisorStatus {
+  ok?: boolean;
+  enabled: boolean;
+  config: {
+    enabled: boolean;
+    model: string;
+    maxCallsPerHour: number;
+    dailyTokenBudget: number;
+    cooldownMinutes: number;
+    timeoutMs: number;
+  };
+  domains: Array<{ id: string; description: string }>;
+  budget: DecisionAdvisorBudget;
+  maxInputTokens: number;
+  maxInputChars: number;
+  activeCooldowns: Array<{ key: string; severity: string; remainingSec: number }>;
+  diagnosisCount: number;
+  latestDiagnosisAt: string | null;
+}
+
+export interface CacheMonitorStatusResponse {
+  ok?: boolean;
+  collectedAt: string;
+  config: CacheMonitorConfig;
+  source: {
+    available: boolean;
+    fileSizeBytes: number;
+    linesRead: number;
+    inMemoryRecords: number;
+    parseErrors: number;
+    lastReadAt: string | null;
+  };
+  summary: {
+    totalRequests: number;
+    totalTokensIn: number;
+    totalCacheRead: number;
+    totalCacheWrite: number;
+    overallHitPct: number | null;
+    bucketCount: number;
+    anomalyCount: number;
+    criticalCount: number;
+    remoteNodeCount: number;
+  };
+  buckets: CacheMonitorBucket[];
+  anomalies: CacheMonitorAnomaly[];
+  remoteNodes: CacheMonitorRemoteNodeSummary[];
+  hourly: GatewayTelemetryResponse['hourly'];
+  advisor: DecisionAdvisorStatus | null;
+  recentDiagnoses: DecisionAdvisorDiagnosis[];
+}
+
+export interface CacheMonitorAnalyzeResponse {
+  ok?: boolean;
+  skipped?: boolean;
+  skipReason?: string | null;
+  diagnosis?: DecisionAdvisorDiagnosis | null;
 }
 
 
