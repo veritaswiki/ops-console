@@ -23,6 +23,7 @@ import type {
   A2ASessionRecord,
   A2ASkillCatalogItem,
   A2AStateResponse,
+  DynamicModelCatalogResponse,
   FleetMcpServer,
   OrchestrationMode,
   ReasoningEffort,
@@ -39,6 +40,7 @@ import {
   dispatchA2ATask,
   fetchA2AState,
   fetchMcps,
+  fetchModelCatalog,
   handoffA2ASession,
   registerA2AAgent,
   saveA2ATopologyPositions,
@@ -52,11 +54,16 @@ import {
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
 import { countBtwAttention } from '../lib/btw';
+import {
+  getModelsForNodeAgent,
+  getOnlineNodeOptions,
+} from '../lib/model-catalog';
 import { formatRelativeAge } from '../utils/format';
 import { AgentBtwDrawer } from './AgentBtwDrawer';
 import { EFFORT_OPTIONS, MODEL_PRESETS } from './AgentOrchestrationCanvas';
 import {
   Button,
+  CommandCombobox,
   EmptyState,
   inputBaseClass,
   KpiStrip,
@@ -64,6 +71,7 @@ import {
   SegmentedFilter,
   StatusIndicator,
   WidgetSkeleton,
+  type CommandComboboxOption,
   type ConfirmModalState,
 } from './ui';
 
@@ -156,18 +164,23 @@ export function A2AOrchestratorSection({
   onSnapshotChanged,
   onToast,
   onConfirm,
+  modelCatalog = null,
+  catalogRevision = 0,
 }: {
   snapshot: SnapshotResponse | null;
   readOnly: boolean;
   onSnapshotChanged: () => void;
   onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
   onConfirm: (modal: ConfirmModalState) => void;
+  modelCatalog?: DynamicModelCatalogResponse | null;
+  catalogRevision?: number;
 }) {
   const fleetNodes = snapshot?.fleet?.nodes || [];
 
   const [studioTab, setStudioTab] = React.useState<StudioTab>('canvas');
   const [state, setState] = React.useState<A2AStateResponse | null>(null);
   const [fleetMcps, setFleetMcps] = React.useState<FleetMcpServer[]>([]);
+  const [internalCatalog, setInternalCatalog] = React.useState<DynamicModelCatalogResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [busyKey, setBusyKey] = React.useState('');
   const [selectedLeadDraft, setSelectedLeadDraft] = React.useState('');
@@ -220,6 +233,48 @@ export function A2AOrchestratorSection({
     gitBranch: '',
     primaryAgentId: '',
   });
+
+  const effectiveCatalog = modelCatalog ?? internalCatalog;
+
+  React.useEffect(() => {
+    if (modelCatalog) return;
+    const controller = new AbortController();
+    let cancelled = false;
+    fetchModelCatalog(controller.signal)
+      .then((response) => {
+        if (!cancelled) setInternalCatalog(response);
+      })
+      .catch(() => {
+        if (!cancelled) setInternalCatalog(null);
+      });
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [catalogRevision, modelCatalog]);
+
+  const registrationModelOptions = React.useMemo<CommandComboboxOption[]>(() => {
+    const options: CommandComboboxOption[] = [];
+    const seen = new Set<string>();
+    for (const node of getOnlineNodeOptions(effectiveCatalog)) {
+      const groupLabel = `${node.name || node.nodeId} · ${node.deviceType || 'node'}`;
+      for (const model of getModelsForNodeAgent(effectiveCatalog, node.nodeId, null)) {
+        if (!model?.id || seen.has(model.id)) continue;
+        seen.add(model.id);
+        options.push({
+          value: model.id,
+          label: model.displayName || model.id,
+          group: groupLabel,
+          description: [model.provider, model.category].filter(Boolean).join(' · '),
+          meta: model.contextWindow
+            ? `${Math.round(model.contextWindow / 1000)}k ctx`
+            : undefined,
+          keywords: [model.id, model.provider, model.sourceKind, model.nodeName],
+        });
+      }
+    }
+    return options;
+  }, [effectiveCatalog]);
 
   const loadAll = React.useCallback(async (signal?: AbortSignal) => {
     try {
@@ -1165,12 +1220,21 @@ export function A2AOrchestratorSection({
                         <div className="flex flex-wrap items-center gap-2 shrink-0">
                           {(() => {
                             const isOfflineNode = agent.nodeOnline === false;
-                            const dynamicIds = !isOfflineNode && Array.isArray(agent.availableModels) && agent.availableModels.length > 0
-                              ? agent.availableModels.map((item) => item.id)
+                            const catalogModels = getModelsForNodeAgent(
+                              effectiveCatalog,
+                              agent.nodeId,
+                              agent.id,
+                            );
+                            const dynamicIds = !isOfflineNode
+                              ? catalogModels.map((item) => item.id)
                               : [];
                             const candidateModels = isOfflineNode
                               ? []
-                              : (dynamicIds.length > 0 ? dynamicIds : [...MODEL_PRESETS]);
+                              : dynamicIds.length > 0
+                                ? dynamicIds
+                                : effectiveCatalog
+                                  ? []
+                                  : [...MODEL_PRESETS];
                             const allowedEfforts = agent.parameterConstraints?.allowedEfforts?.length
                               ? EFFORT_OPTIONS.filter((opt) => agent.parameterConstraints?.allowedEfforts.includes(opt.value))
                               : EFFORT_OPTIONS;
@@ -1802,12 +1866,23 @@ export function A2AOrchestratorSection({
               <div className="grid grid-cols-2 gap-3">
                 <label className="block space-y-1.5 text-[13px]">
                   <span className="font-medium text-[var(--ink-muted)]">默认模型</span>
-                  <input
-                    type="text"
+                  <CommandCombobox
                     value={regForm.modelHint}
-                    onChange={(e) => setRegForm((s) => ({ ...s, modelHint: e.target.value }))}
+                    onChange={(nextValue) =>
+                      setRegForm((s) => ({ ...s, modelHint: nextValue }))
+                    }
+                    options={registrationModelOptions}
                     placeholder="claude-sonnet-4-6"
-                    className={cn('w-full h-9 px-3 font-mono', inputBaseClass)}
+                    searchPlaceholder="搜索在线节点模型，或输入自定义模型 ID"
+                    emptyText={
+                      effectiveCatalog
+                        ? '当前在线节点暂无可用模型，可直接输入自定义值'
+                        : '模型目录加载中，可直接输入自定义值'
+                    }
+                    allowCustomValue
+                    ariaLabel="默认模型"
+                    className="w-full"
+                    triggerClassName="h-9 font-mono text-[16px] sm:text-[13px]"
                   />
                 </label>
                 <label className="block space-y-1.5 text-[13px]">

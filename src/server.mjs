@@ -1853,6 +1853,178 @@ export function createOpsConsole(options = {}) {
         return;
       }
 
+      if (method === 'GET' && pathname === '/api/a2a/tasks') {
+        const limitRaw = Number(url.searchParams.get('limit') || 30);
+        const offsetRaw = Number(url.searchParams.get('offset') || 0);
+        const attentionOnlyRaw = String(url.searchParams.get('attentionOnly') || '').toLowerCase();
+        const result = a2aOrchestrator.listTasksPaginated({
+          limit: Number.isFinite(limitRaw) ? limitRaw : 30,
+          offset: Number.isFinite(offsetRaw) ? offsetRaw : 0,
+          state: String(url.searchParams.get('state') || '').trim(),
+          attentionOnly: attentionOnlyRaw === '1' || attentionOnlyRaw === 'true',
+          q: String(url.searchParams.get('q') || '').trim(),
+        });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      const a2aTaskQueueTurnMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/queue-turn$/);
+      if (method === 'POST' && a2aTaskQueueTurnMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables A2A workspace mutations' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.enqueueTaskTurn(a2aTaskQueueTurnMatch[1], data, { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:queue-turn',
+          target: result.task.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `queuedTurns=${result.task.queuedTurns.length}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'queue_turn', taskId: result.task.id, queuedTurnId: result.queuedTurn.id });
+        sendJson(res, 200, { ok: true, ...result }, {}, req);
+        return;
+      }
+
+      const a2aTaskSteerMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/steer$/);
+      if (method === 'POST' && a2aTaskSteerMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables A2A workspace mutations' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.steerTask(a2aTaskSteerMatch[1], data, { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:steer',
+          target: result.task.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `steeringNotes=${result.task.steeringNotes.length}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'steer', taskId: result.task.id, steeringNoteId: result.steeringNote.id });
+        sendJson(res, 200, { ok: true, ...result }, {}, req);
+        return;
+      }
+
+      const a2aTaskRestartMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/restart$/);
+      if (method === 'POST' && a2aTaskRestartMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables A2A workspace mutations' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.restartTask(a2aTaskRestartMatch[1], data, { actor: 'web' });
+        await logger.appendAudit({
+          action: result.freshContext ? 'a2a:restart-fresh-context' : 'a2a:restart',
+          target: result.task.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `sourceTaskId=${result.sourceTaskId}, state=${result.task.state}`,
+        });
+        eventBus.emit('a2a_updated', {
+          action: result.freshContext ? 'restart_fresh_context' : 'restart',
+          taskId: result.task.id,
+          sourceTaskId: result.sourceTaskId,
+        });
+        sendJson(res, 200, { ok: true, ...result }, {}, req);
+        return;
+      }
+
+      const a2aTaskSettleMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/settle$/);
+      if (method === 'POST' && a2aTaskSettleMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables A2A workspace mutations' }, {}, req);
+          return;
+        }
+        const result = await a2aOrchestrator.settleTask(a2aTaskSettleMatch[1], { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:settle-task',
+          target: result.task.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `settledAt=${result.task.settledAt}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'settle_task', taskId: result.task.id });
+        sendJson(res, 200, { ok: true, task: result.task }, {}, req);
+        return;
+      }
+
+      const a2aTaskSnoozeMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/snooze$/);
+      if (method === 'POST' && a2aTaskSnoozeMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables A2A workspace mutations' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.snoozeTask(a2aTaskSnoozeMatch[1], data, { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:snooze-task',
+          target: result.task.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `snoozedUntil=${result.task.snoozedUntil}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'snooze_task', taskId: result.task.id, snoozedUntil: result.task.snoozedUntil });
+        sendJson(res, 200, { ok: true, task: result.task }, {}, req);
+        return;
+      }
+
+      const a2aTaskReadMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/read$/);
+      if (method === 'POST' && a2aTaskReadMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables A2A workspace mutations' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.markTaskRead(a2aTaskReadMatch[1], data, { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:mark-read',
+          target: result.task.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `readWatermarkAt=${result.task.readWatermarkAt}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'mark_read', taskId: result.task.id, readWatermarkAt: result.task.readWatermarkAt });
+        sendJson(res, 200, { ok: true, task: result.task }, {}, req);
+        return;
+      }
+
+      const a2aTaskCompactMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/compact$/);
+      if (method === 'POST' && a2aTaskCompactMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables A2A workspace mutations' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.compactTaskContext(a2aTaskCompactMatch[1], data, { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:compact-context',
+          target: result.task.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `compactionId=${result.compaction.id}, upToStep=${result.compaction.compactedUpToStepIndex}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'compact_context', taskId: result.task.id, compactionId: result.compaction.id });
+        sendJson(res, 200, { ok: true, ...result }, {}, req);
+        return;
+      }
+
+      const a2aTaskSpillMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/spills\/([A-Za-z0-9._-]{4,80})$/);
+      if (method === 'GET' && a2aTaskSpillMatch) {
+        const spill = await a2aOrchestrator.getTaskSpill(a2aTaskSpillMatch[1], a2aTaskSpillMatch[2]);
+        sendJson(res, 200, { ok: true, spill, ...spill }, {}, req);
+        return;
+      }
+
       const a2aCancelMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/cancel$/);
       if (method === 'POST' && a2aCancelMatch) {
         if (config.console.readOnly) {

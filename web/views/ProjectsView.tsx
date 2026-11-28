@@ -1,5 +1,6 @@
 import React from 'react';
 import {
+  ArrowUpRight,
   CheckCircle2,
   Circle,
   CircleDashed,
@@ -13,19 +14,22 @@ import {
   Plus,
   Search,
   Trash2,
-  X,
 } from 'lucide-react';
 import {
   createLinearIssue,
   deleteLinearIssue,
   dispatchLinearCommander,
   fetchA2AState,
+  fetchGithubOverview,
   fetchLinearState,
   syncLinearGithub,
   updateLinearIssue,
 } from '../api';
 import type {
   A2AStateResponse,
+  A2ATaskRecord,
+  GithubOverviewResponse,
+  GithubPullRequestSummary,
   LinearIssueItem,
   LinearIssuePriority,
   LinearIssueStatus,
@@ -42,17 +46,32 @@ import {
   SIMPLE_BOARD_COLUMNS,
   type SimpleBoardColumnId,
 } from '../lib/agent-console';
+import {
+  buildTaskIssueLinkIndex,
+  type TaskIssueLinkIndex,
+} from '../lib/workspace-controls';
 import { cn, FOCUS_RING } from '../lib/cn';
 import {
   Button,
   EmptyState,
   ErrorState,
   inputBaseClass,
+  InspectorDrawer,
   StatusIndicator,
   ViewSkeleton,
 } from '../components/ui';
 
 type DisplayMode = 'board' | 'list';
+type A2ATone = 'ok' | 'warn' | 'err' | 'muted' | 'accent';
+
+export interface ProjectsViewProps {
+  readOnly?: boolean;
+  a2aRevision?: number;
+  focusedIssueId?: string | null;
+  onClearFocusedIssue?: () => void;
+  onOpenAgentTask?: (taskId: string) => void;
+  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+}
 
 function safeGithubHref(url?: string | null): string | null {
   if (!url) return null;
@@ -78,16 +97,135 @@ function priorityDotClass(priority: LinearIssuePriority | string): string {
   return 'bg-[var(--muted-dot)]';
 }
 
+function a2aStateMeta(state?: string | null): { label: string; tone: A2ATone } {
+  const normalized = String(state || '').toLowerCase();
+  if (normalized === 'completed' || normalized === 'done') return { label: 'completed', tone: 'ok' };
+  if (normalized === 'failed') return { label: 'failed', tone: 'err' };
+  if (normalized === 'working' || normalized === 'running') return { label: 'working', tone: 'accent' };
+  if (normalized === 'canceled' || normalized === 'cancelled') return { label: 'canceled', tone: 'muted' };
+  if (normalized === 'submitted' || normalized === 'queued') return { label: 'queued', tone: 'warn' };
+  return { label: normalized || 'queued', tone: 'muted' };
+}
+
+function a2aDotClass(tone: A2ATone): string {
+  if (tone === 'ok') return 'bg-[var(--ok-dot)]';
+  if (tone === 'err') return 'bg-[var(--err-dot)]';
+  if (tone === 'warn') return 'bg-[var(--warn-dot)]';
+  if (tone === 'accent') return 'bg-[var(--accent)]';
+  return 'bg-[var(--muted-dot)]';
+}
+
+function prStateHint(pr?: GithubPullRequestSummary | null): string {
+  if (!pr) return '';
+  const parts: string[] = [pr.state];
+  if (pr.isDraft) parts.push('draft');
+  if (pr.reviewDecision) parts.push(pr.reviewDecision.replace(/_/g, ' '));
+  if (pr.checksStatus && pr.checksStatus !== 'UNKNOWN') {
+    parts.push(`checks ${String(pr.checksStatus).toLowerCase()}`);
+  }
+  return parts.join(' · ');
+}
+
+function lookupPrByBranch(
+  prByBranch: TaskIssueLinkIndex['prByBranch'],
+  branch?: string | null,
+): GithubPullRequestSummary | undefined {
+  const trimmed = (branch || '').trim();
+  if (!trimmed) return undefined;
+  return prByBranch.get(trimmed) || prByBranch.get(trimmed.replace(/^refs\/heads\//i, ''));
+}
+
+function attentionSummary(task: A2ATaskRecord): string {
+  const queued = (task.queuedTurns || []).filter((turn) => turn.status === 'queued').length;
+  const parts = [`排队 ${queued}`];
+  if (task.attention?.needsAttention) {
+    const reasons = (task.attention.reasons || []).join(' · ');
+    parts.push(reasons ? `待关注 ${reasons}` : '待关注');
+  } else if (task.attention?.unread) {
+    parts.push('有未读更新');
+  } else {
+    parts.push('无需关注');
+  }
+  return parts.join(' · ');
+}
+
+function A2AStatusLine({
+  task,
+  harness,
+  branch,
+}: {
+  task: A2ATaskRecord;
+  harness?: string;
+  branch?: string | null;
+}) {
+  const meta = a2aStateMeta(task.state);
+  return (
+    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-[var(--ink-subtle)] min-w-0">
+      <span
+        className={cn('h-1.5 w-1.5 rounded-full shrink-0', a2aDotClass(meta.tone))}
+        aria-hidden="true"
+      />
+      <span className="text-[var(--ink-muted)]">{meta.label}</span>
+      <span aria-hidden="true">·</span>
+      <span className="font-mono tabular-nums">{task.id.slice(0, 10)}</span>
+      {task.workerNodeId && (
+        <>
+          <span aria-hidden="true">·</span>
+          <span className="truncate max-w-[110px]">{task.workerNodeId}</span>
+        </>
+      )}
+      {harness && (
+        <>
+          <span aria-hidden="true">·</span>
+          <span className="truncate max-w-[90px]">{harness}</span>
+        </>
+      )}
+      {branch && (
+        <>
+          <span aria-hidden="true">·</span>
+          <span className="inline-flex items-center gap-1 min-w-0">
+            <GitBranch className="size-3 shrink-0" />
+            <span className="truncate max-w-[140px] font-mono">{branch}</span>
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
+function PrMetaLine({
+  prNumber,
+  pr,
+  className,
+}: {
+  prNumber?: number | null;
+  pr?: GithubPullRequestSummary | null;
+  className?: string;
+}) {
+  const number = pr?.number ?? prNumber;
+  if (!number) return null;
+  const hint = prStateHint(pr);
+  return (
+    <div className={cn('flex items-center gap-1.5 text-[11px] min-w-0', className)}>
+      <GitPullRequest className="size-3 shrink-0 text-[var(--accent)]" />
+      <span className="font-mono text-[var(--accent)] tabular-nums shrink-0">#{number}</span>
+      {hint && <span className="text-[var(--ink-subtle)] truncate">· {hint}</span>}
+    </div>
+  );
+}
+
 export function ProjectsView({
   readOnly = false,
+  a2aRevision = 0,
+  focusedIssueId = null,
+  onClearFocusedIssue,
+  onOpenAgentTask,
   onToast,
-}: {
-  readOnly?: boolean;
-  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
-}) {
+}: ProjectsViewProps) {
   const [mode, setMode] = React.useState<DisplayMode>('board');
   const [linearState, setLinearState] = React.useState<LinearStateResponse | null>(null);
   const [a2aState, setA2aState] = React.useState<A2AStateResponse | null>(null);
+  const [githubOverview, setGithubOverview] = React.useState<GithubOverviewResponse | null>(null);
   const [loading, setLoading] = React.useState(true);
   const [error, setError] = React.useState<string | null>(null);
 
@@ -108,22 +246,48 @@ export function ProjectsView({
     assigneeId: '',
   });
 
-  const loadData = React.useCallback(async () => {
-    setError(null);
-    try {
-      const [lin, a2a] = await Promise.all([fetchLinearState(), fetchA2AState()]);
-      setLinearState(lin);
-      setA2aState(a2a);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : '加载任务看板失败');
-    } finally {
-      setLoading(false);
+  const hasLinearRef = React.useRef(false);
+
+  const loadData = React.useCallback(async (options?: { silent?: boolean }) => {
+    if (!options?.silent) setError(null);
+    const [linearResult, a2aResult, githubResult] = await Promise.allSettled([
+      fetchLinearState(),
+      fetchA2AState(),
+      fetchGithubOverview(),
+    ]);
+
+    if (linearResult.status === 'fulfilled') {
+      hasLinearRef.current = true;
+      setLinearState(linearResult.value);
+    } else if (!hasLinearRef.current) {
+      setError(
+        linearResult.reason instanceof Error
+          ? linearResult.reason.message
+          : '加载任务看板失败',
+      );
     }
+
+    if (a2aResult.status === 'fulfilled') {
+      setA2aState(a2aResult.value);
+    }
+
+    if (githubResult.status === 'fulfilled') {
+      setGithubOverview(githubResult.value);
+    }
+
+    setLoading(false);
   }, []);
 
   React.useEffect(() => {
     void loadData();
   }, [loadData]);
+
+  const lastA2aRevisionRef = React.useRef(a2aRevision);
+  React.useEffect(() => {
+    if (lastA2aRevisionRef.current === a2aRevision) return;
+    lastA2aRevisionRef.current = a2aRevision;
+    void loadData({ silent: true });
+  }, [a2aRevision, loadData]);
 
   const issues = linearState?.issues || [];
   const projects = linearState?.projects || [];
@@ -135,6 +299,20 @@ export function ProjectsView({
       modelHint: a.modelHint || 'auto',
     })) ||
     [];
+
+  const pullRequests = githubOverview?.pullRequests || [];
+
+  const linkIndex = React.useMemo(
+    () => buildTaskIssueLinkIndex(issues, a2aState?.tasks || [], pullRequests),
+    [issues, a2aState, pullRequests],
+  );
+
+  React.useEffect(() => {
+    if (!focusedIssueId) return;
+    if (!issues.some((issue) => issue.id === focusedIssueId)) return;
+    setSelectedIssueId(focusedIssueId);
+    onClearFocusedIssue?.();
+  }, [focusedIssueId, issues, onClearFocusedIssue]);
 
   const filteredIssues = React.useMemo(() => {
     const base = filterLinearIssues(issues, { query: searchQuery });
@@ -151,6 +329,22 @@ export function ProjectsView({
     () => (selectedIssueId ? issues.find((i) => i.id === selectedIssueId) || null : null),
     [issues, selectedIssueId],
   );
+
+  const selectedLinkedTask = selectedIssue
+    ? linkIndex.taskByIssueId.get(selectedIssue.id)
+    : undefined;
+  const selectedBranch =
+    selectedIssue?.worktreeBranch || selectedLinkedTask?.worktreeBranch || null;
+  const selectedLinkedPr = selectedIssue
+    ? linkIndex.prByIssueId.get(selectedIssue.id) ||
+      lookupPrByBranch(linkIndex.prByBranch, selectedBranch)
+    : undefined;
+  const selectedHarness = selectedLinkedTask
+    ? a2aState?.agents.find((agent) => agent.id === selectedLinkedTask.workerAgentId)?.harness
+    : undefined;
+
+  const harnessForTask = (task?: A2ATaskRecord): string | undefined =>
+    task ? a2aState?.agents.find((agent) => agent.id === task.workerAgentId)?.harness : undefined;
 
   const openCreateWithStatus = (status: LinearIssueStatus = 'todo') => {
     setForm((prev) => ({ ...prev, status }));
@@ -210,11 +404,36 @@ export function ProjectsView({
     setDispatchingId(issueId);
     try {
       const res = await dispatchLinearCommander(issueId);
+      const dispatchedTask = res.dispatchedTask;
+      if (dispatchedTask) {
+        setLinearState((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            issues: prev.issues.map((item) =>
+              item.id === issueId
+                ? {
+                    ...item,
+                    linkedTaskId: dispatchedTask.id,
+                    worktreeBranch: dispatchedTask.worktreeBranch || item.worktreeBranch,
+                  }
+                : item,
+            ),
+          };
+        });
+        setA2aState((prev) => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            tasks: [dispatchedTask, ...prev.tasks.filter((task) => task.id !== dispatchedTask.id)],
+          };
+        });
+      }
       onToast?.(
         `总指挥 ${shortAgentName(res.commander.name)} 已拆解 ${res.createdSubIssues?.length || 0} 个子任务`,
         'ok',
       );
-      await loadData();
+      await loadData({ silent: true });
     } catch (err) {
       onToast?.(err instanceof Error ? err.message : '派发失败', 'err');
     } finally {
@@ -484,12 +703,25 @@ export function ProjectsView({
                 <div className="space-y-2">
                   {colItems.map((issue) => {
                     const isSelected = selectedIssueId === issue.id;
+                    const linkedTask = linkIndex.taskByIssueId.get(issue.id);
+                    const linkedPr =
+                      linkIndex.prByIssueId.get(issue.id) ||
+                      lookupPrByBranch(linkIndex.prByBranch, issue.worktreeBranch);
+                    const branch = issue.worktreeBranch || linkedTask?.worktreeBranch || null;
                     return (
-                      <button
+                      <div
                         key={issue.id}
-                        type="button"
+                        role="button"
+                        tabIndex={0}
                         data-testid={`issue-card-${issue.id}`}
+                        aria-label={`${issue.identifier} ${issue.title}`}
                         onClick={() => setSelectedIssueId(issue.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setSelectedIssueId(issue.id);
+                          }
+                        }}
                         className={cn(
                           'w-full text-left rounded-xl border p-3.5 space-y-2 cursor-pointer transition-[border-color,background-color] duration-150',
                           FOCUS_RING,
@@ -512,15 +744,45 @@ export function ProjectsView({
                           {issue.title}
                         </div>
 
+                        {linkedTask && (
+                          <A2AStatusLine
+                            task={linkedTask}
+                            harness={harnessForTask(linkedTask)}
+                            branch={branch}
+                          />
+                        )}
+
+                        {!linkedTask && branch && (
+                          <div className="flex items-center gap-1 font-mono text-[10.5px] text-[var(--ink-subtle)] min-w-0">
+                            <GitBranch className="size-3 shrink-0" />
+                            <span className="truncate">{branch}</span>
+                          </div>
+                        )}
+
                         <div className="flex items-center justify-between gap-2 text-[11.5px] text-[var(--ink-subtle)] pt-0.5">
                           <span className="truncate">{shortAgentName(issue.assigneeName)}</span>
-                          {issue.github?.prNumber && (
-                            <span className="inline-flex items-center gap-0.5 font-mono text-[var(--accent)] shrink-0 tabular-nums">
-                              <GitPullRequest className="size-3" />#{issue.github.prNumber}
-                            </span>
-                          )}
+                          <div className="flex items-center gap-1.5 shrink-0 min-w-0">
+                            <PrMetaLine prNumber={issue.github?.prNumber} pr={linkedPr} />
+                            {linkedTask && onOpenAgentTask && (
+                              <button
+                                type="button"
+                                aria-label={`在工作台打开任务 ${linkedTask.id}`}
+                                title="在工作台打开任务"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onOpenAgentTask(linkedTask.id);
+                                }}
+                                className={cn(
+                                  'h-6 w-6 -mr-1 rounded-md inline-flex items-center justify-center text-[var(--ink-subtle)] hover:text-[var(--accent)] hover:bg-[var(--surface-hover)] cursor-pointer transition-colors',
+                                  FOCUS_RING,
+                                )}
+                              >
+                                <ArrowUpRight className="size-3.5" />
+                              </button>
+                            )}
+                          </div>
                         </div>
-                      </button>
+                      </div>
                     );
                   })}
                 </div>
@@ -546,39 +808,87 @@ export function ProjectsView({
                   </div>
                 </div>
                 <div className="divide-y divide-[var(--border-subtle)]">
-                  {colItems.map((issue) => (
-                    <button
-                      key={issue.id}
-                      type="button"
-                      onClick={() => setSelectedIssueId(issue.id)}
-                      className={cn(
-                        'w-full px-4 h-11 flex items-center justify-between gap-3 text-left cursor-pointer transition-colors hover:bg-[var(--surface-hover)]',
-                        selectedIssueId === issue.id && 'bg-[var(--accent-soft)]/40',
-                      )}
-                    >
-                      <div className="flex items-center gap-3 min-w-0 flex-1">
-                        <span
-                          className={cn('h-1.5 w-1.5 rounded-full shrink-0', priorityDotClass(issue.priority))}
-                          title={getPriorityMeta(issue.priority).label}
-                        />
-                        <span className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap shrink-0 w-[68px]">
-                          {issue.identifier}
-                        </span>
-                        <span className="text-[13px] font-medium text-[var(--ink)] truncate">
-                          {issue.title}
-                        </span>
-                      </div>
-
-                      <div className="flex items-center gap-3 text-[12px] text-[var(--ink-subtle)] shrink-0">
-                        {issue.github?.prNumber && (
-                          <span className="hidden sm:inline-flex items-center gap-0.5 font-mono text-[var(--accent)] tabular-nums">
-                            <GitPullRequest className="size-3" />#{issue.github.prNumber}
-                          </span>
+                  {colItems.map((issue) => {
+                    const linkedTask = linkIndex.taskByIssueId.get(issue.id);
+                    const linkedPr =
+                      linkIndex.prByIssueId.get(issue.id) ||
+                      lookupPrByBranch(linkIndex.prByBranch, issue.worktreeBranch);
+                    const branch = issue.worktreeBranch || linkedTask?.worktreeBranch || null;
+                    return (
+                      <div
+                        key={issue.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setSelectedIssueId(issue.id)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' || e.key === ' ') {
+                            e.preventDefault();
+                            setSelectedIssueId(issue.id);
+                          }
+                        }}
+                        className={cn(
+                          'w-full px-4 py-2 min-h-11 flex items-center justify-between gap-3 text-left cursor-pointer transition-colors hover:bg-[var(--surface-hover)]',
+                          FOCUS_RING,
+                          selectedIssueId === issue.id && 'bg-[var(--accent-soft)]/40',
                         )}
-                        <span className="max-w-[120px] truncate">{shortAgentName(issue.assigneeName)}</span>
+                      >
+                        <div className="flex items-center gap-3 min-w-0 flex-1">
+                          <span
+                            className={cn('h-1.5 w-1.5 rounded-full shrink-0', priorityDotClass(issue.priority))}
+                            title={getPriorityMeta(issue.priority).label}
+                          />
+                          <span className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums whitespace-nowrap shrink-0 w-[68px]">
+                            {issue.identifier}
+                          </span>
+                          <div className="min-w-0 flex flex-col gap-0.5">
+                            <span className="text-[13px] font-medium text-[var(--ink)] truncate">
+                              {issue.title}
+                            </span>
+                            {linkedTask ? (
+                              <A2AStatusLine
+                                task={linkedTask}
+                                harness={harnessForTask(linkedTask)}
+                                branch={branch}
+                              />
+                            ) : (
+                              branch && (
+                                <span className="inline-flex items-center gap-1 font-mono text-[10.5px] text-[var(--ink-subtle)] min-w-0">
+                                  <GitBranch className="size-3 shrink-0" />
+                                  <span className="truncate">{branch}</span>
+                                </span>
+                              )
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-3 text-[12px] text-[var(--ink-subtle)] shrink-0">
+                          <PrMetaLine
+                            prNumber={issue.github?.prNumber}
+                            pr={linkedPr}
+                            className="hidden sm:flex"
+                          />
+                          <span className="max-w-[120px] truncate">{shortAgentName(issue.assigneeName)}</span>
+                          {linkedTask && onOpenAgentTask && (
+                            <button
+                              type="button"
+                              aria-label={`在工作台打开任务 ${linkedTask.id}`}
+                              title="在工作台打开任务"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                onOpenAgentTask(linkedTask.id);
+                              }}
+                              className={cn(
+                                'h-6 w-6 -mr-1 rounded-md inline-flex items-center justify-center text-[var(--ink-subtle)] hover:text-[var(--accent)] hover:bg-[var(--surface-hover)] cursor-pointer transition-colors',
+                                FOCUS_RING,
+                              )}
+                            >
+                              <ArrowUpRight className="size-3.5" />
+                            </button>
+                          )}
+                        </div>
                       </div>
-                    </button>
-                  ))}
+                    );
+                  })}
                 </div>
               </section>
             );
@@ -587,55 +897,38 @@ export function ProjectsView({
       )}
 
       {/* Linear Right-Side Issue Inspector Slide-Over */}
-      {selectedIssue && (
-        <aside
-          aria-label="任务详情检查器"
-          data-testid="linear-issue-drawer"
-          className="fixed inset-y-0 right-0 z-40 w-full max-w-[400px] border-l border-[var(--border)] bg-[var(--surface-elevated)] shadow-2xl flex flex-col"
-        >
-          <div className="h-14 px-5 border-b border-[var(--border-subtle)] flex items-center justify-between gap-2 shrink-0">
-            <span className="font-mono text-[13px] font-semibold text-[var(--ink-muted)] tabular-nums">
-              {selectedIssue.identifier}
-            </span>
-            <div className="flex items-center gap-1">
-              {!readOnly && (
-                <button
-                  type="button"
-                  aria-label={`删除 ${selectedIssue.identifier}`}
-                  onClick={() => void handleDelete(selectedIssue)}
-                  className={cn(
-                    'h-8 w-8 rounded-lg inline-flex items-center justify-center text-[var(--ink-subtle)] hover:text-[var(--err)] hover:bg-[var(--surface-hover)] cursor-pointer transition-colors',
-                    FOCUS_RING,
-                  )}
-                >
-                  <Trash2 className="size-4" />
-                </button>
-              )}
-              <button
-                type="button"
-                aria-label="关闭详情"
-                onClick={() => setSelectedIssueId(null)}
-                className={cn(
-                  'h-8 w-8 rounded-lg inline-flex items-center justify-center text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] cursor-pointer transition-colors',
-                  FOCUS_RING,
-                )}
-              >
-                <X className="size-4" />
-              </button>
-            </div>
-          </div>
-
-          <div className="flex-1 overflow-y-auto p-5 space-y-5">
-            <div className="space-y-2">
-              <h2 className="text-[16px] font-semibold text-[var(--ink)] leading-snug">
-                {selectedIssue.title}
-              </h2>
-              {selectedIssue.description && (
-                <p className="text-[13px] text-[var(--ink-muted)] leading-relaxed">
-                  {selectedIssue.description}
-                </p>
-              )}
-            </div>
+      <InspectorDrawer
+        open={Boolean(selectedIssue)}
+        onOpenChange={(open) => {
+          if (!open) setSelectedIssueId(null);
+        }}
+        title={selectedIssue?.title || '任务详情'}
+        meta={selectedIssue?.identifier}
+        size="md"
+        testId="linear-issue-drawer"
+        footer={
+          selectedIssue ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={readOnly}
+              aria-label={`删除 ${selectedIssue.identifier}`}
+              onClick={() => void handleDelete(selectedIssue)}
+              className="text-[var(--ink-subtle)] hover:text-[var(--err)]"
+            >
+              <Trash2 className="size-3.5" />
+              删除
+            </Button>
+          ) : undefined
+        }
+      >
+        {selectedIssue && (
+          <>
+            {selectedIssue.description && (
+              <p className="text-[13px] text-[var(--ink-muted)] leading-relaxed text-pretty">
+                {selectedIssue.description}
+              </p>
+            )}
 
             <div className="space-y-3 pt-4 border-t border-[var(--border-subtle)] text-[12.5px]">
               <label className="grid grid-cols-3 items-center gap-2">
@@ -714,12 +1007,12 @@ export function ProjectsView({
                 </div>
               </div>
 
-              {selectedIssue.worktreeBranch && (
+              {selectedBranch && (
                 <div className="grid grid-cols-3 items-center gap-2">
                   <span className="text-[var(--ink-subtle)]">分支</span>
                   <span className="col-span-2 inline-flex items-center gap-1 font-mono text-[12px] text-[var(--ink-muted)] truncate">
                     <GitBranch className="size-3 shrink-0" />
-                    <span className="truncate">{selectedIssue.worktreeBranch}</span>
+                    <span className="truncate">{selectedBranch}</span>
                   </span>
                 </div>
               )}
@@ -740,6 +1033,120 @@ export function ProjectsView({
               )}
             </div>
 
+            {/* A2A execution + worktree linkage */}
+            <section className="space-y-3 pt-4 border-t border-[var(--border-subtle)]">
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-[12.5px] font-semibold tracking-tight text-[var(--ink)]">
+                  A2A 执行与 Worktree
+                </h3>
+                {selectedLinkedTask && (
+                  <span className="inline-flex items-center gap-1.5 text-[11.5px] text-[var(--ink-subtle)]">
+                    <span
+                      className={cn(
+                        'h-1.5 w-1.5 rounded-full shrink-0',
+                        a2aDotClass(a2aStateMeta(selectedLinkedTask.state).tone),
+                      )}
+                      aria-hidden="true"
+                    />
+                    {a2aStateMeta(selectedLinkedTask.state).label}
+                  </span>
+                )}
+              </div>
+
+              {selectedLinkedTask ? (
+                <>
+                  <dl className="space-y-2 text-[12px]">
+                    <div className="grid grid-cols-3 items-center gap-2">
+                      <dt className="text-[var(--ink-subtle)]">任务</dt>
+                      <dd className="col-span-2 font-mono text-[11.5px] text-[var(--ink-muted)] truncate tabular-nums">
+                        {selectedLinkedTask.id}
+                      </dd>
+                    </div>
+                    <div className="grid grid-cols-3 items-center gap-2">
+                      <dt className="text-[var(--ink-subtle)]">执行节点</dt>
+                      <dd className="col-span-2 font-mono text-[11.5px] text-[var(--ink-muted)] truncate">
+                        {selectedLinkedTask.workerNodeId || '未分配'}
+                      </dd>
+                    </div>
+                    <div className="grid grid-cols-3 items-center gap-2">
+                      <dt className="text-[var(--ink-subtle)]">Agent</dt>
+                      <dd className="col-span-2 text-[var(--ink-muted)] truncate">
+                        {selectedLinkedTask.workerAgentName}
+                        {selectedHarness ? ` · ${selectedHarness}` : ''}
+                      </dd>
+                    </div>
+                    <div className="grid grid-cols-3 items-center gap-2">
+                      <dt className="text-[var(--ink-subtle)]">模型</dt>
+                      <dd className="col-span-2 font-mono text-[11.5px] text-[var(--ink-muted)] truncate">
+                        {selectedLinkedTask.appliedModel || selectedLinkedTask.selectedModel || '自动'}
+                        {selectedLinkedTask.appliedEffort ? ` · ${selectedLinkedTask.appliedEffort}` : ''}
+                      </dd>
+                    </div>
+                    <div className="grid grid-cols-3 items-center gap-2">
+                      <dt className="text-[var(--ink-subtle)]">Worktree</dt>
+                      <dd className="col-span-2 font-mono text-[11.5px] text-[var(--ink-muted)] truncate">
+                        {selectedLinkedTask.worktreeBranch || '未创建'}
+                      </dd>
+                    </div>
+                    <div className="grid grid-cols-3 items-center gap-2">
+                      <dt className="text-[var(--ink-subtle)]">DSH 评审</dt>
+                      <dd className="col-span-2 text-[var(--ink-muted)] truncate">
+                        {selectedLinkedTask.dshReview
+                          ? `${selectedLinkedTask.dshReview.verdict} · 评分 ${selectedLinkedTask.dshReview.score}`
+                          : '未触发'}
+                      </dd>
+                    </div>
+                    <div className="grid grid-cols-3 items-center gap-2">
+                      <dt className="text-[var(--ink-subtle)]">排队 / 关注</dt>
+                      <dd className="col-span-2 text-[var(--ink-muted)] truncate">
+                        {attentionSummary(selectedLinkedTask)}
+                      </dd>
+                    </div>
+                    {selectedLinkedPr && (
+                      <div className="grid grid-cols-3 items-start gap-2">
+                        <dt className="text-[var(--ink-subtle)]">GitHub PR</dt>
+                        <dd className="col-span-2 min-w-0 space-y-0.5">
+                          {safeGithubHref(selectedLinkedPr.url) ? (
+                            <a
+                              href={safeGithubHref(selectedLinkedPr.url)!}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="inline-flex items-center gap-1 font-mono text-[11.5px] text-[var(--accent)] hover:underline truncate max-w-full"
+                            >
+                              #{selectedLinkedPr.number} {selectedLinkedPr.title}
+                              <ExternalLink className="size-3 shrink-0" />
+                            </a>
+                          ) : (
+                            <span className="font-mono text-[11.5px] text-[var(--ink-muted)] truncate">
+                              #{selectedLinkedPr.number} {selectedLinkedPr.title}
+                            </span>
+                          )}
+                          <div className="text-[11px] text-[var(--ink-subtle)]">
+                            {prStateHint(selectedLinkedPr) || selectedLinkedPr.state}
+                          </div>
+                        </dd>
+                      </div>
+                    )}
+                  </dl>
+
+                  <Button
+                    variant="primary"
+                    size="md"
+                    className="w-full"
+                    data-testid={`issue-open-task-${selectedIssue.id}`}
+                    onClick={() => onOpenAgentTask?.(selectedLinkedTask.id)}
+                  >
+                    <ArrowUpRight className="size-4" />
+                    在工作台打开任务
+                  </Button>
+                </>
+              ) : (
+                <p className="text-[12px] text-[var(--ink-subtle)] leading-relaxed text-pretty">
+                  尚未关联 A2A 任务。交由总指挥派发后可在此查看执行节点、模型、Worktree 与 PR 链接。
+                </p>
+              )}
+            </section>
+
             {!selectedIssue.parentId && (
               <div className="pt-4 border-t border-[var(--border-subtle)]">
                 <Button
@@ -754,9 +1161,9 @@ export function ProjectsView({
                 </Button>
               </div>
             )}
-          </div>
-        </aside>
-      )}
+          </>
+        )}
+      </InspectorDrawer>
     </div>
   );
 }

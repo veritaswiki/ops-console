@@ -6,15 +6,20 @@ import type {
   A2ABtwThread,
   A2ACollaborationLog,
   A2AConnectProfilesResponse,
+  A2ACompactionMarker,
   A2AContextSpillNode,
   A2APingResponse,
+  A2AQueuedTurn,
   A2ASessionRecord,
   A2ASigningVerifyResponse,
+  A2ASpillDetailResponse,
   A2AStateResponse,
+  A2ASteeringNote,
   A2ASuperAgentConfig,
   A2ASuperAgentTicket,
   A2ASwarmMetrics,
   A2ATaskRecord,
+  A2ATasksPageResponse,
   A2ATriggerEvent,
   AgentModuleInvokeResponse,
   AgentModuleReloadResponse,
@@ -918,6 +923,105 @@ export const cancelA2ATask = (taskId: string) =>
       method: 'POST',
       body: JSON.stringify({}),
     },
+  );
+
+export const fetchA2ATasksPage = (
+  params: { limit?: number; offset?: number; state?: string; attentionOnly?: boolean; q?: string } = {},
+  signal?: AbortSignal,
+) => {
+  const sp = new URLSearchParams();
+  if (typeof params.limit === 'number' && Number.isFinite(params.limit)) {
+    sp.set('limit', String(Math.max(1, Math.floor(params.limit))));
+  }
+  if (typeof params.offset === 'number' && Number.isFinite(params.offset)) {
+    sp.set('offset', String(Math.max(0, Math.floor(params.offset))));
+  }
+  if (params.state && params.state !== 'all') sp.set('state', params.state);
+  if (params.attentionOnly) sp.set('attentionOnly', '1');
+  if (params.q && params.q.trim()) sp.set('q', params.q.trim());
+  const qs = sp.toString();
+  return apiRequest<A2ATasksPageResponse>(
+    `/api/a2a/tasks${qs ? `?${qs}` : ''}`,
+    { cacheTtlMs: 2500, signal },
+  );
+};
+
+export const queueA2ATaskTurn = (
+  taskId: string,
+  body: { prompt: string; model?: string; effort?: string },
+) =>
+  apiRequest<{ ok: boolean; task: A2ATaskRecord; queuedTurn: A2AQueuedTurn }>(
+    `/api/a2a/tasks/${encodeURIComponent(taskId)}/queue-turn`,
+    {
+      method: 'POST',
+      body: JSON.stringify(body),
+    },
+  );
+
+export const steerA2ATask = (taskId: string, instruction: string) =>
+  apiRequest<{ ok: boolean; task: A2ATaskRecord; steeringNote: A2ASteeringNote }>(
+    `/api/a2a/tasks/${encodeURIComponent(taskId)}/steer`,
+    {
+      method: 'POST',
+      body: JSON.stringify({ instruction }),
+    },
+  );
+
+export const restartA2ATask = (
+  taskId: string,
+  options: { freshContext?: boolean; prompt?: string } = {},
+) =>
+  apiRequest<{ ok: boolean; task: A2ATaskRecord; sourceTaskId: string; freshContext: boolean }>(
+    `/api/a2a/tasks/${encodeURIComponent(taskId)}/restart`,
+    {
+      method: 'POST',
+      body: JSON.stringify(options),
+    },
+  );
+
+export const settleA2ATask = (taskId: string) =>
+  apiRequest<{ ok: boolean; task: A2ATaskRecord }>(
+    `/api/a2a/tasks/${encodeURIComponent(taskId)}/settle`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+  );
+
+export const snoozeA2ATask = (
+  taskId: string,
+  options: { minutes?: number; untilIso?: string } = {},
+) =>
+  apiRequest<{ ok: boolean; task: A2ATaskRecord }>(
+    `/api/a2a/tasks/${encodeURIComponent(taskId)}/snooze`,
+    {
+      method: 'POST',
+      body: JSON.stringify(options),
+    },
+  );
+
+export const markA2ATaskRead = (taskId: string, watermarkAt?: string) =>
+  apiRequest<{ ok: boolean; task: A2ATaskRecord }>(
+    `/api/a2a/tasks/${encodeURIComponent(taskId)}/read`,
+    {
+      method: 'POST',
+      body: JSON.stringify(watermarkAt ? { watermarkAt } : {}),
+    },
+  );
+
+export const compactA2ATask = (taskId: string, note?: string) =>
+  apiRequest<{ ok: boolean; task: A2ATaskRecord; compaction: A2ACompactionMarker }>(
+    `/api/a2a/tasks/${encodeURIComponent(taskId)}/compact`,
+    {
+      method: 'POST',
+      body: JSON.stringify(note ? { summary: note } : {}),
+    },
+  );
+
+export const fetchA2ATaskSpill = (taskId: string, spillId: string) =>
+  apiRequest<A2ASpillDetailResponse>(
+    `/api/a2a/tasks/${encodeURIComponent(taskId)}/spills/${encodeURIComponent(spillId)}`,
+    { cacheTtlMs: 10000 },
   );
 
 export const fetchA2ABtwThreads = (

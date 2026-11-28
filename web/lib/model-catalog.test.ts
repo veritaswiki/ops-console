@@ -9,9 +9,13 @@ import type {
 import {
   formatCatalogModelOption,
   getEffectiveEffortOptions,
+  getModelsForNodeAgent,
+  getOnlineAgentsForNode,
+  getOnlineNodeOptions,
   getOnlineNodesFromCatalog,
   getSelectableModelsForAgent,
   groupCatalogModels,
+  resolveOfflineFallback,
   resolveSelectedModelFallback,
 } from './model-catalog';
 
@@ -284,4 +288,359 @@ test('formatCatalogModelOption renders binding, routing, local, cloud, and reaso
 
   const unnamed = makeModel({ id: 'acme/unnamed', displayName: '', provider: 'acme' });
   assert.equal(formatCatalogModelOption(unnamed), 'acme/unnamed [acme]');
+});
+
+test('getOnlineNodeOptions filters offline nodes and counts online agents deterministically', () => {
+  assert.deepEqual(getOnlineNodeOptions(null), []);
+  assert.deepEqual(getOnlineNodeOptions(undefined), []);
+
+  const catalog = makeCatalog({
+    onlineNodes: [
+      makeNode({
+        nodeId: 'node-a',
+        name: 'Node A',
+        deviceType: 'server',
+        status: 'healthy',
+        models: [makeModel({ id: 'model-a1' }), makeModel({ id: 'model-a2' })],
+        totalModels: 2,
+      }),
+      makeNode({
+        nodeId: 'node-b',
+        name: 'Node B',
+        deviceType: 'laptop',
+        status: 'degraded',
+        isLocal: true,
+        models: [makeModel({ id: 'model-b1' })],
+        totalModels: 1,
+      }),
+      makeNode({
+        nodeId: 'node-offline',
+        name: 'Node Offline',
+        status: 'offline',
+        models: [makeModel({ id: 'model-offline' })],
+        totalModels: 1,
+      }),
+    ],
+    agents: [
+      makeAgentEntry({ agentId: 'a1', nodeId: 'node-a', online: true }),
+      makeAgentEntry({ agentId: 'a2', nodeId: 'node-a', online: true }),
+      makeAgentEntry({ agentId: 'a3', nodeId: 'node-a', online: false }),
+      makeAgentEntry({ agentId: 'b1', nodeId: 'node-b', online: true }),
+      makeAgentEntry({ agentId: 'off1', nodeId: 'node-offline', online: true }),
+    ],
+  });
+
+  assert.deepEqual(getOnlineNodeOptions(catalog), [
+    {
+      nodeId: 'node-a',
+      name: 'Node A',
+      status: 'healthy',
+      deviceType: 'server',
+      isLocal: false,
+      modelCount: 2,
+      agentCount: 2,
+    },
+    {
+      nodeId: 'node-b',
+      name: 'Node B',
+      status: 'degraded',
+      deviceType: 'laptop',
+      isLocal: true,
+      modelCount: 1,
+      agentCount: 1,
+    },
+  ]);
+
+  const emptyCatalog = makeCatalog({
+    onlineNodes: [makeNode({ nodeId: 'node-offline', status: 'offline' })],
+  });
+  assert.deepEqual(getOnlineNodeOptions(emptyCatalog), []);
+});
+
+test('getOnlineAgentsForNode returns only online agents and honors node filters', () => {
+  const catalog = makeCatalog({
+    agents: [
+      makeAgentEntry({ agentId: 'agent-a1', nodeId: 'node-a', online: true }),
+      makeAgentEntry({ agentId: 'agent-b1', nodeId: 'node-b', online: true }),
+      makeAgentEntry({ agentId: 'agent-a-offline', nodeId: 'node-a', online: false }),
+    ],
+  });
+
+  assert.deepEqual(getOnlineAgentsForNode(null).map((entry) => entry.agentId), []);
+  assert.deepEqual(
+    getOnlineAgentsForNode(catalog).map((entry) => entry.agentId),
+    ['agent-a1', 'agent-b1'],
+  );
+  assert.deepEqual(
+    getOnlineAgentsForNode(catalog, 'node-a').map((entry) => entry.agentId),
+    ['agent-a1'],
+  );
+  assert.deepEqual(
+    getOnlineAgentsForNode(catalog, 'all').map((entry) => entry.agentId),
+    ['agent-a1', 'agent-b1'],
+  );
+  assert.deepEqual(
+    getOnlineAgentsForNode(catalog, '').map((entry) => entry.agentId),
+    ['agent-a1', 'agent-b1'],
+  );
+  assert.deepEqual(
+    getOnlineAgentsForNode(catalog, '   ').map((entry) => entry.agentId),
+    ['agent-a1', 'agent-b1'],
+  );
+  assert.deepEqual(getOnlineAgentsForNode(catalog, 'node-missing'), []);
+});
+
+test('getModelsForNodeAgent respects agent liveness, node binding, and dedupes unions', () => {
+  const nodeAModels = [
+    makeModel({ id: 'mlx/node-a-one' }),
+    makeModel({ id: 'mlx/node-a-two' }),
+  ];
+  const nodeBModels = [
+    makeModel({ id: 'mlx/node-a-two', nodeId: 'node-b', nodeName: 'Node B' }),
+    makeModel({ id: 'mlx/node-b-one', nodeId: 'node-b', nodeName: 'Node B' }),
+  ];
+  const catalog = makeCatalog({
+    onlineNodes: [
+      makeNode({ nodeId: 'node-a', models: nodeAModels, totalModels: 2 }),
+      makeNode({ nodeId: 'node-b', models: nodeBModels, totalModels: 2 }),
+      makeNode({ nodeId: 'node-offline', status: 'offline', models: [makeModel({ id: 'offline/model' })] }),
+    ],
+    agents: [
+      makeAgentEntry({
+        agentId: 'agent-a',
+        name: 'Agent A',
+        nodeId: 'node-a',
+        online: true,
+        models: nodeAModels,
+        totalModels: 2,
+      }),
+      makeAgentEntry({
+        agentId: 'agent-b',
+        name: 'Agent B',
+        nodeId: 'node-b',
+        online: true,
+        models: nodeBModels,
+        totalModels: 2,
+      }),
+      makeAgentEntry({
+        agentId: 'agent-a-offline',
+        nodeId: 'node-a',
+        online: false,
+        models: nodeAModels,
+        totalModels: 2,
+      }),
+    ],
+  });
+
+  assert.deepEqual(getModelsForNodeAgent(null), []);
+  assert.deepEqual(
+    getModelsForNodeAgent(catalog, 'node-a', 'agent-a').map((model) => model.id),
+    ['mlx/node-a-one', 'mlx/node-a-two'],
+  );
+  assert.deepEqual(
+    getModelsForNodeAgent(catalog, null, 'agent-a').map((model) => model.id),
+    ['mlx/node-a-one', 'mlx/node-a-two'],
+  );
+  assert.deepEqual(getModelsForNodeAgent(catalog, 'node-b', 'agent-a'), []);
+  assert.deepEqual(getModelsForNodeAgent(catalog, 'node-a', 'agent-a-offline'), []);
+  assert.deepEqual(getModelsForNodeAgent(catalog, 'node-a', 'agent-missing'), []);
+
+  assert.deepEqual(
+    getModelsForNodeAgent(catalog, 'node-a', 'auto').map((model) => model.id),
+    ['mlx/node-a-one', 'mlx/node-a-two'],
+  );
+  assert.deepEqual(
+    getModelsForNodeAgent(catalog, 'node-a', '').map((model) => model.id),
+    ['mlx/node-a-one', 'mlx/node-a-two'],
+  );
+  assert.deepEqual(getModelsForNodeAgent(catalog, 'node-offline', 'auto'), []);
+  assert.deepEqual(getModelsForNodeAgent(catalog, 'node-missing', 'auto'), []);
+
+  assert.deepEqual(
+    getModelsForNodeAgent(catalog, null, 'auto').map((model) => model.id),
+    ['mlx/node-a-one', 'mlx/node-a-two', 'mlx/node-b-one'],
+  );
+  assert.deepEqual(
+    getModelsForNodeAgent(catalog, 'all', 'auto').map((model) => model.id),
+    ['mlx/node-a-one', 'mlx/node-a-two', 'mlx/node-b-one'],
+  );
+  assert.deepEqual(
+    getModelsForNodeAgent(catalog, '  ', ' auto ').map((model) => model.id),
+    ['mlx/node-a-one', 'mlx/node-a-two', 'mlx/node-b-one'],
+  );
+  assert.deepEqual(
+    getModelsForNodeAgent(catalog, undefined, undefined).map((model) => model.id),
+    ['mlx/node-a-one', 'mlx/node-a-two', 'mlx/node-b-one'],
+  );
+});
+
+test('resolveOfflineFallback handles node, agent, and model disappearance', () => {
+  const nodeBModels = [
+    makeModel({ id: 'mlx/node-b-one', nodeId: 'node-b', nodeName: 'Node B' }),
+    makeModel({ id: 'mlx/node-b-two', nodeId: 'node-b', nodeName: 'Node B' }),
+  ];
+  const nodeCModels = [makeModel({ id: 'mlx/node-c-one', nodeId: 'node-c', nodeName: 'Node C' })];
+  const catalog = makeCatalog({
+    onlineNodes: [
+      makeNode({ nodeId: 'node-b', name: 'Node B', models: nodeBModels, totalModels: 2 }),
+      makeNode({ nodeId: 'node-c', name: 'Node C', models: nodeCModels, totalModels: 1 }),
+      makeNode({ nodeId: 'node-d', name: 'Node D', status: 'offline' }),
+    ],
+    offlineNodes: [
+      {
+        nodeId: 'node-a',
+        name: 'Node Alpha',
+        deviceType: 'server',
+        platform: 'linux',
+        status: 'offline',
+        offlineReason: 'probe timeout',
+        offlineCategory: 'timeout',
+        lastSeenAt: '2026-01-01T00:00:00.000Z',
+      },
+    ],
+    agents: [
+      makeAgentEntry({
+        agentId: 'agent-shared',
+        name: 'Agent Shared',
+        nodeId: 'node-b',
+        online: true,
+        models: nodeBModels,
+        totalModels: 2,
+      }),
+      makeAgentEntry({
+        agentId: 'agent-offline',
+        name: 'Agent Offline',
+        nodeId: 'node-b',
+        online: false,
+        models: nodeBModels,
+        totalModels: 2,
+      }),
+      makeAgentEntry({
+        agentId: 'agent-c',
+        name: 'Agent C',
+        nodeId: 'node-c',
+        online: true,
+        models: nodeCModels,
+        totalModels: 1,
+      }),
+    ],
+  });
+
+  assert.deepEqual(
+    resolveOfflineFallback({ nodeId: 'node-b', agentId: 'agent-shared', model: 'mlx/node-b-one' }, catalog),
+    {
+      nodeId: 'node-b',
+      agentId: 'agent-shared',
+      model: 'mlx/node-b-one',
+      didFallback: false,
+      reason: 'valid',
+      notice: null,
+    },
+  );
+  assert.deepEqual(
+    resolveOfflineFallback({ nodeId: 'node-b', agentId: 'agent-shared', model: '' }, catalog),
+    {
+      nodeId: 'node-b',
+      agentId: 'agent-shared',
+      model: '',
+      didFallback: false,
+      reason: 'valid',
+      notice: null,
+    },
+  );
+
+  const nodeOffline = resolveOfflineFallback(
+    { nodeId: 'node-a', agentId: 'agent-shared', model: 'mlx/node-b-one' },
+    catalog,
+  );
+  assert.equal(nodeOffline.nodeId, 'node-b');
+  assert.equal(nodeOffline.agentId, 'agent-shared');
+  assert.equal(nodeOffline.model, '');
+  assert.equal(nodeOffline.didFallback, true);
+  assert.equal(nodeOffline.reason, 'node_offline');
+  assert.match(nodeOffline.notice || '', /Node Alpha/);
+  assert.match(nodeOffline.notice || '', /Node B/);
+
+  const nodeOfflineUnknownAgent = resolveOfflineFallback(
+    { nodeId: 'node-a', agentId: 'agent-missing', model: 'mlx/node-b-one' },
+    catalog,
+  );
+  assert.equal(nodeOfflineUnknownAgent.nodeId, 'node-b');
+  assert.equal(nodeOfflineUnknownAgent.agentId, 'auto');
+  assert.equal(nodeOfflineUnknownAgent.reason, 'node_offline');
+
+  const nodeOfflineUnknownNode = resolveOfflineFallback(
+    { nodeId: 'node-ghost', agentId: 'auto', model: '' },
+    catalog,
+  );
+  assert.equal(nodeOfflineUnknownNode.nodeId, 'node-b');
+  assert.match(nodeOfflineUnknownNode.notice || '', /node-ghost/);
+
+  const agentOffline = resolveOfflineFallback(
+    { nodeId: 'node-b', agentId: 'agent-offline', model: 'mlx/node-b-one' },
+    catalog,
+  );
+  assert.equal(agentOffline.nodeId, 'node-b');
+  assert.equal(agentOffline.agentId, 'auto');
+  assert.equal(agentOffline.model, 'mlx/node-b-one');
+  assert.equal(agentOffline.didFallback, true);
+  assert.equal(agentOffline.reason, 'agent_offline');
+  assert.match(agentOffline.notice || '', /Agent Offline/);
+
+  const agentOfflineModelGone = resolveOfflineFallback(
+    { nodeId: 'node-b', agentId: 'agent-offline', model: 'mlx/removed' },
+    catalog,
+  );
+  assert.equal(agentOfflineModelGone.agentId, 'auto');
+  assert.equal(agentOfflineModelGone.model, '');
+  assert.equal(agentOfflineModelGone.reason, 'agent_offline');
+
+  const agentMismatch = resolveOfflineFallback(
+    { nodeId: 'node-b', agentId: 'agent-c', model: 'mlx/node-b-one' },
+    catalog,
+  );
+  assert.equal(agentMismatch.agentId, 'auto');
+  assert.equal(agentMismatch.reason, 'agent_offline');
+  assert.match(agentMismatch.notice || '', /Agent C/);
+
+  const modelRemoved = resolveOfflineFallback(
+    { nodeId: 'node-b', agentId: 'agent-shared', model: 'mlx/node-b-removed' },
+    catalog,
+  );
+  assert.equal(modelRemoved.nodeId, 'node-b');
+  assert.equal(modelRemoved.agentId, 'agent-shared');
+  assert.equal(modelRemoved.model, '');
+  assert.equal(modelRemoved.didFallback, true);
+  assert.equal(modelRemoved.reason, 'model_unavailable');
+  assert.match(modelRemoved.notice || '', /mlx\/node-b-removed/);
+
+  const modelRemovedForAuto = resolveOfflineFallback(
+    { nodeId: 'node-b', agentId: 'auto', model: 'mlx/node-c-one' },
+    catalog,
+  );
+  assert.equal(modelRemovedForAuto.model, '');
+  assert.equal(modelRemovedForAuto.reason, 'model_unavailable');
+
+  const noOnlineNodes = resolveOfflineFallback(
+    { nodeId: 'node-a', agentId: 'agent-shared', model: 'mlx/node-b-one' },
+    makeCatalog({ onlineNodes: [], offlineNodes: catalog.offlineNodes }),
+  );
+  assert.deepEqual(noOnlineNodes, {
+    nodeId: '',
+    agentId: 'auto',
+    model: '',
+    didFallback: true,
+    reason: 'node_offline',
+    notice: '节点「Node Alpha」已离线，暂无可用节点',
+  });
+
+  const nullCatalog = resolveOfflineFallback(
+    { nodeId: 'node-b', agentId: 'agent-shared', model: 'mlx/node-b-one' },
+    null,
+  );
+  assert.equal(nullCatalog.nodeId, '');
+  assert.equal(nullCatalog.agentId, 'auto');
+  assert.equal(nullCatalog.model, '');
+  assert.equal(nullCatalog.reason, 'node_offline');
+  assert.match(nullCatalog.notice || '', /node-b/);
 });

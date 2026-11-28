@@ -27,6 +27,167 @@ export function getAgentCatalogEntry(
   return catalog.agents.find((entry) => entry.agentId === agentId) || null;
 }
 
+export interface OnlineNodeOption {
+  nodeId: string;
+  name: string;
+  status: string;
+  deviceType: string;
+  isLocal: boolean;
+  modelCount: number;
+  agentCount: number;
+}
+
+export function getOnlineNodeOptions(
+  catalog: DynamicModelCatalogResponse | null | undefined,
+): OnlineNodeOption[] {
+  const nodes = getOnlineNodesFromCatalog(catalog);
+  if (!nodes.length) return [];
+  const agents = Array.isArray(catalog?.agents) ? catalog.agents : [];
+  return nodes.map((node) => ({
+    nodeId: node.nodeId,
+    name: node.name,
+    status: node.status,
+    deviceType: node.deviceType,
+    isLocal: Boolean(node.isLocal),
+    modelCount: Array.isArray(node.models) ? node.models.length : 0,
+    agentCount: agents.filter((entry) => entry.nodeId === node.nodeId && entry.online === true).length,
+  }));
+}
+
+export function getOnlineAgentsForNode(
+  catalog: DynamicModelCatalogResponse | null | undefined,
+  nodeId?: string | null,
+): AgentModelCatalogEntry[] {
+  if (!catalog || !Array.isArray(catalog.agents)) return [];
+  const normalizedNodeId = typeof nodeId === 'string' ? nodeId.trim() : '';
+  const filterNodeId = normalizedNodeId && normalizedNodeId !== 'all' ? normalizedNodeId : null;
+  return catalog.agents.filter(
+    (entry) => entry.online === true && (!filterNodeId || entry.nodeId === filterNodeId),
+  );
+}
+
+export function getModelsForNodeAgent(
+  catalog: DynamicModelCatalogResponse | null | undefined,
+  nodeId?: string | null,
+  agentId?: string | null,
+): CatalogModelItem[] {
+  const normalizedNodeId = typeof nodeId === 'string' ? nodeId.trim() : '';
+  const normalizedAgentId = typeof agentId === 'string' ? agentId.trim() : '';
+  const filterNodeId = normalizedNodeId && normalizedNodeId !== 'all' ? normalizedNodeId : null;
+  const filterAgentId = normalizedAgentId && normalizedAgentId !== 'auto' ? normalizedAgentId : null;
+
+  if (filterAgentId) {
+    const entry = getAgentCatalogEntry(catalog, filterAgentId);
+    if (!entry || entry.online !== true) return [];
+    if (filterNodeId && entry.nodeId !== filterNodeId) return [];
+    return Array.isArray(entry.models) ? entry.models : [];
+  }
+
+  if (filterNodeId) {
+    const node = getOnlineNodesFromCatalog(catalog).find((item) => item.nodeId === filterNodeId);
+    return node && Array.isArray(node.models) ? node.models : [];
+  }
+
+  const models: CatalogModelItem[] = [];
+  const seen = new Set<string>();
+  for (const node of getOnlineNodesFromCatalog(catalog)) {
+    if (!Array.isArray(node.models)) continue;
+    for (const model of node.models) {
+      if (model?.id) {
+        if (seen.has(model.id)) continue;
+        seen.add(model.id);
+      }
+      models.push(model);
+    }
+  }
+  return models;
+}
+
+export interface OfflineFallbackResult {
+  nodeId: string;
+  agentId: string;
+  model: string;
+  didFallback: boolean;
+  reason: 'valid' | 'node_offline' | 'agent_offline' | 'model_unavailable';
+  notice: string | null;
+}
+
+export function resolveOfflineFallback(
+  prev: { nodeId: string; agentId: string; model: string },
+  catalog: DynamicModelCatalogResponse | null | undefined,
+): OfflineFallbackResult {
+  const onlineNodes = getOnlineNodesFromCatalog(catalog);
+  const previousNodeId = prev.nodeId || '';
+  const previousAgentId = prev.agentId || '';
+  const previousModel = prev.model || '';
+  const selectedNode = onlineNodes.find((node) => node.nodeId === previousNodeId) || null;
+
+  if (!selectedNode) {
+    const fallbackNode = onlineNodes[0] || null;
+    const offlineNode = catalog?.offlineNodes?.find((node) => node.nodeId === previousNodeId) || null;
+    const previousLabel = offlineNode?.name || previousNodeId || '当前节点';
+    const nodeId = fallbackNode?.nodeId || '';
+    const fallbackAgent =
+      previousAgentId && previousAgentId !== 'auto'
+        ? catalog?.agents?.find(
+            (entry) =>
+              entry.agentId === previousAgentId &&
+              entry.online === true &&
+              entry.nodeId === nodeId,
+          ) || null
+        : null;
+    const agentId = previousAgentId && previousAgentId !== 'auto' && !fallbackAgent
+      ? 'auto'
+      : previousAgentId;
+    return {
+      nodeId,
+      agentId,
+      model: '',
+      didFallback: true,
+      reason: 'node_offline',
+      notice: fallbackNode
+        ? `节点「${previousLabel}」已离线，已切换到「${fallbackNode.name || fallbackNode.nodeId}」`
+        : `节点「${previousLabel}」已离线，暂无可用节点`,
+    };
+  }
+
+  let agentId = previousAgentId;
+  let model = previousModel;
+  let reason: OfflineFallbackResult['reason'] = 'valid';
+  let notice: string | null = null;
+
+  if (agentId && agentId !== 'auto') {
+    const entry = getAgentCatalogEntry(catalog, agentId);
+    if (!entry || entry.online !== true || entry.nodeId !== selectedNode.nodeId) {
+      agentId = 'auto';
+      reason = 'agent_offline';
+      notice = `Agent「${entry?.name || previousAgentId}」在节点「${selectedNode.name || selectedNode.nodeId}」离线，已重置为自动选择`;
+      if (model) {
+        const available = getModelsForNodeAgent(catalog, selectedNode.nodeId, agentId);
+        if (!available.some((item) => item.id === model)) model = '';
+      }
+    }
+  }
+
+  if (reason === 'valid' && model) {
+    const available = getModelsForNodeAgent(catalog, selectedNode.nodeId, agentId);
+    if (!available.some((item) => item.id === model)) {
+      model = '';
+      reason = 'model_unavailable';
+      notice = `模型「${previousModel}」在节点「${selectedNode.name || selectedNode.nodeId}」不可用，已清除选择`;
+    }
+  }
+
+  return {
+    nodeId: selectedNode.nodeId,
+    agentId,
+    model,
+    didFallback: reason !== 'valid',
+    reason,
+    notice,
+  };
+}
+
 export function getSelectableModelsForAgent(
   catalog: DynamicModelCatalogResponse | null | undefined,
   agentId: string | null | undefined,

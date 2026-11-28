@@ -10,6 +10,7 @@ import {
   KanbanSquare,
   Layers,
   MessageSquare,
+  PanelRight,
   Plus,
   Radio,
   RotateCcw,
@@ -29,18 +30,27 @@ import type {
   A2AStateResponse,
   A2ATaskRecord,
   DynamicModelCatalogResponse,
+  LinearStateResponse,
   MagpieCatalogResponse,
 } from '../types';
 import {
   cancelA2ATask,
+  compactA2ATask,
   copyToClipboard,
   dispatchA2ATask,
   fetchA2AState,
+  fetchLinearState,
   fetchMagpieModels,
   fetchModelCatalog,
   handoffA2ASession,
+  markA2ATaskRead,
   openA2ABtwThread,
   pingA2AAgent,
+  queueA2ATaskTurn,
+  restartA2ATask,
+  settleA2ATask,
+  snoozeA2ATask,
+  steerA2ATask,
   updateA2ATaskState,
 } from '../api';
 import {
@@ -64,24 +74,32 @@ import {
   type SlashCommandDef,
 } from '../lib/agent-console';
 import {
-  formatMagpieModelOption,
-  groupMagpieModels,
   resolveAgentDefaultModel,
 } from '../lib/magpie-models';
 import {
-  formatCatalogModelOption,
   getAgentCatalogEntry,
   getEffectiveEffortOptions,
-  getSelectableModelsForAgent,
-  groupCatalogModels,
+  getModelsForNodeAgent,
+  resolveOfflineFallback,
   resolveSelectedModelFallback,
 } from '../lib/model-catalog';
+import {
+  buildNeedsYouQueue,
+  buildTaskIssueLinkIndex,
+  clearNodeDraft,
+  formatInlineOutputPreview,
+  loadNodeDraft,
+  saveNodeDraft,
+} from '../lib/workspace-controls';
 import { cn, FOCUS_RING } from '../lib/cn';
 import { countBtwAttention } from '../lib/btw';
 import { formatClock, formatDateTime } from '../utils/format';
 import { AgentBtwDrawer } from '../components/AgentBtwDrawer';
 import { AgentSlashMenu } from '../components/AgentSlashMenu';
-import { AgentTaskKanban } from '../components/AgentTaskKanban';
+import { ContextRailHost } from '../components/workspace/ContextRailHost';
+import { MobileNeedsYouStream } from '../components/workspace/MobileNeedsYouStream';
+import { NodeAgentModelSelector } from '../components/workspace/NodeAgentModelSelector';
+import { SessionRuntimeLane } from '../components/workspace/SessionRuntimeLane';
 import { Button, inputBaseClass, StatusIndicator } from '../components/ui';
 
 type WorkspaceMode = 'thread' | 'kanban';
@@ -253,10 +271,14 @@ export interface AgentsViewProps {
   readOnly?: boolean;
   activeTaskId?: string | null;
   searchQuery?: string;
+  a2aRevision?: number;
+  catalogRevision?: number;
   onSearchQueryChange?: (query: string) => void;
   onSelectTask?: (taskId: string | null) => void;
   onTasksUpdated?: () => void;
   onOpenSettings?: (tab?: string) => void;
+  onOpenProjectIssue?: (issueId?: string) => void;
+  onOpenSelfEvolution?: () => void;
   onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
 }
 
@@ -264,23 +286,40 @@ export function AgentsView({
   readOnly = false,
   activeTaskId = null,
   searchQuery,
+  a2aRevision = 0,
+  catalogRevision = 0,
   onSearchQueryChange,
   onSelectTask,
   onTasksUpdated,
   onOpenSettings,
+  onOpenProjectIssue,
+  onOpenSelfEvolution,
   onToast,
 }: AgentsViewProps) {
   const [a2aState, setA2aState] = React.useState<A2AStateResponse | null>(null);
+  const [linearState, setLinearState] = React.useState<LinearStateResponse | null>(null);
   const [magpieCatalog, setMagpieCatalog] = React.useState<MagpieCatalogResponse | null>(null);
   const [modelCatalog, setModelCatalog] = React.useState<DynamicModelCatalogResponse | null>(null);
   const [workspaceMode, setWorkspaceMode] = React.useState<WorkspaceMode>('thread');
   const [localSearchQuery, setLocalSearchQuery] = React.useState('');
+  const [selectedNodeId, setSelectedNodeId] = React.useState<string>('all');
+  const [offlineNotice, setOfflineNotice] = React.useState<string | null>(null);
   const [selectedTarget, setSelectedTarget] = React.useState<string>('auto');
   const [executionMode, setExecutionMode] = React.useState<ComposerExecutionMode>('lead-router');
   const [reasoningEffort, setReasoningEffort] = React.useState<ComposerEffortLevel>('high');
   const [modelOverride, setModelOverride] = React.useState('');
   const [armedWorktree, setArmedWorktree] = React.useState('');
   const [prompt, setPrompt] = React.useState('');
+  const [expandedArtifacts, setExpandedArtifacts] = React.useState<Record<string, boolean>>({});
+  const [busyControlTaskId, setBusyControlTaskId] = React.useState<string | null>(null);
+  const [contextRailOpen, setContextRailOpen] = React.useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return window.localStorage.getItem('ops-console:context-rail-open') === '1';
+    } catch {
+      return false;
+    }
+  });
 
   const [menuDismissed, setMenuDismissed] = React.useState(false);
   const [manualSlashOpen, setManualSlashOpen] = React.useState(false);
@@ -319,8 +358,12 @@ export function AgentsView({
 
   const loadState = React.useCallback(async () => {
     try {
-      const res = await fetchA2AState();
+      const [res, linearRes] = await Promise.all([
+        fetchA2AState(),
+        fetchLinearState().catch(() => null),
+      ]);
       setA2aState(res);
+      if (linearRes) setLinearState(linearRes);
       if (!configSeededRef.current && res.orchestrationConfig) {
         configSeededRef.current = true;
         const serverMode = res.orchestrationConfig.mode as ComposerExecutionMode;
@@ -340,7 +383,7 @@ export function AgentsView({
 
   React.useEffect(() => {
     void loadState();
-  }, [loadState, activeTaskId]);
+  }, [loadState, activeTaskId, a2aRevision]);
 
   React.useEffect(() => {
     const controller = new AbortController();
@@ -355,7 +398,15 @@ export function AgentsView({
         }
       });
     return () => controller.abort();
-  }, [a2aState?.summary?.onlineAgents]);
+  }, [catalogRevision, a2aState?.summary?.onlineAgents]);
+
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem('ops-console:context-rail-open', contextRailOpen ? '1' : '0');
+    } catch {
+      // ignore storage errors
+    }
+  }, [contextRailOpen]);
 
   React.useEffect(() => {
     if (activeTaskId && activeTaskId !== prevActiveTaskIdRef.current) {
@@ -386,14 +437,9 @@ export function AgentsView({
     [agents, a2aState?.leadAgentId],
   );
 
-  const magpieModels = React.useMemo(() => magpieCatalog?.models || [], [magpieCatalog?.models]);
   const magpieBindings = React.useMemo(
     () => magpieCatalog?.agentBindings || [],
     [magpieCatalog?.agentBindings],
-  );
-  const magpieModelGroups = React.useMemo(
-    () => groupMagpieModels(magpieModels),
-    [magpieModels],
   );
   const selectedAgentPeer = React.useMemo(
     () =>
@@ -407,17 +453,41 @@ export function AgentsView({
     [modelCatalog, selectedAgentPeer?.id],
   );
   const selectableCatalogModels = React.useMemo(
-    () => getSelectableModelsForAgent(modelCatalog, selectedAgentPeer?.id, selectedAgentPeer?.nodeId),
-    [modelCatalog, selectedAgentPeer?.id, selectedAgentPeer?.nodeId],
-  );
-  const catalogModelGroups = React.useMemo(
-    () => groupCatalogModels(selectableCatalogModels),
-    [selectableCatalogModels],
+    () =>
+      getModelsForNodeAgent(
+        modelCatalog,
+        selectedNodeId && selectedNodeId !== 'all' ? selectedNodeId : selectedAgentPeer?.nodeId,
+        selectedTarget !== 'auto' ? selectedTarget : selectedAgentPeer?.id,
+      ),
+    [modelCatalog, selectedNodeId, selectedTarget, selectedAgentPeer?.id, selectedAgentPeer?.nodeId],
   );
   const effectiveEffortOptions = React.useMemo(
     () => getEffectiveEffortOptions(selectedAgentCatalog, modelOverride),
     [selectedAgentCatalog, modelOverride],
   );
+
+  React.useEffect(() => {
+    if (!modelCatalog) return;
+    const fallback = resolveOfflineFallback(
+      {
+        nodeId: selectedNodeId === 'all' ? '' : selectedNodeId,
+        agentId: selectedTarget,
+        model: modelOverride,
+      },
+      modelCatalog,
+    );
+    if (fallback.didFallback) {
+      setSelectedNodeId(fallback.nodeId || 'all');
+      setSelectedTarget(fallback.agentId || 'auto');
+      setModelOverride(fallback.model);
+      setOfflineNotice(fallback.notice);
+      if (fallback.notice) {
+        onToast?.(fallback.notice, 'info');
+      }
+    } else if (offlineNotice) {
+      setOfflineNotice(null);
+    }
+  }, [modelCatalog, selectedNodeId, selectedTarget, modelOverride]);
 
   React.useEffect(() => {
     if (!modelCatalog || !modelOverride) return;
@@ -466,17 +536,44 @@ export function AgentsView({
     },
     [selectedAgentCatalog, selectedAgentPeer, magpieBindings, a2aState?.orchestrationConfig?.mainModel],
   );
-  const hasCustomModelOverride = React.useMemo(
-    () =>
-      Boolean(modelOverride) &&
-      !selectableCatalogModels.some((item) => item.id === modelOverride) &&
-      !magpieModels.some((item) => item.id === modelOverride),
-    [modelOverride, selectableCatalogModels, magpieModels],
-  );
-
   const activeTask = React.useMemo(
     () => (activeTaskId ? tasks.find((task) => task.id === activeTaskId) || null : null),
     [tasks, activeTaskId],
+  );
+
+  const activeDraftNodeId =
+    selectedNodeId && selectedNodeId !== 'all'
+      ? selectedNodeId
+      : selectedAgentPeer?.nodeId || 'hub';
+  const draftScopeKey = `${activeDraftNodeId}::${activeTaskId || 'new'}`;
+  const lastDraftScopeRef = React.useRef<string>('');
+
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (lastDraftScopeRef.current === draftScopeKey) return;
+    lastDraftScopeRef.current = draftScopeKey;
+    const saved = loadNodeDraft(window.localStorage, activeDraftNodeId, activeTaskId);
+    setPrompt(saved);
+  }, [draftScopeKey, activeDraftNodeId, activeTaskId]);
+
+  React.useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (lastDraftScopeRef.current !== draftScopeKey) return;
+    saveNodeDraft(window.localStorage, activeDraftNodeId, activeTaskId, prompt);
+  }, [prompt, draftScopeKey, activeDraftNodeId, activeTaskId]);
+
+  React.useEffect(() => {
+    if (readOnly || !activeTask?.id || !activeTask.attention?.unread) return;
+    void markA2ATaskRead(activeTask.id).catch(() => {});
+  }, [readOnly, activeTask?.id, activeTask?.attention?.unread]);
+
+  const linkIndex = React.useMemo(
+    () => buildTaskIssueLinkIndex(linearState?.issues || [], tasks, []),
+    [linearState?.issues, tasks],
+  );
+  const activeLinkedIssue = React.useMemo(
+    () => (activeTask ? linkIndex.issueByTaskId.get(activeTask.id) || null : null),
+    [activeTask, linkIndex],
   );
 
   const threadTasks = React.useMemo(
@@ -792,6 +889,15 @@ export function AgentsView({
           case '/compact': {
             setPrompt('');
             setWorkspaceMode('thread');
+            if (activeTask && !readOnly) {
+              try {
+                await compactA2ATask(activeTask.id, parsed.rest || undefined);
+                await loadState();
+                onTasksUpdated?.();
+              } catch {
+                // fallback to local summary card below
+              }
+            }
             const sourceTasks = threadTasks.length > 0 ? threadTasks : tasks.slice(0, 6);
             const summary = buildCompactThreadSummary(sourceTasks);
             appendSystemCard({
@@ -800,7 +906,7 @@ export function AgentsView({
               createdAt: new Date().toISOString(),
               summary,
             });
-            onToast?.(`已整理 ${summary.turnCount} 轮对话上下文摘要`, 'ok');
+            onToast?.(`已标记整理 ${summary.turnCount} 轮对话上下文（原始记录保留）`, 'ok');
             return;
           }
           case '/ping': {
@@ -1161,11 +1267,130 @@ export function AgentsView({
     }
   };
 
+  const handleQueueTurn = React.useCallback(
+    async (taskId: string, queuedPrompt: string) => {
+      if (readOnly || !queuedPrompt.trim()) return;
+      setBusyControlTaskId(taskId);
+      try {
+        await queueA2ATaskTurn(taskId, {
+          prompt: queuedPrompt.trim(),
+          model: modelOverride || undefined,
+          effort: reasoningEffort,
+        });
+        await loadState();
+        onTasksUpdated?.();
+        onToast?.('已加入下一轮执行队列', 'ok');
+      } catch (err) {
+        onToast?.(err instanceof Error ? err.message : '加入队列失败', 'err');
+      } finally {
+        setBusyControlTaskId(null);
+      }
+    },
+    [readOnly, modelOverride, reasoningEffort, loadState, onTasksUpdated, onToast],
+  );
+
+  const handleSteerTask = React.useCallback(
+    async (taskId: string, instruction: string) => {
+      if (readOnly || !instruction.trim()) return;
+      setBusyControlTaskId(taskId);
+      try {
+        await steerA2ATask(taskId, instruction.trim());
+        await loadState();
+        onTasksUpdated?.();
+        onToast?.('已注入运行中纠偏指令', 'ok');
+      } catch (err) {
+        onToast?.(err instanceof Error ? err.message : '注入指令失败', 'err');
+      } finally {
+        setBusyControlTaskId(null);
+      }
+    },
+    [readOnly, loadState, onTasksUpdated, onToast],
+  );
+
+  const handleRestartTask = React.useCallback(
+    async (taskId: string, freshContext: boolean) => {
+      if (readOnly) return;
+      setBusyControlTaskId(taskId);
+      try {
+        const res = await restartA2ATask(taskId, { freshContext });
+        await loadState();
+        onTasksUpdated?.();
+        if (res.task?.id) {
+          onSelectTask?.(res.task.id);
+          setWorkspaceMode('thread');
+        }
+        onToast?.(freshContext ? '已开启干净上下文新线程（保留父线程谱系）' : '已重启任务执行', 'ok');
+      } catch (err) {
+        onToast?.(err instanceof Error ? err.message : '重启任务失败', 'err');
+      } finally {
+        setBusyControlTaskId(null);
+      }
+    },
+    [readOnly, loadState, onTasksUpdated, onSelectTask, onToast],
+  );
+
+  const handleSettleTask = React.useCallback(
+    async (taskId: string) => {
+      if (readOnly) return;
+      setBusyControlTaskId(taskId);
+      try {
+        await settleA2ATask(taskId);
+        await loadState();
+        onTasksUpdated?.();
+        onToast?.('已将线程标记为已处理', 'ok');
+      } catch (err) {
+        onToast?.(err instanceof Error ? err.message : '标记已处理失败', 'err');
+      } finally {
+        setBusyControlTaskId(null);
+      }
+    },
+    [readOnly, loadState, onTasksUpdated, onToast],
+  );
+
+  const handleSnoozeTask = React.useCallback(
+    async (taskId: string, minutes: number) => {
+      if (readOnly) return;
+      setBusyControlTaskId(taskId);
+      try {
+        await snoozeA2ATask(taskId, { minutes });
+        await loadState();
+        onTasksUpdated?.();
+        onToast?.(`已静默提醒 ${minutes} 分钟（新审批或完成将提前唤醒）`, 'info');
+      } catch (err) {
+        onToast?.(err instanceof Error ? err.message : '静默失败', 'err');
+      } finally {
+        setBusyControlTaskId(null);
+      }
+    },
+    [readOnly, loadState, onTasksUpdated, onToast],
+  );
+
+  const handleCompactTask = React.useCallback(
+    async (taskId: string) => {
+      if (readOnly) return;
+      setBusyControlTaskId(taskId);
+      try {
+        await compactA2ATask(taskId);
+        await loadState();
+        onTasksUpdated?.();
+        onToast?.('已标记压缩上下文（原始步骤完整保留）', 'ok');
+      } catch (err) {
+        onToast?.(err instanceof Error ? err.message : '上下文压缩失败', 'err');
+      } finally {
+        setBusyControlTaskId(null);
+      }
+    },
+    [readOnly, loadState, onTasksUpdated, onToast],
+  );
+
   const handleOpenNewThread = () => {
     setWorkspaceMode('thread');
     setSystemCards([]);
     setArmedWorktree('');
     onSelectTask?.(null);
+    if (typeof window !== 'undefined') {
+      clearNodeDraft(window.localStorage, activeDraftNodeId, activeTaskId);
+    }
     focusComposer();
   };
 
@@ -1576,127 +1801,43 @@ export function AgentsView({
         />
 
         <div className="mt-2.5 pt-2.5 border-t border-[var(--border-subtle)]/70 flex flex-wrap items-center justify-between gap-2">
-          <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-            <select
-              aria-label="选择执行 Agent"
-              data-testid="agent-target-select"
-              disabled={readOnly || submitting}
-              value={selectedTarget}
-              onChange={(event) => setSelectedTarget(event.target.value)}
-              className={cn(
-                'ui-select h-8 max-w-[220px] rounded-lg border border-transparent hover:border-[var(--border)] bg-[var(--surface-subtle)]/75 pl-2.5 pr-7 text-[12px] font-medium text-[var(--ink-muted)] hover:text-[var(--ink)] cursor-pointer transition-colors truncate',
-                FOCUS_RING,
-              )}
-            >
-              <option value="auto">
-                自动调度 · {leadAgent ? shortAgentName(leadAgent.name) : '总指挥'}
-              </option>
-              {nodeGroups.map((group) => (
-                <optgroup key={group.nodeId} label={`${group.nodeName} (${group.nodeId})`}>
-                  {group.agents.map((peer) => (
-                    <option key={peer.id} value={peer.id}>
-                      {shortAgentName(peer.name)} · {peer.magpieModel || peer.modelHint || peer.harness}
-                    </option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
-
-            <select
-              aria-label="选择节点与 Agent 兼容模型"
-              data-testid="agent-model-select"
-              disabled={readOnly || submitting || Boolean(selectedAgentCatalog && !selectedAgentCatalog.online)}
-              value={modelOverride}
-              onChange={(event) => setModelOverride(event.target.value)}
-              title={
-                selectedAgentCatalog
-                  ? selectedAgentCatalog.online
-                    ? `${selectedAgentCatalog.nodeName} 在线 · ${selectedAgentCatalog.totalModels} 个兼容模型`
-                    : `${selectedAgentCatalog.nodeName} 已离线 · 模型已隐藏`
-                  : magpieCatalog?.reachable
-                    ? `Magpie 网关已连接 (${magpieCatalog.totalModels} 个模型)`
-                    : '在线节点模型目录（未连接时沿用 Agent 默认配置）'
-              }
-              className={cn(
-                'ui-select h-8 max-w-[260px] rounded-lg border border-transparent hover:border-[var(--border)] bg-[var(--surface-subtle)]/75 pl-2.5 pr-7 font-mono text-[11.5px] font-medium text-[var(--ink-muted)] hover:text-[var(--ink)] cursor-pointer transition-colors truncate',
-                modelOverride && 'border-[var(--accent)]/45 text-[var(--ink)]',
-                FOCUS_RING,
-              )}
-            >
-              <option value="">默认 · {resolvedDefaultModel.label}</option>
-              {hasCustomModelOverride && (
-                <option value={modelOverride}>手动 · {modelOverride}</option>
-              )}
-              {catalogModelGroups.length > 0
-                ? catalogModelGroups.map((group) => (
-                    <optgroup key={group.id} label={group.label}>
-                      {group.items.map((item) => (
-                        <option key={`${item.nodeId}:${item.id}`} value={item.id}>
-                          {formatCatalogModelOption(item)}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))
-                : (!selectedAgentCatalog || selectedAgentCatalog.online) &&
-                  magpieModelGroups.map((group) => (
-                    <optgroup key={group.id} label={group.label}>
-                      {group.models.map((item) => (
-                        <option key={item.id} value={item.id}>
-                          {formatMagpieModelOption(item)}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-              {selectedAgentCatalog && !selectedAgentCatalog.online && (
-                <option value="" disabled>
-                  所在节点已离线（离线节点模型不可选）
-                </option>
-              )}
-              {(!selectedAgentCatalog || selectedAgentCatalog.online) &&
-                catalogModelGroups.length === 0 &&
-                magpieCatalog &&
-                !magpieCatalog.reachable &&
-                magpieModels.length === 0 && (
-                  <option value="" disabled>
-                    当前节点暂无在线模型源（沿用 Agent 默认配置）
-                  </option>
-                )}
-            </select>
-
-            <select
-              aria-label="选择编排模式"
-              data-testid="agent-mode-select"
-              disabled={readOnly || submitting}
-              value={executionMode}
-              onChange={(event) => setExecutionMode(event.target.value as ComposerExecutionMode)}
-              className={cn(
-                'ui-select h-8 rounded-lg border border-transparent hover:border-[var(--border)] bg-[var(--surface-subtle)]/75 pl-2.5 pr-7 text-[12px] font-medium text-[var(--ink-muted)] hover:text-[var(--ink)] cursor-pointer transition-colors',
-                FOCUS_RING,
-              )}
-            >
-              <option value="lead-router">自动路由</option>
-              <option value="main-sub">主从拆解</option>
-              <option value="swarm">Swarm 并行</option>
-              <option value="plan">规划模式</option>
-            </select>
-
-            <select
-              aria-label="选择思考力度"
-              data-testid="agent-effort-select"
-              disabled={readOnly || submitting}
-              value={reasoningEffort}
-              onChange={(event) => setReasoningEffort(event.target.value as ComposerEffortLevel)}
-              className={cn(
-                'ui-select h-8 rounded-lg border border-transparent hover:border-[var(--border)] bg-[var(--surface-subtle)]/75 pl-2.5 pr-7 font-mono text-[11.5px] font-medium text-[var(--ink-muted)] hover:text-[var(--ink)] cursor-pointer transition-colors',
-                FOCUS_RING,
-              )}
-            >
-              {effectiveEffortOptions.map((lvl) => (
-                <option key={lvl} value={lvl}>
-                  effort: {lvl}
-                </option>
-              ))}
-            </select>
+          <div className="flex-1 min-w-0">
+            <NodeAgentModelSelector
+              catalog={modelCatalog}
+              agents={agents}
+              selectedNodeId={selectedNodeId}
+              onSelectNodeId={(nextNodeId) => {
+                setSelectedNodeId(nextNodeId);
+                setOfflineNotice(null);
+              }}
+              selectedTarget={selectedTarget}
+              onSelectTarget={(nextTarget) => {
+                setSelectedTarget(nextTarget);
+                setOfflineNotice(null);
+              }}
+              modelOverride={modelOverride}
+              onSelectModel={(nextModel) => {
+                setModelOverride(nextModel);
+                setOfflineNotice(null);
+              }}
+              effort={reasoningEffort}
+              onSelectEffort={(nextEffort) => {
+                if (VALID_COMPOSER_EFFORTS.has(nextEffort as ComposerEffortLevel)) {
+                  setReasoningEffort(nextEffort as ComposerEffortLevel);
+                }
+              }}
+              executionMode={executionMode}
+              onSelectExecutionMode={(nextMode) => {
+                if (VALID_COMPOSER_MODES.has(nextMode as ComposerExecutionMode)) {
+                  setExecutionMode(nextMode as ComposerExecutionMode);
+                }
+              }}
+              resolvedDefaultModelLabel={resolvedDefaultModel.label}
+              leadAgentName={leadAgent ? shortAgentName(leadAgent.name) : undefined}
+              offlineNotice={offlineNotice}
+              disabled={submitting}
+              readOnly={readOnly}
+            />
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
@@ -1758,6 +1899,10 @@ export function AgentsView({
   const showActiveThread = threadTasks.length > 0 || systemCards.length > 0;
   const btwThreads = a2aState?.btwThreads || [];
   const btwGlobalCounts = React.useMemo(() => countBtwAttention(btwThreads), [btwThreads]);
+  const needsYouItems = React.useMemo(
+    () => buildNeedsYouQueue(tasks, btwThreads),
+    [tasks, btwThreads],
+  );
   const btwDrawerTask = React.useMemo(
     () =>
       (btwContextTaskId ? tasks.find((item) => item.id === btwContextTaskId) : null) ||
@@ -1818,7 +1963,7 @@ export function AgentsView({
               )}
             >
               <KanbanSquare className="size-3.5" strokeWidth={1.75} />
-              生命周期看板
+              运行泳道
               <span className="font-mono text-[11px] text-[var(--ink-subtle)] tabular-nums">
                 {effectiveSearchQuery.trim()
                   ? `${filteredTasksCount}/${tasks.length}`
@@ -1826,6 +1971,19 @@ export function AgentsView({
               </span>
             </button>
           </div>
+          {onOpenProjectIssue && (
+            <button
+              type="button"
+              data-testid="agent-open-projects-kanban-btn"
+              onClick={() => onOpenProjectIssue()}
+              className={cn(
+                'hidden sm:inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer',
+                FOCUS_RING,
+              )}
+            >
+              项目看板
+            </button>
+          )}
 
           <div className="hidden md:flex items-center gap-2 font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums">
             <span
@@ -1965,6 +2123,30 @@ export function AgentsView({
             新建对话
           </Button>
 
+          {onOpenSelfEvolution && (
+            <Button
+              variant="ghost"
+              size="sm"
+              data-testid="agent-self-evolution-btn"
+              title="打开模块热插拔与自进化 PR 流水线"
+              onClick={onOpenSelfEvolution}
+            >
+              <Sparkles className="size-3.5" strokeWidth={1.75} />
+              <span className="hidden lg:inline">自进化</span>
+            </Button>
+          )}
+
+          <Button
+            variant={contextRailOpen ? 'secondary' : 'ghost'}
+            size="icon"
+            aria-label={contextRailOpen ? '收起上下文侧栏' : '展开上下文侧栏'}
+            title="上下文侧栏 (⌘])"
+            data-testid="agent-context-rail-toggle"
+            onClick={() => setContextRailOpen((prev) => !prev)}
+          >
+            <PanelRight className="size-4" strokeWidth={1.75} />
+          </Button>
+
           {onOpenSettings && (
             <Button
               variant="ghost"
@@ -1979,21 +2161,51 @@ export function AgentsView({
         </div>
       </header>
 
-      {workspaceMode === 'kanban' ? (
-        <AgentTaskKanban
-          tasks={tasks}
-          agents={agents}
-          searchQuery={effectiveSearchQuery}
-          onSearchQueryChange={handleSearchChange}
-          activeTaskId={activeTaskId}
+      {needsYouItems.length > 0 && (
+        <MobileNeedsYouStream
+          items={needsYouItems}
           readOnly={readOnly}
-          movingTaskId={movingTaskId}
           onOpenTask={(taskId) => {
             onSelectTask?.(taskId);
             setWorkspaceMode('thread');
           }}
-          onMoveTaskState={handleMoveTaskState}
-          onCreateNewTask={handleOpenNewThread}
+          onOpenBtw={(taskId, threadId) => {
+            setBtwContextTaskId(taskId);
+            setBtwInitialThreadId(threadId || null);
+            setBtwOpen(true);
+          }}
+          onSettleTask={(taskId) => void handleSettleTask(taskId)}
+          onSnoozeTask={(taskId, minutes) => void handleSnoozeTask(taskId, minutes)}
+        />
+      )}
+
+      <div className="flex-1 min-h-0 flex items-stretch gap-4">
+        <div className="flex-1 min-w-0 flex flex-col">
+      {workspaceMode === 'kanban' ? (
+        <SessionRuntimeLane
+          tasks={filterAgentTasks(tasks, effectiveSearchQuery)}
+          agents={agents}
+          activeTaskId={activeTaskId}
+          issueByTaskId={linkIndex.issueByTaskId}
+          readOnly={readOnly}
+          busyTaskId={busyControlTaskId}
+          onSelectTask={(taskId) => {
+            onSelectTask?.(taskId);
+            setWorkspaceMode('thread');
+          }}
+          onOpenBtw={(taskId) => {
+            setBtwContextTaskId(taskId);
+            setBtwInitialThreadId(null);
+            setBtwOpen(true);
+          }}
+          onOpenProjectIssue={onOpenProjectIssue}
+          onQueueTurn={handleQueueTurn}
+          onSteerTask={handleSteerTask}
+          onRestartTask={handleRestartTask}
+          onSettleTask={handleSettleTask}
+          onSnoozeTask={handleSnoozeTask}
+          onCompactTask={handleCompactTask}
+          onOpenProjectsBoard={onOpenProjectIssue ? () => onOpenProjectIssue() : undefined}
         />
       ) : !showActiveThread ? (
         <div className="flex-1 flex flex-col items-center justify-center w-full py-4 sm:py-8">
@@ -2405,29 +2617,82 @@ export function AgentsView({
                     )}
 
                     {task.artifact ? (
-                      <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] p-4 space-y-3">
-                        {artifactBlocks.map((block, idx) =>
-                          block.kind === 'code' ? (
-                            <div key={`${task.id}-blk-${idx}`} className="space-y-1">
-                              {block.lang && (
-                                <div className="font-mono text-[10.5px] uppercase tracking-wide text-[var(--ink-subtle)]">
-                                  {block.lang}
+                      (() => {
+                        const previewInfo = formatInlineOutputPreview(task.artifact);
+                        const isArtifactExpanded = Boolean(expandedArtifacts[task.id]);
+                        const displayBlocks =
+                          previewInfo.truncated && !isArtifactExpanded
+                            ? splitArtifactBlocks(previewInfo.preview)
+                            : artifactBlocks;
+                        return (
+                          <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] p-4 space-y-3">
+                            {displayBlocks.map((block, idx) =>
+                              block.kind === 'code' ? (
+                                <div key={`${task.id}-blk-${idx}`} className="space-y-1">
+                                  {block.lang && (
+                                    <div className="font-mono text-[10.5px] uppercase tracking-wide text-[var(--ink-subtle)]">
+                                      {block.lang}
+                                    </div>
+                                  )}
+                                  <pre className="rounded-lg bg-[var(--terminal-bg)] text-[var(--terminal-ink)] p-3 font-mono text-[12px] leading-relaxed overflow-x-auto">
+                                    <code>{block.content}</code>
+                                  </pre>
                                 </div>
-                              )}
-                              <pre className="rounded-lg bg-[var(--terminal-bg)] text-[var(--terminal-ink)] p-3 font-mono text-[12px] leading-relaxed overflow-x-auto">
-                                <code>{block.content}</code>
-                              </pre>
-                            </div>
-                          ) : (
-                            <div
-                              key={`${task.id}-blk-${idx}`}
-                              className="text-[13.5px] leading-relaxed text-[var(--ink)] whitespace-pre-wrap break-words font-mono"
-                            >
-                              {block.content}
-                            </div>
-                          ),
-                        )}
-                      </div>
+                              ) : (
+                                <div
+                                  key={`${task.id}-blk-${idx}`}
+                                  className="text-[13.5px] leading-relaxed text-[var(--ink)] whitespace-pre-wrap break-words font-mono"
+                                >
+                                  {block.content}
+                                </div>
+                              ),
+                            )}
+                            {(previewInfo.truncated || (task.outputSpills && task.outputSpills.length > 0)) && (
+                              <div className="pt-2 border-t border-[var(--border-subtle)] flex flex-wrap items-center justify-between gap-2 text-[11.5px] font-mono text-[var(--ink-subtle)] tabular-nums">
+                                <span>
+                                  {previewInfo.truncated && !isArtifactExpanded
+                                    ? `已截断预览 · 省略 ${previewInfo.omittedChars} 字符`
+                                    : `共 ${previewInfo.totalChars} 字符`}
+                                  {task.outputSpills && task.outputSpills.length > 0
+                                    ? ` · ${task.outputSpills.length} 个 Spill 产物`
+                                    : ''}
+                                </span>
+                                <div className="flex items-center gap-2">
+                                  {previewInfo.truncated && (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        setExpandedArtifacts((prev) => ({
+                                          ...prev,
+                                          [task.id]: !isArtifactExpanded,
+                                        }))
+                                      }
+                                      className={cn(
+                                        'text-[var(--accent)] hover:underline cursor-pointer',
+                                        FOCUS_RING,
+                                      )}
+                                    >
+                                      {isArtifactExpanded ? '收起预览' : '展开全部'}
+                                    </button>
+                                  )}
+                                  {task.outputSpills && task.outputSpills.length > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => setContextRailOpen(true)}
+                                      className={cn(
+                                        'text-[var(--accent)] hover:underline cursor-pointer',
+                                        FOCUS_RING,
+                                      )}
+                                    >
+                                      右侧栏查看 Spill
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })()
                     ) : isTaskRunning ? (
                       <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface)] px-4 py-3 text-[13px] text-[var(--ink-muted)] flex items-center gap-2">
                         <span className="h-2 w-2 rounded-full bg-[var(--warn-dot)] animate-pulse" />
@@ -2504,8 +2769,26 @@ export function AgentsView({
                           )}
                         >
                           <KanbanSquare className="size-3.5" strokeWidth={1.75} />
-                          转到看板
+                          运行泳道
                         </button>
+
+                        {(() => {
+                          const linkedIssue = linkIndex.issueByTaskId.get(task.id);
+                          if (!linkedIssue || !onOpenProjectIssue) return null;
+                          return (
+                            <button
+                              type="button"
+                              data-testid={`task-open-issue-${task.id}`}
+                              onClick={() => onOpenProjectIssue(linkedIssue.id)}
+                              className={cn(
+                                'inline-flex items-center gap-1 h-7 px-2 rounded-md font-mono text-[var(--accent)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer',
+                                FOCUS_RING,
+                              )}
+                            >
+                              {linkedIssue.identifier}
+                            </button>
+                          );
+                        })()}
 
                         {(() => {
                           const taskBtw = countBtwAttention(btwThreads, { taskId: task.id });
@@ -2586,6 +2869,34 @@ export function AgentsView({
           </div>
         </div>
       )}
+        </div>
+
+        <ContextRailHost
+          open={contextRailOpen}
+          onOpenChange={setContextRailOpen}
+          context={{
+            sessionId: activeTask?.contextId || null,
+            taskId: activeTask?.id || null,
+            ticketId: activeLinkedIssue?.identifier || null,
+            workerId: activeTask?.workerAgentId || null,
+            nodeId: activeTask?.workerNodeId || (selectedNodeId !== 'all' ? selectedNodeId : null),
+            task: activeTask,
+            linkedIssue: activeLinkedIssue,
+          }}
+          readOnly={readOnly}
+          busyAction={busyControlTaskId}
+          onCompactTask={(taskId) => void handleCompactTask(taskId)}
+          onSettleTask={(taskId) => void handleSettleTask(taskId)}
+          onSnoozeTask={(taskId, minutes) => void handleSnoozeTask(taskId, minutes)}
+          onOpenProjectIssue={onOpenProjectIssue}
+          onOpenBtw={(taskId) => {
+            setBtwContextTaskId(taskId);
+            setBtwInitialThreadId(null);
+            setBtwOpen(true);
+          }}
+          onToast={onToast}
+        />
+      </div>
 
       <AgentBtwDrawer
         open={btwOpen}
