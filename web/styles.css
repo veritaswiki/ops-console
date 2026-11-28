@@ -211,6 +211,11 @@
   color: var(--ink);
 }
 
+.ui-select:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 /* @ui-sdk/react SegmentedControl sliding indicator — zero font-weight shift */
 .ui-seg-root {
   position: relative;
@@ -360,6 +365,12 @@
 .ui-switch-root[data-checked] {
   background-color: var(--accent);
   border-color: var(--accent);
+}
+
+.ui-switch-root[data-disabled],
+.ui-switch-root:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .ui-switch-thumb {
@@ -514,6 +525,17 @@
   }
 }
 
+@keyframes ui-drawer-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
 .ui-dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -555,6 +577,30 @@
   box-shadow: var(--shadow-modal);
   padding: 24px;
   animation: ui-alert-in 190ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.ui-drawer-content {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 62;
+  width: min(520px, 100vw);
+  display: flex;
+  flex-direction: column;
+  background-color: var(--surface-elevated);
+  color: var(--ink);
+  border-left: 1px solid var(--border);
+  box-shadow: var(--shadow-modal);
+  animation: ui-drawer-in 190ms cubic-bezier(0.23, 1, 0.32, 1) both;
+}
+
+.ui-drawer-content[data-size='lg'] {
+  width: min(640px, 100vw);
+}
+
+.ui-drawer-content[data-size='xl'] {
+  width: min(760px, 100vw);
 }
 
 /* cmdk Command Palette — zero-latency keyboard navigation */
