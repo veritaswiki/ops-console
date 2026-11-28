@@ -1,16 +1,18 @@
 import React from 'react';
 import { fetchBots, fetchLinearState } from '../api';
-import type { BotFleetResponse, LinearStateResponse } from '../types';
+import type { BotFleetResponse, LinearStateResponse, ToastHandler } from '../types';
 import { ModuleFrame } from '../modules/ModuleFrame';
-import { ErrorState, ViewSkeleton } from '../components/ui';
+import { ErrorState, ViewSkeleton, type ConfirmModalState } from '../components/ui';
 import { BotSystemSection } from '../components/BotSystemSection';
 
 export function BotsView({
   readOnly = false,
   onToast,
+  onConfirm,
 }: {
   readOnly?: boolean;
-  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast?: ToastHandler;
+  onConfirm?: (modal: ConfirmModalState) => void;
 }) {
   const [botsState, setBotsState] = React.useState<BotFleetResponse | null>(null);
   const [linearState, setLinearState] = React.useState<LinearStateResponse | null>(null);
@@ -56,6 +58,7 @@ export function BotsView({
         readOnly={readOnly}
         onReload={loadAll}
         onToast={onToast}
+        onConfirm={onConfirm}
       />
     </ModuleFrame>
   );

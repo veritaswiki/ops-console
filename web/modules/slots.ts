@@ -279,7 +279,7 @@ export const RAIL_PANEL_SLOTS: readonly RailPanelSlot[] = [
     id: 'sidebar-domain-nav',
     kind: 'rail-panel',
     label: '域级导航树',
-    description: '按 Harness、监控与观测、基础设施与运维四域组织的折叠导航',
+    description: '按智能体、监控与观测、基础设施与运维四域组织的折叠导航',
     region: 'sidebar-nav',
     order: 10,
     collapsible: true,

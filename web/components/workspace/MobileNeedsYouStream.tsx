@@ -40,9 +40,9 @@ function severityTextClass(severity: NeedsYouItem['severity']): string {
 }
 
 function kindLabel(kind: NeedsYouItem['kind']): string {
-  if (kind === 'btw_approval') return 'BTW 待审批';
-  if (kind === 'snooze_woken') return '提醒已唤醒';
-  if (kind === 'task_failed') return '任务失败';
+  if (kind === 'btw_approval') return '支线待审批';
+  if (kind === 'snooze_woken') return '提醒已到达';
+  if (kind === 'task_failed') return '执行失败';
   return '待关注';
 }
 
@@ -87,7 +87,7 @@ export function MobileNeedsYouStream({
   return (
     <section
       data-testid="mobile-needs-you-stream"
-      aria-label="Needs You 待办分流"
+      aria-label="待你处理"
       className={cn(
         'overflow-hidden rounded-xl border bg-[var(--surface)]',
         topSeverity === 'err'
@@ -119,7 +119,7 @@ export function MobileNeedsYouStream({
           className={cn('size-3.5 shrink-0', severityTextClass(topSeverity))}
           strokeWidth={1.75}
         />
-        <span className="shrink-0 text-[12px] font-semibold text-[var(--ink)]">Needs You</span>
+        <span className="shrink-0 text-[12px] font-semibold text-[var(--ink)]">待你处理</span>
         <span className="font-mono text-[11px] text-[var(--ink-muted)] tabular-nums">
           {items.length}
         </span>
@@ -131,8 +131,8 @@ export function MobileNeedsYouStream({
           <span className="flex-1" />
         )}
         <span className="hidden shrink-0 items-center gap-2 font-mono text-[10.5px] text-[var(--ink-subtle)] tabular-nums sm:flex">
-          {btwPending > 0 ? <span>{btwPending} BTW</span> : null}
-          {failed > 0 ? <span>{failed} 失败</span> : null}
+          {btwPending > 0 ? <span>{btwPending} 项待审</span> : null}
+          {failed > 0 ? <span>{failed} 项失败</span> : null}
         </span>
         {expanded ? (
           <ChevronUp className="size-3.5 shrink-0 text-[var(--ink-subtle)]" strokeWidth={1.75} />
@@ -196,7 +196,7 @@ export function MobileNeedsYouStream({
                       className={triageButtonClass()}
                     >
                       <GitBranch className="size-3.5" strokeWidth={1.75} />
-                      打开 BTW
+                      查看支线
                     </button>
                   ) : null}
                   <button
@@ -219,7 +219,7 @@ export function MobileNeedsYouStream({
                     className={triageButtonClass()}
                   >
                     <Clock3 className="size-3.5" strokeWidth={1.75} />
-                    稍后 30m
+                    30 分钟后提醒
                   </button>
                 </div>
               </li>

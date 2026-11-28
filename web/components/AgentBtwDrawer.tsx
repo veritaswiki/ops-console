@@ -2,10 +2,12 @@ import React from 'react';
 import {
   Archive,
   Check,
+  ChevronUp,
   GitBranch,
   GitMerge,
   Lock,
   MessageSquare,
+  Plus,
   RefreshCw,
   Search,
   Send,
@@ -21,6 +23,7 @@ import type {
   A2ABtwThread,
   A2ASessionRecord,
   A2ATaskRecord,
+  ToastHandler,
 } from '../types';
 import {
   archiveA2ABtwThread,
@@ -43,6 +46,8 @@ import {
   type BtwTone,
 } from '../lib/btw';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
+import { formatDateTime } from '../utils/format';
 import { Button, EmptyState, inputBaseClass, ToggleSwitch } from './ui';
 
 export interface AgentBtwDrawerProps {
@@ -56,7 +61,7 @@ export interface AgentBtwDrawerProps {
   initialThreadId?: string | null;
   readOnly?: boolean;
   onRefresh: () => Promise<void> | void;
-  onToast?: (message: string, tone?: 'ok' | 'err') => void;
+  onToast?: ToastHandler;
 }
 
 type BtwScopeMode = 'current' | 'all';
@@ -85,13 +90,13 @@ const BTW_MODE_OPTIONS: ReadonlyArray<{
 }> = [
   {
     value: 'btw',
-    label: '只读旁支',
-    hint: 'btw · 复用当前会话上下文，只讨论不改动主线。',
+    label: '纯讨论',
+    hint: '复用当前对话背景进行推演和验证，不会修改主线或代码。',
   },
   {
     value: 'fork',
-    label: '独立 Worktree',
-    hint: 'fork · 创建独立 Git Worktree 旁支，验证代码改动后再提案。',
+    label: '独立分支验证',
+    hint: '自动开辟独立工作副本验证代码改动，审批确认后再合入主线。',
   },
 ];
 
@@ -118,22 +123,11 @@ function normalizeStatus(status?: string | null): string {
 }
 
 function formatTimestamp(value?: string | null): string {
-  if (!value) return '—';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleString('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  });
+  return formatDateTime(value);
 }
 
 function describeApiError(error: unknown): string {
-  if (error instanceof Error && error.message) return error.message;
-  if (typeof error === 'string' && error.trim()) return error.trim();
-  return '未知错误';
+  return extractErrorMessage(error, '请求失败，请稍后重试');
 }
 
 function isConfirmTokenRequired(error: unknown): boolean {
@@ -182,16 +176,16 @@ function getProposalStatusLabel(status?: string | null): string {
 
 function getIsolationLabel(isolation?: string | null): string {
   const normalized = normalizeStatus(isolation);
-  if (normalized === 'worktree') return '独立 Worktree';
-  if (normalized === 'ephemeral') return '临时上下文';
-  return isolation || '未知隔离';
+  if (normalized === 'worktree') return '独立代码副本';
+  if (normalized === 'ephemeral') return '隔离会话';
+  return isolation || '默认隔离';
 }
 
 function getModeLabel(mode?: string | null): string {
   const normalized = normalizeStatus(mode);
-  if (normalized === 'fork') return '独立 Worktree';
-  if (normalized === 'btw') return '只读旁支';
-  return mode || '未知模式';
+  if (normalized === 'fork') return '独立分支验证';
+  if (normalized === 'btw') return '纯讨论';
+  return mode || '纯讨论';
 }
 
 function canFollowUp(thread?: A2ABtwThread | null): boolean {
@@ -219,7 +213,7 @@ function buildThreadPreview(thread: A2ABtwThread): string {
 function getMessageAuthor(message: A2ABtwMessage): string {
   if (message.role === 'user') return '你';
   if (message.role === 'system') return '系统';
-  return message.agentName || '旁支 Agent';
+  return message.agentName || '助手';
 }
 
 function getSessionLabel(
@@ -280,10 +274,17 @@ export function AgentBtwDrawer({
   const [mergeConfirm, setMergeConfirm] = React.useState<MergeConfirmState | null>(null);
   const [refreshing, setRefreshing] = React.useState(false);
   const [errorMessage, setErrorMessage] = React.useState('');
+  const [composerOpen, setComposerOpen] = React.useState(threads.length === 0);
   const lastInitialThreadRef = React.useRef<string | null>(initialThreadId ?? null);
 
-  const notify = (message: string, tone: 'ok' | 'err' = 'ok') => {
-    onToast?.(message, tone);
+  React.useEffect(() => {
+    if (open && threads.length === 0) {
+      setComposerOpen(true);
+    }
+  }, [open, threads.length]);
+
+  const notify: ToastHandler = (message, tone = 'ok', options) => {
+    onToast?.(message, tone, options);
   };
 
   const reportError = (message: string) => {
@@ -399,7 +400,7 @@ export function AgentBtwDrawer({
     try {
       await onRefresh();
     } catch (error) {
-      reportError(`刷新 BTW 旁支失败：${describeApiError(error)}`);
+      reportError(`刷新支线讨论失败：${describeApiError(error)}`);
     } finally {
       setRefreshing(false);
     }
@@ -407,12 +408,13 @@ export function AgentBtwDrawer({
 
   const handleOpenThread = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (guardReadOnly(readOnly, notify, '发起新支线讨论')) return;
     const prompt = newPrompt.trim();
     if (!prompt) {
-      reportError('请输入旁支问题后再创建。');
+      reportError('请输入要讨论的问题后再发起。');
       return;
     }
-    if (readOnly || openingThread) return;
+    if (openingThread) return;
 
     setOpeningThread(true);
     setErrorMessage('');
@@ -425,11 +427,12 @@ export function AgentBtwDrawer({
         ...(newAgentId ? { targetAgentId: newAgentId } : {}),
       });
       setNewPrompt('');
+      setComposerOpen(false);
       if (response?.thread?.id) setSelectedThreadId(response.thread.id);
-      notify('BTW 旁支已创建。', 'ok');
+      notify('支线讨论已创建。', 'ok');
       await refreshDrawerData();
     } catch (error) {
-      reportError(`创建旁支失败：${describeApiError(error)}`);
+      reportError(`发起支线失败：${describeApiError(error)}`);
     } finally {
       setOpeningThread(false);
     }
@@ -437,20 +440,21 @@ export function AgentBtwDrawer({
 
   const handleFollowUp = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (guardReadOnly(readOnly, notify, '在支线中继续追问')) return;
     if (!selectedThread || !canFollowUp(selectedThread)) return;
     const prompt = followUpPrompt.trim();
     if (!prompt) {
       reportError('请输入追问内容。');
       return;
     }
-    if (readOnly || sendingFollowUp) return;
+    if (sendingFollowUp) return;
 
     setSendingFollowUp(true);
     setErrorMessage('');
     try {
       await postA2ABtwMessage(selectedThread.id, { prompt });
       setFollowUpPrompt('');
-      notify('追问已发送到旁支。', 'ok');
+      notify('追问已发送到支线。', 'ok');
       await refreshDrawerData();
     } catch (error) {
       reportError(`发送追问失败：${describeApiError(error)}`);
@@ -461,13 +465,14 @@ export function AgentBtwDrawer({
 
   const handleProposeMerge = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (guardReadOnly(readOnly, notify, '提交合并提案')) return;
     if (!selectedThread || !canProposeBtwMerge(selectedThread)) return;
     const summary = proposalSummary.trim();
     if (!summary) {
-      reportError('合并摘要不能为空。');
+      reportError('请先填写合并摘要。');
       return;
     }
-    if (readOnly || submittingProposal) return;
+    if (submittingProposal) return;
 
     setSubmittingProposal(true);
     setErrorMessage('');
@@ -477,7 +482,7 @@ export function AgentBtwDrawer({
         targetType: proposalTarget,
         ...(proposalRationale.trim() ? { rationale: proposalRationale.trim() } : {}),
       });
-      notify('合并提案已提交，等待主线审批。', 'ok');
+      notify('合并提案已提交，等待确认审批。', 'ok');
       await refreshDrawerData();
     } catch (error) {
       reportError(`提交合并提案失败：${describeApiError(error)}`);
@@ -487,8 +492,9 @@ export function AgentBtwDrawer({
   };
 
   const handleReview = async (decision: BtwReviewDecision) => {
+    if (guardReadOnly(readOnly, notify, decision === 'approve' ? '批准提案' : '驳回提案')) return;
     if (!selectedThread || !canReviewBtwMerge(selectedThread)) return;
-    if (readOnly || reviewingDecision) return;
+    if (reviewingDecision) return;
 
     setReviewingDecision(decision);
     setErrorMessage('');
@@ -500,8 +506,8 @@ export function AgentBtwDrawer({
       setReviewComment('');
       notify(
         decision === 'approve'
-          ? '提案已批准，可执行并入主线。'
-          : '提案已驳回并退回旁支。',
+          ? '提案已批准，现在可以并入主线。'
+          : '提案已驳回，可在支线继续补充后重提。',
         'ok',
       );
       await refreshDrawerData();
@@ -515,9 +521,10 @@ export function AgentBtwDrawer({
   };
 
   const handleMerge = async (confirmToken?: string) => {
+    if (guardReadOnly(readOnly, notify, '将支线并入主线')) return;
     const thread = selectedThread;
     if (!thread || !canExecuteBtwMerge(thread)) return;
-    if (readOnly || merging) return;
+    if (merging) return;
 
     setMerging(true);
     setErrorMessage('');
@@ -529,7 +536,7 @@ export function AgentBtwDrawer({
       const mergedRevision = response?.thread?.mergeProposal?.mergedRevision;
       notify(
         mergedRevision != null
-          ? `已并入主线，主线版本 rev.${mergedRevision}。`
+          ? `已并入主线（第 ${mergedRevision} 版）。`
           : '已并入主线。',
         'ok',
       );
@@ -551,7 +558,7 @@ export function AgentBtwDrawer({
         }
       } else if (confirmToken && isConfirmTokenRequired(error)) {
         setMergeConfirm(null);
-        reportError('一次性确认已失效，请重新点击“并入主线”获取新确认。');
+        reportError('本次确认已过期，请重新点击「并入主线」获取新确认。');
       } else {
         reportError(`并入主线失败：${describeApiError(error)}`);
       }
@@ -561,17 +568,18 @@ export function AgentBtwDrawer({
   };
 
   const handleArchive = async () => {
+    if (guardReadOnly(readOnly, notify, '归档支线讨论')) return;
     if (!selectedThread || !canArchiveThread(selectedThread)) return;
-    if (readOnly || archiving) return;
+    if (archiving) return;
 
     setArchiving(true);
     setErrorMessage('');
     try {
       await archiveA2ABtwThread(selectedThread.id);
-      notify('旁支已归档。', 'ok');
+      notify('支线讨论已归档。', 'ok');
       await refreshDrawerData();
     } catch (error) {
-      reportError(`归档旁支失败：${describeApiError(error)}`);
+      reportError(`归档失败：${describeApiError(error)}`);
     } finally {
       setArchiving(false);
     }
@@ -606,7 +614,7 @@ export function AgentBtwDrawer({
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="BTW 旁支与人工审批"
+        aria-label="支线讨论与审批"
         data-testid="agent-btw-drawer"
         className="relative z-10 flex h-full w-full max-w-[1080px] flex-col border-l border-[var(--border)] bg-[var(--surface-elevated)] shadow-[var(--shadow-modal)]"
       >
@@ -617,20 +625,39 @@ export function AgentBtwDrawer({
             </div>
             <div className="min-w-0">
               <h2 className="text-[16px] font-semibold tracking-tight text-[var(--ink)] text-balance">
-                BTW 旁支与人工审批
+                支线讨论与审批
               </h2>
               <p className="mt-1 text-[12.5px] leading-relaxed text-[var(--ink-muted)] text-pretty">
-                会话级旁支讨论、合并提案与一次性确认并入主线。
+                在不打断主对话的前提下单独讨论或验证方案，审批确认后再并入主线。
               </p>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
+            {!readOnly && (
+              <Button
+                variant={composerOpen ? 'secondary' : 'primary'}
+                size="sm"
+                onClick={() => setComposerOpen((prev) => !prev)}
+              >
+                {composerOpen ? (
+                  <>
+                    <ChevronUp className="size-3.5" strokeWidth={1.75} />
+                    收起新建
+                  </>
+                ) : (
+                  <>
+                    <Plus className="size-3.5" strokeWidth={1.75} />
+                    发起新支线
+                  </>
+                )}
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="icon"
               onClick={() => void refreshDrawerData()}
               disabled={refreshing}
-              aria-label="刷新 BTW 旁支"
+              aria-label="刷新支线讨论"
             >
               <RefreshCw
                 className={cn('size-4', refreshing && 'animate-spin')}
@@ -647,7 +674,7 @@ export function AgentBtwDrawer({
           <div className="flex shrink-0 items-start gap-2 border-b border-[var(--border-subtle)] bg-[var(--surface-subtle)] px-5 py-2.5 sm:px-6">
             <Lock className="mt-0.5 size-3.5 shrink-0 text-[var(--accent)]" strokeWidth={1.75} />
             <p className="text-[12px] leading-relaxed text-[var(--ink-muted)]">
-              只读模式：可浏览旁支、提案与审核记录，所有写操作已禁用。
+              当前为只读模式，可查看支线讨论与审核记录，暂不可新建、审批或并入。
             </p>
           </div>
         )}
@@ -717,14 +744,14 @@ export function AgentBtwDrawer({
 
               <div
                 role="group"
-                aria-label="BTW 作用域"
+                aria-label="支线范围"
                 className="inline-flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-subtle)] p-0.5"
               >
                 <button
                   type="button"
                   aria-pressed={effectiveScopeMode === 'current'}
                   disabled={!hasCurrentScope}
-                  title={hasCurrentScope ? currentScopeTitle : '未绑定活跃会话或任务'}
+                  title={hasCurrentScope ? currentScopeTitle : '当前未选中具体对话'}
                   onClick={() => setScopeMode('current')}
                   className={segmentedTabClass(effectiveScopeMode === 'current')}
                 >
@@ -742,11 +769,11 @@ export function AgentBtwDrawer({
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
-              <div title="待审批 + 已批准待并入">
+              <div title="只显示待审批和待并入的支线">
                 <ToggleSwitch
                   checked={onlyAttention}
                   onCheckedChange={setOnlyAttention}
-                  label="仅看待审批"
+                  label="仅看待处理"
                 />
               </div>
               <div className="relative min-w-[200px] flex-1">
@@ -759,108 +786,110 @@ export function AgentBtwDrawer({
                   type="search"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
-                  placeholder="搜索标题、Agent、消息或提案..."
-                  aria-label="搜索 BTW 旁支"
-                  className={cn('h-8 w-full rounded-lg pl-8 pr-3', inputBaseClass)}
+                  placeholder="搜索标题、助手、讨论内容或提案…"
+                  aria-label="搜索支线讨论"
+                  className={cn('h-8 w-full rounded-lg pl-8 pr-3 text-[16px] sm:text-[13px]', inputBaseClass)}
                 />
               </div>
             </div>
           </div>
 
-          <div className="shrink-0 border-b border-[var(--border-subtle)] bg-[var(--surface-subtle)]/45 px-5 py-4 sm:px-6">
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-              <h3 className="text-[13px] font-semibold text-[var(--ink)]">新建 BTW 旁支</h3>
-              <span className="text-[11.5px] text-[var(--ink-subtle)]">
-                旁支默认不写入主线，需人工审批后并入
-              </span>
-            </div>
-            <form onSubmit={handleOpenThread} className="space-y-3">
-              <textarea
-                rows={2}
-                value={newPrompt}
-                onChange={(event) => setNewPrompt(event.target.value)}
-                placeholder="输入旁支问题，例如：先验证回滚顺序与探针重启边界..."
-                aria-label="旁支问题"
-                disabled={readOnly}
-                className={cn('w-full resize-y px-3 py-2 leading-relaxed', inputBaseClass)}
-              />
-              <div className="flex flex-wrap items-end gap-3">
-                <div className="space-y-1.5">
-                  <span className="block text-[11.5px] font-medium text-[var(--ink-muted)]">
-                    模式
-                  </span>
-                  <div
-                    role="group"
-                    aria-label="旁支模式"
-                    className="inline-flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] p-0.5"
-                  >
-                    {BTW_MODE_OPTIONS.map((option) => (
-                      <button
-                        key={option.value}
-                        type="button"
-                        aria-pressed={newMode === option.value}
-                        disabled={readOnly}
-                        onClick={() => setNewMode(option.value)}
-                        className={segmentedTabClass(newMode === option.value)}
-                      >
-                        {option.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <label className="block min-w-[180px] flex-1 space-y-1.5 text-[12px]">
-                  <span className="font-medium text-[var(--ink-muted)]">目标 Agent（可选）</span>
-                  <select
-                    value={newAgentId}
-                    onChange={(event) => setNewAgentId(event.target.value)}
-                    disabled={readOnly}
-                    aria-label="目标 Agent"
-                    className={cn(
-                      'ui-select h-9 w-full cursor-pointer pl-3 pr-8',
-                      inputBaseClass,
-                    )}
-                  >
-                    <option value="">自动选择</option>
-                    {agents.map((agent) => (
-                      <option key={agent.id} value={agent.id}>
-                        {agent.name} · {agent.harness}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <Button
-                  type="submit"
-                  variant="primary"
-                  size="md"
-                  disabled={readOnly || openingThread || !newPrompt.trim()}
-                  className="shrink-0"
-                >
-                  {openingThread ? '创建中...' : '开启旁支'}
-                </Button>
+          {composerOpen && (
+            <div className="shrink-0 border-b border-[var(--border-subtle)] bg-[var(--surface-subtle)]/45 px-5 py-4 sm:px-6">
+              <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                <h3 className="text-[13px] font-semibold text-[var(--ink)]">发起新支线讨论</h3>
+                <span className="text-[11.5px] text-[var(--ink-subtle)]">
+                  支线内容默认与主线隔离，审批确认后才会并入
+                </span>
               </div>
-              <p className="text-[11.5px] leading-relaxed text-[var(--ink-subtle)]">{newModeHint}</p>
-            </form>
-          </div>
+              <form onSubmit={handleOpenThread} className="space-y-3">
+                <textarea
+                  rows={2}
+                  value={newPrompt}
+                  onChange={(event) => setNewPrompt(event.target.value)}
+                  placeholder="输入要单独讨论的问题，例如：先评估这个改动对线上探针的影响…"
+                  aria-label="支线讨论问题"
+                  disabled={readOnly}
+                  className={cn('w-full resize-y px-3 py-2 leading-relaxed text-[16px] sm:text-[13px]', inputBaseClass)}
+                />
+                <div className="flex flex-wrap items-end gap-3">
+                  <div className="space-y-1.5">
+                    <span className="block text-[11.5px] font-medium text-[var(--ink-muted)]">
+                      方式
+                    </span>
+                    <div
+                      role="group"
+                      aria-label="支线方式"
+                      className="inline-flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] p-0.5"
+                    >
+                      {BTW_MODE_OPTIONS.map((option) => (
+                        <button
+                          key={option.value}
+                          type="button"
+                          aria-pressed={newMode === option.value}
+                          disabled={readOnly}
+                          onClick={() => setNewMode(option.value)}
+                          className={segmentedTabClass(newMode === option.value)}
+                        >
+                          {option.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <label className="block min-w-[180px] flex-1 space-y-1.5 text-[12px]">
+                    <span className="font-medium text-[var(--ink-muted)]">执行助手（可选）</span>
+                    <select
+                      value={newAgentId}
+                      onChange={(event) => setNewAgentId(event.target.value)}
+                      disabled={readOnly}
+                      aria-label="执行助手"
+                      className={cn(
+                        'ui-select h-9 w-full cursor-pointer pl-3 pr-8 text-[16px] sm:text-[13px]',
+                        inputBaseClass,
+                      )}
+                    >
+                      <option value="">自动选择</option>
+                      {agents.map((agent) => (
+                        <option key={agent.id} value={agent.id}>
+                          {agent.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <Button
+                    type="submit"
+                    variant="primary"
+                    size="md"
+                    disabled={readOnly || openingThread || !newPrompt.trim()}
+                    className="shrink-0"
+                  >
+                    {openingThread ? '创建中…' : '发起支线'}
+                  </Button>
+                </div>
+                <p className="text-[11.5px] leading-relaxed text-[var(--ink-subtle)]">{newModeHint}</p>
+              </form>
+            </div>
+          )}
 
           <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)]">
             <aside className="min-h-0 border-b border-[var(--border-subtle)] lg:border-b-0 lg:overflow-y-auto">
               <div className="flex items-center justify-between gap-3 border-b border-[var(--border-subtle)] px-4 py-3">
-                <h3 className="text-[12.5px] font-semibold text-[var(--ink)]">旁支线程</h3>
+                <h3 className="text-[12.5px] font-semibold text-[var(--ink)]">支线列表</h3>
                 <span className="font-mono text-[11px] text-[var(--ink-subtle)] tabular-nums">
                   {visibleThreads.length}
                 </span>
               </div>
               {visibleThreads.length === 0 ? (
                 <EmptyState
-                  title="没有匹配的旁支"
+                  title="没有匹配的支线"
                   message={
                     hasFilters
-                      ? '调整搜索或关闭「仅看待审批」后重试。'
+                      ? '调整关键词或关闭「仅看待处理」后重试。'
                       : effectiveScopeMode === 'current'
-                        ? '当前会话或任务还没有 BTW 旁支。'
-                        : '还没有任何 BTW 旁支，先在上方创建一个。'
+                        ? '当前会话还没有支线讨论。'
+                        : '还没有任何支线讨论，点击右上角即可发起。'
                   }
                   action={
                     hasFilters
@@ -926,8 +955,8 @@ export function AgentBtwDrawer({
                                   {thread.targetAgentName || thread.targetAgentId}
                                 </span>
                                 <span aria-hidden="true">·</span>
-                                <span className="font-mono tabular-nums">
-                                  rev.{thread.mainlineRevisionAtOpen}
+                                <span className="tabular-nums">
+                                  基于第 {thread.mainlineRevisionAtOpen} 版
                                 </span>
                               </div>
                             </div>
@@ -944,11 +973,11 @@ export function AgentBtwDrawer({
               {!selectedThread ? (
                 <div className="flex min-h-[280px] items-center justify-center p-6">
                   <EmptyState
-                    title={threads.length > 0 ? '选择一条旁支' : '还没有 BTW 旁支'}
+                    title={threads.length > 0 ? '选择一条支线查看详情' : '还没有支线讨论'}
                     message={
                       threads.length > 0
-                        ? '从左侧列表选择旁支，查看消息流、合并提案与审批状态。'
-                        : '创建旁支后，可在这里继续追问并提交合并提案。'
+                        ? '从左侧列表点选任意支线，即可查看讨论过程、合并提案与审批进度。'
+                        : '发起支线后，可在这里继续追问并提交并入主线的提案。'
                     }
                   />
                 </div>
@@ -977,48 +1006,39 @@ export function AgentBtwDrawer({
                           />
                           {selectedStatusMeta?.label || selectedThread.status}
                         </span>
-                        <span className="font-mono text-[10.5px] text-[var(--ink-subtle)]">
-                          {selectedThread.id}
-                        </span>
                       </div>
-                      <h3 className="mt-2 text-[17px] font-semibold tracking-tight text-[var(--ink)] text-balance">
+                      <h3
+                        className="mt-2 text-[17px] font-semibold tracking-tight text-[var(--ink)] text-balance"
+                        title={selectedThread.id}
+                      >
                         {selectedThread.title}
                       </h3>
                       <p className="mt-1 text-[12px] text-[var(--ink-subtle)]">
-                        由 {selectedThread.createdBy || '未知创建者'} 创建 ·{' '}
+                        由 {selectedThread.createdBy || '系统'} 发起 ·{' '}
                         {formatTimestamp(selectedThread.createdAt)}
                       </p>
                     </div>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => void handleArchive()}
-                      disabled={readOnly || archiving || !canArchiveThread(selectedThread)}
-                      title={
-                        canArchiveThread(selectedThread)
-                          ? '归档后不再参与审批与并入'
-                          : '当前状态不可归档'
-                      }
-                    >
-                      <Archive className="size-3.5" strokeWidth={1.75} />
-                      {archiving ? '归档中...' : '归档'}
-                    </Button>
+                    {canArchiveThread(selectedThread) && (
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => void handleArchive()}
+                        disabled={readOnly || archiving}
+                        title="归档后不再参与审批与并入"
+                      >
+                        <Archive className="size-3.5" strokeWidth={1.75} />
+                        {archiving ? '归档中…' : '归档'}
+                      </Button>
+                    )}
                   </div>
 
                   <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-y border-[var(--border-subtle)] py-3 sm:grid-cols-3">
                     <div className="min-w-0">
-                      <dt className="text-[10.5px] font-medium uppercase tracking-wider text-[var(--ink-subtle)]">
-                        隔离状态
+                      <dt className="text-[10.5px] font-medium tracking-wider text-[var(--ink-subtle)]">
+                        隔离方式
                       </dt>
                       <dd className="mt-1 min-w-0 text-[12px] text-[var(--ink)]">
-                        <div className="flex flex-wrap items-center gap-x-1.5">
-                          <span className="font-mono text-[11.5px]">
-                            {selectedThread.isolation}
-                          </span>
-                          <span className="text-[var(--ink-subtle)]">
-                            · {getIsolationLabel(selectedThread.isolation)}
-                          </span>
-                        </div>
+                        <div>{getIsolationLabel(selectedThread.isolation)}</div>
                         {selectedThread.worktreeBranch ? (
                           <div className="mt-1 flex items-center gap-1 font-mono text-[10.5px] text-[var(--ink-muted)]">
                             <GitBranch className="size-3 shrink-0" strokeWidth={1.75} />
@@ -1033,17 +1053,17 @@ export function AgentBtwDrawer({
                     </div>
 
                     <div className="min-w-0">
-                      <dt className="text-[10.5px] font-medium uppercase tracking-wider text-[var(--ink-subtle)]">
-                        主线基准
+                      <dt className="text-[10.5px] font-medium tracking-wider text-[var(--ink-subtle)]">
+                        主线基线
                       </dt>
-                      <dd className="mt-1 font-mono text-[12.5px] font-medium text-[var(--ink)] tabular-nums">
-                        rev.{selectedThread.mainlineRevisionAtOpen}
+                      <dd className="mt-1 text-[12.5px] font-medium text-[var(--ink)] tabular-nums">
+                        第 {selectedThread.mainlineRevisionAtOpen} 版
                       </dd>
                     </div>
 
                     <div className="min-w-0">
-                      <dt className="text-[10.5px] font-medium uppercase tracking-wider text-[var(--ink-subtle)]">
-                        旁支模式
+                      <dt className="text-[10.5px] font-medium tracking-wider text-[var(--ink-subtle)]">
+                        支线方式
                       </dt>
                       <dd className="mt-1 text-[12px] text-[var(--ink)]">
                         {getModeLabel(selectedThread.mode)}
@@ -1051,8 +1071,8 @@ export function AgentBtwDrawer({
                     </div>
 
                     <div className="min-w-0">
-                      <dt className="text-[10.5px] font-medium uppercase tracking-wider text-[var(--ink-subtle)]">
-                        目标 Agent
+                      <dt className="text-[10.5px] font-medium tracking-wider text-[var(--ink-subtle)]">
+                        执行助手
                       </dt>
                       <dd className="mt-1 min-w-0 text-[12px] text-[var(--ink)]">
                         <div className="truncate">
@@ -1065,7 +1085,7 @@ export function AgentBtwDrawer({
                     </div>
 
                     <div className="min-w-0">
-                      <dt className="text-[10.5px] font-medium uppercase tracking-wider text-[var(--ink-subtle)]">
+                      <dt className="text-[10.5px] font-medium tracking-wider text-[var(--ink-subtle)]">
                         来源会话
                       </dt>
                       <dd className="mt-1 truncate text-[12px] text-[var(--ink)]">
@@ -1133,8 +1153,11 @@ export function AgentBtwDrawer({
                                   {message.content}
                                 </p>
                                 {message.spillRefId && (
-                                  <p className="mt-1.5 font-mono text-[10px] text-[var(--ink-subtle)]">
-                                    spill · {message.spillRefId}
+                                  <p
+                                    className="mt-1.5 text-[10.5px] text-[var(--ink-subtle)]"
+                                    title={message.spillRefId}
+                                  >
+                                    完整内容已单独存档
                                   </p>
                                 )}
                               </div>
@@ -1258,10 +1281,8 @@ export function AgentBtwDrawer({
                           <h4 className="text-[13px] font-semibold text-[var(--ink)]">
                             审批与并入主线
                           </h4>
-                          <p className="mt-1 text-[11.5px] text-[var(--ink-subtle)]">
-                            提案 {selectedProposal.id} · 提交于{' '}
-                            {formatTimestamp(selectedProposal.proposedAt)} ·{' '}
-                            {selectedProposal.proposedBy}
+                          <p className="mt-1 text-[11.5px] text-[var(--ink-subtle)]" title={selectedProposal.id}>
+                            提交于 {formatTimestamp(selectedProposal.proposedAt)} · {selectedProposal.proposedBy}
                           </p>
                         </div>
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
@@ -1292,10 +1313,10 @@ export function AgentBtwDrawer({
 
                       <dl className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                         <div className="min-w-0">
-                          <dt className="text-[10.5px] font-medium uppercase tracking-wider text-[var(--ink-subtle)]">
+                          <dt className="text-[10.5px] font-medium tracking-wider text-[var(--ink-subtle)]">
                             风险等级
                           </dt>
-                          <dd className="mt-1 flex flex-wrap items-center gap-2 text-[12px]">
+                          <dd className="mt-1 text-[12px]">
                             <span
                               className={cn(
                                 'font-medium',
@@ -1306,20 +1327,14 @@ export function AgentBtwDrawer({
                             >
                               {selectedRiskMeta?.label || '未评级'}
                             </span>
-                            <code className="font-mono text-[10.5px] text-[var(--ink-subtle)]">
-                              {selectedProposal.riskLevel || 'unknown'}
-                            </code>
                           </dd>
                         </div>
                         <div className="min-w-0">
-                          <dt className="text-[10.5px] font-medium uppercase tracking-wider text-[var(--ink-subtle)]">
-                            目标类型
+                          <dt className="text-[10.5px] font-medium tracking-wider text-[var(--ink-subtle)]">
+                            并入方式
                           </dt>
-                          <dd className="mt-1 flex flex-wrap items-center gap-2 text-[12px] text-[var(--ink)]">
-                            <span>{getMergeTargetLabel(selectedProposal.targetType)}</span>
-                            <code className="font-mono text-[10.5px] text-[var(--ink-subtle)]">
-                              {selectedProposal.targetType}
-                            </code>
+                          <dd className="mt-1 text-[12px] text-[var(--ink)]">
+                            {getMergeTargetLabel(selectedProposal.targetType)}
                           </dd>
                         </div>
                       </dl>
@@ -1341,19 +1356,16 @@ export function AgentBtwDrawer({
                         )}
                       </div>
 
-                      <div className="space-y-2">
-                        <div className="flex flex-wrap items-center justify-between gap-2">
+                      {selectedProposal.patchPreview && (
+                        <div className="space-y-2">
                           <h5 className="text-[11.5px] font-medium text-[var(--ink-muted)]">
-                            补丁预览
+                            变更预览
                           </h5>
-                          <span className="font-mono text-[10px] text-[var(--ink-subtle)]">
-                            patchPreview
-                          </span>
+                          <pre className="max-h-[280px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-subtle)] px-3 py-2.5 font-mono text-[11px] leading-relaxed text-[var(--ink-muted)]">
+                            {selectedProposal.patchPreview}
+                          </pre>
                         </div>
-                        <pre className="max-h-[280px] overflow-auto whitespace-pre-wrap break-words rounded-lg border border-[var(--border-subtle)] bg-[var(--surface-subtle)] px-3 py-2.5 font-mono text-[11px] leading-relaxed text-[var(--ink-muted)]">
-                          {selectedProposal.patchPreview || '无补丁预览'}
-                        </pre>
-                      </div>
+                      )}
 
                       {selectedProposal.prDraftSpec && (
                         <div className="space-y-2 border-l-2 border-[var(--accent)]/30 pl-3">
@@ -1409,18 +1421,15 @@ export function AgentBtwDrawer({
                         <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-l-2 border-[var(--ok)]/40 pl-3 text-[11.5px]">
                           {selectedProposal.mergedRevision != null && (
                             <span className="text-[var(--ink-muted)]">
-                              合并版本{' '}
-                              <span className="font-mono font-semibold text-[var(--ok)] tabular-nums">
-                                rev.{selectedProposal.mergedRevision}
+                              已并入至主线{' '}
+                              <span className="font-semibold text-[var(--ok)] tabular-nums">
+                                第 {selectedProposal.mergedRevision} 版
                               </span>
                             </span>
                           )}
                           {selectedProposal.spillRefId && (
-                            <span className="min-w-0 text-[var(--ink-muted)]">
-                              spill{' '}
-                              <code className="break-all font-mono text-[10.5px] text-[var(--ink-subtle)]">
-                                {selectedProposal.spillRefId}
-                              </code>
+                            <span className="min-w-0 text-[var(--ink-subtle)]" title={selectedProposal.spillRefId}>
+                              完整变更记录已存档
                             </span>
                           )}
                         </div>

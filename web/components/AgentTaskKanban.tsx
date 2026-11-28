@@ -20,30 +20,8 @@ import {
   type KanbanLifecycleColumnId,
 } from '../lib/agent-console';
 import { cn, FOCUS_RING } from '../lib/cn';
-import { formatDateTime } from '../utils/format';
+import { formatDateTime, formatDurationMs, formatRelativeAge } from '../utils/format';
 import { Button, inputBaseClass } from './ui';
-
-function formatDurationMs(ms?: number | null): string {
-  if (ms == null || ms <= 0) return '-';
-  if (ms < 1000) return `${ms}ms`;
-  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
-  const mins = Math.floor(ms / 60_000);
-  const secs = Math.round((ms % 60_000) / 1000);
-  return `${mins}m${secs}s`;
-}
-
-function formatShortRelative(ts?: string | null): string {
-  if (!ts) return '-';
-  const parsed = Date.parse(ts);
-  if (!Number.isFinite(parsed)) return formatDateTime(ts);
-  const diffSec = Math.max(0, Math.floor((Date.now() - parsed) / 1000));
-  if (diffSec < 60) return `${diffSec}s 前`;
-  const diffMin = Math.floor(diffSec / 60);
-  if (diffMin < 60) return `${diffMin}m 前`;
-  const diffHours = Math.floor(diffMin / 60);
-  if (diffHours < 24) return `${diffHours}h 前`;
-  return formatDateTime(ts);
-}
 
 function columnAccentClasses(tone: 'muted' | 'warn' | 'ok' | 'err'): {
   topBar: string;
@@ -180,7 +158,7 @@ export function AgentTaskKanban({
 
   return (
     <section
-      aria-label="任务生命周期拖拽看板"
+      aria-label="任务看板"
       data-testid="agent-task-kanban"
       className="w-full space-y-4"
     >
@@ -195,10 +173,10 @@ export function AgentTaskKanban({
               type="text"
               value={searchQuery}
               onChange={(event) => onSearchQueryChange(event.target.value)}
-              placeholder="按任务 ID、提示词、Agent、节点或分支过滤..."
+              placeholder="搜索任务内容、助手、节点或分支…"
               aria-label="搜索看板任务"
               data-testid="kanban-search-input"
-              className={cn(inputBaseClass, 'h-8 w-full pl-8 pr-7')}
+              className={cn(inputBaseClass, 'h-8 w-full pl-8 pr-7 text-[16px] sm:text-[13px]')}
             />
             {hasQuery && (
               <button
@@ -217,21 +195,16 @@ export function AgentTaskKanban({
 
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums">
             <span>
-              显示 {filteredTasks.length} / {tasks.length} 项任务
+              {hasQuery ? `匹配 ${filteredTasks.length} / ${tasks.length} 项` : `共 ${tasks.length} 项任务`}
             </span>
             <span aria-hidden="true">·</span>
             <span>
-              {readOnly ? '只读模式（仅浏览）' : '拖拽卡片跨列变更状态'}
+              {readOnly ? '只读浏览' : '支持跨列拖拽改状态'}
             </span>
           </div>
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {hasQuery && (
-            <Button variant="ghost" size="sm" onClick={() => onSearchQueryChange('')}>
-              重置过滤
-            </Button>
-          )}
           <Button
             variant="primary"
             size="sm"
@@ -247,10 +220,10 @@ export function AgentTaskKanban({
       {tasks.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-[var(--border-strong)] bg-[var(--surface)]/60 px-6 py-14 text-center space-y-3">
           <p className="text-[14.5px] font-semibold tracking-tight text-[var(--ink)] text-balance">
-            暂无 Agent 执行任务
+            还没有对话任务
           </p>
           <p className="text-[13px] text-[var(--ink-muted)] text-pretty max-w-md mx-auto">
-            在对话流中输入自然语言、/plan 或 /worktree 下发首个任务，任务将自动同步到此 4 列生命周期看板。
+            发起首条对话后，任务会自动按执行进度归类显示在这里。
           </p>
           <div className="pt-1">
             <Button variant="primary" size="sm" onClick={onCreateNewTask}>
@@ -265,11 +238,11 @@ export function AgentTaskKanban({
             没有匹配「{searchQuery.trim()}」的任务
           </p>
           <p className="text-[12.5px] text-[var(--ink-muted)]">
-            可尝试搜索任务 ID、模型名、Worktree 分支或目标节点 ID。
+            试试换个关键词，如任务内容、模型、分支或节点名。
           </p>
           <div className="pt-1">
             <Button variant="secondary" size="sm" onClick={() => onSearchQueryChange('')}>
-              清空过滤条件
+              清空筛选
             </Button>
           </div>
         </div>
@@ -372,7 +345,7 @@ export function AgentTaskKanban({
                             (isDragging || isMoving) && 'opacity-55',
                           )}
                         >
-                          <div className="flex items-center justify-between gap-2 text-[11px] font-mono text-[var(--ink-subtle)] tabular-nums">
+                          <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--ink-subtle)] tabular-nums">
                             <div className="flex items-center gap-1 min-w-0">
                               {!readOnly && (
                                 <GripVertical
@@ -381,11 +354,16 @@ export function AgentTaskKanban({
                                   aria-hidden="true"
                                 />
                               )}
-                              <span className="truncate text-[var(--ink-muted)]">{task.id}</span>
+                              <span
+                                className="truncate font-medium text-[var(--ink-muted)]"
+                                title={task.id}
+                              >
+                                {shortAgentName(task.workerAgentName || task.leadAgentName)}
+                              </span>
                               {task.slashCommand && (
                                 <>
                                   <span aria-hidden="true">·</span>
-                                  <span className="text-[var(--accent)] shrink-0">
+                                  <span className="font-mono text-[var(--accent)] shrink-0">
                                     {task.slashCommand}
                                   </span>
                                 </>
@@ -393,9 +371,9 @@ export function AgentTaskKanban({
                             </div>
                             <span
                               title={formatDateTime(task.updatedAt || task.createdAt)}
-                              className="shrink-0"
+                              className="shrink-0 font-mono"
                             >
-                              {formatShortRelative(task.updatedAt || task.createdAt)}
+                              {formatRelativeAge(task.updatedAt || task.createdAt)}
                             </span>
                           </div>
 
@@ -412,27 +390,19 @@ export function AgentTaskKanban({
 
                           <div className="space-y-1 font-mono text-[11px] text-[var(--ink-subtle)] tabular-nums">
                             <div className="flex items-center gap-1.5 min-w-0">
-                              <span className="text-[var(--ink-muted)] truncate">
-                                {shortAgentName(task.workerAgentName || task.leadAgentName)}
-                              </span>
-                              <span aria-hidden="true">·</span>
                               <span className="inline-flex items-center gap-1 truncate">
                                 <Server className="size-2.5 shrink-0" strokeWidth={1.75} />
-                                {task.workerNodeId || nodeDisplay}
+                                {nodeDisplay}
                               </span>
+                              {task.appliedModel && (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="truncate max-w-[140px]">{task.appliedModel}</span>
+                                </>
+                              )}
                             </div>
 
                             <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5">
-                              {task.appliedModel && (
-                                <span className="truncate max-w-[140px]">{task.appliedModel}</span>
-                              )}
-                              {task.appliedEffort && (
-                                <>
-                                  {task.appliedModel && <span aria-hidden="true">/</span>}
-                                  <span>{task.appliedEffort}</span>
-                                </>
-                              )}
-                              <span aria-hidden="true">·</span>
                               <span>{formatDurationMs(task.durationMs)}</span>
                               {task.state === 'canceled' && (
                                 <>
@@ -464,7 +434,7 @@ export function AgentTaskKanban({
                             </button>
 
                             <select
-                              aria-label={`修改任务 ${task.id} 的生命周期状态`}
+                              aria-label={`修改任务状态`}
                               data-testid={`kanban-quick-move-${task.id}`}
                               disabled={readOnly || isMoving}
                               value={currentColId}
@@ -476,7 +446,7 @@ export function AgentTaskKanban({
                                 }
                               }}
                               className={cn(
-                                'h-6 rounded-md border border-[var(--border)] bg-[var(--bg)] px-1.5 font-mono text-[11px] text-[var(--ink-muted)] hover:border-[var(--border-strong)] hover:text-[var(--ink)] cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed transition-colors',
+                                'h-6 rounded-md border border-[var(--border)] bg-[var(--bg)] px-1.5 text-[11px] text-[var(--ink-muted)] hover:border-[var(--border-strong)] hover:text-[var(--ink)] cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed transition-colors',
                                 FOCUS_RING,
                               )}
                             >

@@ -10,7 +10,7 @@ import {
   ShieldAlert,
   Trash2,
 } from 'lucide-react';
-import type { AlertsStateResponse, IncidentItem } from '../types';
+import type { AlertsStateResponse, IncidentItem, ToastHandler } from '../types';
 import {
   ackAlert,
   createAlertRule,
@@ -21,6 +21,7 @@ import {
   toggleAlertRule,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import { formatRemainingSilence } from '../lib/module-helpers';
 import { ModuleFrame } from '../modules/ModuleFrame';
 import { formatDateTime, statusLabel } from '../utils/format';
@@ -94,7 +95,7 @@ export function AlertsView({
   incidents: IncidentItem[];
   readOnly: boolean;
   onRefreshIncidents: () => Promise<void>;
-  onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast: ToastHandler;
   onConfirm: (modal: ConfirmModalState) => void;
 }) {
   const [state, setState] = React.useState<AlertsStateResponse | null>(null);
@@ -170,8 +171,7 @@ export function AlertsView({
   }, [state?.silenced, state?.silenceUntil]);
 
   const handleSilence = async (minutes: number) => {
-    if (readOnly) {
-      onToast('只读模式已禁用告警静默控制', 'err');
+    if (guardReadOnly(readOnly, onToast, '调整告警静音')) {
       return;
     }
     const prevState = state;
@@ -193,21 +193,26 @@ export function AlertsView({
       setState((curr) =>
         curr ? { ...curr, silenced: res.silenced, silenceUntil: res.silenceUntil } : curr,
       );
-      onToast(
-        res.silenced ? `已开启全局告警静默 ${minutes} 分钟` : '已解除全局告警静默',
-        'ok',
-      );
+      if (res.silenced) {
+        onToast(`已静音告警通知 ${minutes} 分钟`, 'ok', {
+          action: {
+            label: '撤销静音',
+            onClick: () => void handleSilence(0),
+          },
+        });
+      } else {
+        onToast('已恢复告警通知', 'ok');
+      }
     } catch (err) {
       if (prevState) setState(prevState);
-      onToast(`操作失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '调整告警静音失败'), 'err');
     } finally {
       setBusyId(null);
     }
   };
 
   const handleBulkAck = async () => {
-    if (readOnly || !state) {
-      if (readOnly) onToast('只读模式已禁用告警确认', 'err');
+    if (guardReadOnly(readOnly, onToast, '确认告警') || !state) {
       return;
     }
     const unacked = state.alerts.filter((al) => al.status !== 'acked');
@@ -221,18 +226,17 @@ export function AlertsView({
     setBusyId('bulk-ack');
     try {
       await Promise.all(unacked.map((al) => ackAlert(al.id)));
-      onToast(`已批量确认 ${unacked.length} 条告警`, 'ok');
+      onToast(`已全部确认 ${unacked.length} 条告警`, 'ok');
     } catch (err) {
       setState(prevState);
-      onToast(`批量确认失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '批量确认告警失败'), 'err');
     } finally {
       setBusyId(null);
     }
   };
 
   const handleAck = async (alertId: string) => {
-    if (readOnly) {
-      onToast('只读模式已禁用告警确认', 'err');
+    if (guardReadOnly(readOnly, onToast, '确认告警')) {
       return;
     }
     const prevState = state;
@@ -249,15 +253,14 @@ export function AlertsView({
       onToast('已确认该告警', 'ok');
     } catch (err) {
       if (prevState) setState(prevState);
-      onToast(`确认失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '确认告警失败'), 'err');
     } finally {
       setBusyId(null);
     }
   };
 
   const handleToggleRule = async (ruleId: string, nextEnabled: boolean) => {
-    if (readOnly) {
-      onToast('只读模式已禁用规则切换', 'err');
+    if (guardReadOnly(readOnly, onToast, '切换告警规则状态')) {
       return;
     }
     const prevState = state;
@@ -270,18 +273,39 @@ export function AlertsView({
     setBusyId(ruleId);
     try {
       await toggleAlertRule(ruleId, nextEnabled);
-      onToast(nextEnabled ? '已启用告警规则' : '已暂停告警规则', 'ok');
+      onToast(nextEnabled ? '已启用告警规则' : '已暂停告警规则', 'ok', {
+        action: {
+          label: '撤销',
+          onClick: async () => {
+            try {
+              await toggleAlertRule(ruleId, !nextEnabled);
+              setState((curr) =>
+                curr
+                  ? {
+                      ...curr,
+                      rules: curr.rules.map((r) =>
+                        r.id === ruleId ? { ...r, enabled: !nextEnabled } : r,
+                      ),
+                    }
+                  : curr,
+              );
+              onToast('已恢复告警规则状态', 'info');
+            } catch (undoErr) {
+              onToast(extractErrorMessage(undoErr, '恢复告警规则状态失败'), 'err');
+            }
+          },
+        },
+      });
     } catch (err) {
       if (prevState) setState(prevState);
-      onToast(`更新失败：${(err as Error).message}`, 'err');
+      onToast(extractErrorMessage(err, '更新规则失败'), 'err');
     } finally {
       setBusyId(null);
     }
   };
 
   const handleDeleteRule = (ruleId: string, name: string) => {
-    if (readOnly) {
-      onToast('只读模式已禁用删除规则', 'err');
+    if (guardReadOnly(readOnly, onToast, '删除告警规则')) {
       return;
     }
     onConfirm({
@@ -303,7 +327,7 @@ export function AlertsView({
           onToast(`已删除规则「${name}」`, 'ok');
         } catch (err) {
           if (prevState) setState(prevState);
-          onToast(`删除失败：${(err as Error).message}`, 'err');
+          onToast(extractErrorMessage(err, '删除规则失败'), 'err');
         }
       },
     });
@@ -692,7 +716,7 @@ export function AlertsView({
           className="lg:col-span-7"
           bodyClassName="p-0"
           title="活跃告警与处理队列"
-          description="实时汇总触发中的阈值告警，支持按确认状态筛选及批量 Ack 消音。"
+          description="实时汇总触发中的阈值告警，支持按状态筛选及一键全部确认。"
           actions={
             <div className="flex flex-wrap items-center gap-2">
               <SegmentedFilter

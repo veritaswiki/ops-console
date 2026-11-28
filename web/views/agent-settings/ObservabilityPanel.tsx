@@ -1601,9 +1601,9 @@ export function ObservabilityPanel({
       </SettingGroup>
 
       <SettingGroup
-        title="联邦只读适配器与远端节点"
-        description="本机日志源游标状态与在线远端探针汇总；所有读取均严格只读且受字节与超时上限保护。"
-        meta={`${adapters.length} 适配器 · ${remoteNodes.length} 远端节点`}
+        title="本机日志源与远端节点状态"
+        description="查看本机日志读取进度与在线远端节点汇总；所有读取均严格只读，并受大小和超时限制保护。"
+        meta={`${adapters.length} 日志源 · ${remoteNodes.length} 远端节点`}
       >
         <div className="divide-y divide-[var(--border-subtle)]">
           {adapters.length === 0 ? (

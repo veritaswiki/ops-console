@@ -10,7 +10,13 @@ import {
 import type { A2AAgentPeer, A2ATaskRecord, LinearIssueItem } from '../../types';
 import { formatInlineOutputPreview } from '../../lib/workspace-controls';
 import { cn, FOCUS_RING } from '../../lib/cn';
-import { formatRelativeAge } from '../../utils/format';
+import { extractErrorMessage } from '../../lib/ux-errors';
+import {
+  contextBudgetPercent as calcBudgetPercent,
+  formatRelativeAge,
+  taskStateLabel,
+  taskStateTone,
+} from '../../utils/format';
 import { Button } from '../ui';
 
 const PAGE_SIZE = 15;
@@ -76,26 +82,6 @@ function matchesFilter(task: A2ATaskRecord, filter: RuntimeFilter): boolean {
   return true;
 }
 
-function taskStateLabel(state: string): string {
-  if (state === 'submitted') return '已提交';
-  if (state === 'working') return '执行中';
-  if (state === 'reviewing') return '会审中';
-  if (state === 'completed') return '已完成';
-  if (state === 'failed') return '失败';
-  if (state === 'canceled') return '已取消';
-  if (state === 'queued') return '排队中';
-  return state;
-}
-
-function taskStateTone(state: string): 'ok' | 'warn' | 'err' | 'muted' {
-  if (state === 'completed') return 'ok';
-  if (state === 'failed') return 'err';
-  if (state === 'working' || state === 'reviewing' || state === 'submitted' || state === 'queued') {
-    return 'warn';
-  }
-  return 'muted';
-}
-
 function toneDotClass(tone: 'ok' | 'warn' | 'err' | 'muted'): string {
   if (tone === 'ok') return 'bg-[var(--ok-dot)]';
   if (tone === 'warn') return 'bg-[var(--warn-dot)]';
@@ -116,10 +102,7 @@ function contextPercent(task: A2ATaskRecord): number {
   if (Number.isFinite(budget.usagePct)) {
     return Math.max(0, Math.min(100, budget.usagePct));
   }
-  if (budget.maxTokens > 0 && Number.isFinite(budget.estimatedTokens)) {
-    return Math.max(0, Math.min(100, (budget.estimatedTokens / budget.maxTokens) * 100));
-  }
-  return 0;
+  return calcBudgetPercent(budget.estimatedTokens, budget.maxTokens);
 }
 
 function budgetToneClass(pct: number): string {
@@ -167,6 +150,7 @@ function ThreadControlBar({
 
   const busy = Boolean(busyTaskId) || pendingAction !== null;
   const locked = readOnly;
+  const active = isActiveTask(task);
   const pct = contextPercent(task);
   const budget = task.contextBudget;
   const stateTone = taskStateTone(task.state);
@@ -178,7 +162,7 @@ function ThreadControlBar({
     try {
       await action();
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : '操作失败');
+      setActionError(extractErrorMessage(error, '操作失败，请稍后重试'));
     } finally {
       setPendingAction(null);
     }
@@ -186,7 +170,7 @@ function ThreadControlBar({
 
   return (
     <section
-      aria-label="当前线程控制"
+      aria-label="当前对话快捷控制"
       className="space-y-2.5 border-y border-[var(--border-subtle)] bg-[var(--surface-subtle)]/35 px-3 py-3 sm:px-4"
     >
       <div className="flex flex-wrap items-start justify-between gap-2">
@@ -195,86 +179,90 @@ function ThreadControlBar({
             <span className={cn('h-1.5 w-1.5 shrink-0 rounded-full', toneDotClass(stateTone))} />
             <span className={cn('font-medium', toneTextClass(stateTone))}>{taskStateLabel(task.state)}</span>
             <span aria-hidden="true" className="text-[var(--ink-subtle)]">·</span>
-            <span className="truncate font-mono text-[11px] text-[var(--ink-subtle)]">{task.id}</span>
+            <span className="truncate text-[11.5px] text-[var(--ink-subtle)]" title={task.id}>
+              {task.workerAgentName || task.leadAgentName || '默认助手'}
+            </span>
           </div>
           <p className="mt-0.5 truncate text-[12.5px] text-[var(--ink-muted)]" title={task.prompt}>
-            {formatInlineOutputPreview(task.prompt, 140).preview || '（无提示词）'}
+            {formatInlineOutputPreview(task.prompt, 140).preview || '（无内容）'}
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11px] text-[var(--ink-subtle)] tabular-nums">
           <span>{activeQueueCount(task)} 排队</span>
           <span aria-hidden="true">·</span>
-          <span>{(task.steeringNotes || []).length} 纠偏</span>
+          <span>{(task.steeringNotes || []).length} 指导</span>
           <span aria-hidden="true">·</span>
-          <span>{(task.outputSpills || []).length} 溢写</span>
+          <span>{(task.outputSpills || []).length} 长输出</span>
         </div>
       </div>
 
-      <div className="grid gap-2 lg:grid-cols-2">
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            const prompt = queueText.trim();
-            if (!prompt) return;
-            void runAction('queue', async () => {
-              await onQueueTurn(task.id, prompt);
-              setQueueText('');
-            });
-          }}
-          className="flex min-w-0 items-center gap-1.5"
-        >
-          <input
-            type="text"
-            value={queueText}
-            disabled={locked || busy}
-            onChange={(event) => setQueueText(event.target.value)}
-            placeholder="排队下一轮提示词…"
-            aria-label="排队下一轮提示词"
-            className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2.5 text-[16px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)] transition-colors duration-150 ease-out focus:border-[var(--accent)] disabled:opacity-50 sm:h-8 sm:text-[12.5px]"
-          />
-          <Button
-            type="submit"
-            variant="secondary"
-            size="sm"
-            disabled={locked || busy || !queueText.trim()}
-            className="touch-manipulation"
+      {active ? (
+        <div className="grid gap-2 lg:grid-cols-2">
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              const prompt = queueText.trim();
+              if (!prompt) return;
+              void runAction('queue', async () => {
+                await onQueueTurn(task.id, prompt);
+                setQueueText('');
+              });
+            }}
+            className="flex min-w-0 items-center gap-1.5"
           >
-            排队
-          </Button>
-        </form>
+            <input
+              type="text"
+              value={queueText}
+              disabled={locked || busy}
+              onChange={(event) => setQueueText(event.target.value)}
+              placeholder="输入下一条待执行指令…"
+              aria-label="排队下一轮指令"
+              className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2.5 text-[16px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)] transition-colors duration-150 ease-out focus:border-[var(--accent)] disabled:opacity-50 sm:h-8 sm:text-[12.5px]"
+            />
+            <Button
+              type="submit"
+              variant="secondary"
+              size="sm"
+              disabled={locked || busy || !queueText.trim()}
+              className="touch-manipulation"
+            >
+              排队
+            </Button>
+          </form>
 
-        <form
-          onSubmit={(event) => {
-            event.preventDefault();
-            const instruction = steerText.trim();
-            if (!instruction) return;
-            void runAction('steer', async () => {
-              await onSteerTask(task.id, instruction);
-              setSteerText('');
-            });
-          }}
-          className="flex min-w-0 items-center gap-1.5"
-        >
-          <input
-            type="text"
-            value={steerText}
-            disabled={locked || busy}
-            onChange={(event) => setSteerText(event.target.value)}
-            placeholder="插入纠偏指令…"
-            aria-label="插入纠偏指令"
-            className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2.5 text-[16px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)] transition-colors duration-150 ease-out focus:border-[var(--accent)] disabled:opacity-50 sm:h-8 sm:text-[12.5px]"
-          />
-          <Button
-            type="submit"
-            variant="secondary"
-            size="sm"
-            disabled={locked || busy || !steerText.trim()}
-            className="touch-manipulation"
+          <form
+            onSubmit={(event) => {
+              event.preventDefault();
+              const instruction = steerText.trim();
+              if (!instruction) return;
+              void runAction('steer', async () => {
+                await onSteerTask(task.id, instruction);
+                setSteerText('');
+              });
+            }}
+            className="flex min-w-0 items-center gap-1.5"
           >
-            纠偏
-          </Button>
-        </form>
-      </div>
+            <input
+              type="text"
+              value={steerText}
+              disabled={locked || busy}
+              onChange={(event) => setSteerText(event.target.value)}
+              placeholder="向运行中的助手补充要求…"
+              aria-label="补充指导"
+              className="h-9 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-[var(--bg)] px-2.5 text-[16px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)] transition-colors duration-150 ease-out focus:border-[var(--accent)] disabled:opacity-50 sm:h-8 sm:text-[12.5px]"
+            />
+            <Button
+              type="submit"
+              variant="secondary"
+              size="sm"
+              disabled={locked || busy || !steerText.trim()}
+              className="touch-manipulation"
+            >
+              补充指导
+            </Button>
+          </form>
+        </div>
+      ) : null}
 
       <div className="flex flex-wrap items-center gap-1.5">
         <Button
@@ -285,7 +273,7 @@ function ThreadControlBar({
           className="touch-manipulation"
         >
           <RefreshCw className="size-3.5" strokeWidth={1.75} />
-          重启
+          继续重试
         </Button>
         <Button
           variant="ghost"
@@ -294,7 +282,7 @@ function ThreadControlBar({
           onClick={() => void runAction('fresh', () => onRestartTask(task.id, true))}
           className="touch-manipulation"
         >
-          全新上下文
+          重新开始
         </Button>
         <Button
           variant="ghost"
@@ -303,25 +291,27 @@ function ThreadControlBar({
           onClick={() => void runAction('settle', () => onSettleTask(task.id))}
           className="touch-manipulation"
         >
-          归档
+          {task.settledAt ? '已归档' : '归档'}
         </Button>
         <Button
           variant="ghost"
           size="sm"
           disabled={locked || busy}
+          title="30 分钟后再次提醒"
           onClick={() => void runAction('snooze-30', () => onSnoozeTask(task.id, 30))}
           className="touch-manipulation"
         >
-          稍后 30m
+          30 分钟后
         </Button>
         <Button
           variant="ghost"
           size="sm"
           disabled={locked || busy}
+          title="2 小时后再次提醒"
           onClick={() => void runAction('snooze-120', () => onSnoozeTask(task.id, 120))}
           className="touch-manipulation"
         >
-          2h
+          2 小时后
         </Button>
         <Button
           variant="ghost"
@@ -331,20 +321,20 @@ function ThreadControlBar({
           className="touch-manipulation"
         >
           <Sparkles className="size-3.5 text-[var(--accent)]" strokeWidth={1.75} />
-          /compact
+          压缩上下文
         </Button>
         {pendingAction ? (
-          <span className="ml-1 text-[11.5px] text-[var(--ink-subtle)]">执行中…</span>
+          <span className="ml-1 text-[11.5px] text-[var(--ink-subtle)]">处理中…</span>
         ) : null}
       </div>
 
       <div className="space-y-1">
         <div className="flex items-baseline justify-between gap-2 text-[11px] text-[var(--ink-subtle)]">
-          <span>Context Window</span>
+          <span>上下文用量</span>
           <span className="font-mono tabular-nums">
             {budget
               ? `${budget.estimatedTokens.toLocaleString()} / ${budget.maxTokens.toLocaleString()} · ${Math.round(pct)}%`
-              : '暂无计量'}
+              : '未开始统计'}
           </span>
         </div>
         <div

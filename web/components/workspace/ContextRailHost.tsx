@@ -1,22 +1,17 @@
 import React from 'react';
 import {
-  Activity,
   ChevronDown,
   ChevronRight,
-  Database,
   ExternalLink,
-  GitBranch,
   GripVertical,
   Link2,
   MessageSquare,
-  Monitor,
   PanelRight,
   ShieldCheck,
   Sparkles,
-  Terminal,
   X,
 } from 'lucide-react';
-import type { A2ATaskRecord, LinearIssueItem } from '../../types';
+import type { A2ATaskRecord, LinearIssueItem, ToastHandler } from '../../types';
 import { fetchA2ATaskSpill } from '../../api';
 import { useUiSlots } from '../../modules/registry';
 import {
@@ -24,7 +19,16 @@ import {
   CONTEXT_RAIL_DEFAULT_WIDTH,
 } from '../../lib/workspace-controls';
 import { cn, FOCUS_RING } from '../../lib/cn';
-import { formatDateTime, formatRelativeAge } from '../../utils/format';
+import { extractErrorMessage } from '../../lib/ux-errors';
+import {
+  contextBudgetPercent as calcBudgetPercent,
+  formatBytes,
+  formatDateTime,
+  formatDurationMs,
+  formatRelativeAge,
+  taskStateLabel,
+  taskStateTone,
+} from '../../utils/format';
 import { Button } from '../ui';
 
 const RAIL_WIDTH_KEY = 'ops-console:context-rail-width';
@@ -50,7 +54,7 @@ export interface ContextRailHostProps {
   onSnoozeTask?: (taskId: string, minutes: number) => void;
   onOpenProjectIssue?: (issueId: string) => void;
   onOpenBtw?: (taskId: string) => void;
-  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast?: ToastHandler;
 }
 
 interface SpillState {
@@ -58,14 +62,6 @@ interface SpillState {
   content?: string;
   error?: string;
 }
-
-const UPCOMING_PANELS = [
-  { id: 'worktree-diff', label: 'Worktree / Diff', icon: GitBranch, note: '分支、补丁与提交差异' },
-  { id: 'execution-trace', label: 'Execution Trace', icon: Activity, note: '逐步执行轨迹与耗时' },
-  { id: 'cdp-bridge', label: 'CDP Bridge', icon: Monitor, note: '浏览器调试桥与页面快照' },
-  { id: 'codex-bridge', label: 'Codex Bridge', icon: Terminal, note: 'Codex 会话与命令回放' },
-  { id: 'memory-provenance', label: 'Memory Provenance', icon: Database, note: '记忆来源与召回证据' },
-] as const;
 
 function readStoredRailWidth(): number {
   if (typeof window === 'undefined') return CONTEXT_RAIL_DEFAULT_WIDTH;
@@ -99,37 +95,34 @@ function isEditableTarget(target: EventTarget | null): boolean {
   );
 }
 
-function formatBytes(bytes?: number | null): string {
-  if (bytes == null || !Number.isFinite(bytes) || bytes <= 0) return '0 B';
-  if (bytes < 1024) return `${Math.round(bytes)} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 function relationLabel(relation?: string | null): string {
-  if (relation === 'side_thread') return 'BTW 侧线程';
-  if (relation === 'btw') return 'BTW 分支';
+  if (relation === 'side_thread' || relation === 'btw') return '支线讨论';
   if (relation === 'subtask') return '子任务';
-  if (relation === 'continuation') return '续接线程';
-  return relation || '主线程';
+  if (relation === 'continuation') return '续接对话';
+  return relation || '主对话';
 }
 
-function contextBudgetPercent(task?: A2ATaskRecord | null): number {
+function taskBudgetPercent(task?: A2ATaskRecord | null): number {
   const budget = task?.contextBudget;
   if (!budget) return 0;
   if (Number.isFinite(budget.usagePct)) {
     return Math.max(0, Math.min(100, budget.usagePct));
   }
-  if (budget.maxTokens > 0 && Number.isFinite(budget.estimatedTokens)) {
-    return Math.max(0, Math.min(100, (budget.estimatedTokens / budget.maxTokens) * 100));
-  }
-  return 0;
+  return calcBudgetPercent(budget.estimatedTokens, budget.maxTokens);
 }
 
-function budgetToneClass(pct: number): string {
+function budgetBarClass(pct: number): string {
   if (pct >= 88) return 'bg-[var(--err-dot)]';
   if (pct >= 72) return 'bg-[var(--warn-dot)]';
   return 'bg-[var(--accent)]';
+}
+
+function stateDotClass(state?: string | null): string {
+  const tone = taskStateTone(state);
+  if (tone === 'ok') return 'bg-[var(--ok-dot)]';
+  if (tone === 'warn') return 'bg-[var(--warn-dot)]';
+  if (tone === 'err') return 'bg-[var(--err-dot)]';
+  return 'bg-[var(--muted-dot)]';
 }
 
 function ContextValue({ value }: { value?: string | null }) {
@@ -153,7 +146,6 @@ function OverviewSection({
   onOpenProjectIssue,
   onOpenBtw,
   onToast,
-  upcomingPanels,
 }: {
   context: ContextRailContext;
   readOnly: boolean;
@@ -163,8 +155,7 @@ function OverviewSection({
   onSnoozeTask?: (taskId: string, minutes: number) => void;
   onOpenProjectIssue?: (issueId: string) => void;
   onOpenBtw?: (taskId: string) => void;
-  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
-  upcomingPanels: ReadonlyArray<(typeof UPCOMING_PANELS)[number]>;
+  onToast?: ToastHandler;
 }) {
   const task = context.task || null;
   const [openSpills, setOpenSpills] = React.useState<Record<string, boolean>>({});
@@ -174,7 +165,7 @@ function OverviewSection({
   const steeringNotes = task?.steeringNotes || [];
   const queuedCount = queuedTurns.filter((turn) => turn.status !== 'canceled').length;
   const spills = task?.outputSpills || [];
-  const budgetPct = contextBudgetPercent(task);
+  const budgetPct = taskBudgetPercent(task);
   const budget = task?.contextBudget;
 
   const compactBusy =
@@ -197,12 +188,12 @@ function OverviewSection({
           [spillId]: { status: 'loaded', content },
         }));
       } catch (error) {
-        const message = error instanceof Error ? error.message : '输出溢写加载失败';
+        const message = extractErrorMessage(error, '完整输出加载失败');
         setSpillState((prev) => ({
           ...prev,
           [spillId]: { status: 'error', error: message },
         }));
-        onToast?.(`输出溢写加载失败：${message}`, 'err');
+        onToast?.(`加载完整输出失败：${message}`, 'err');
       }
     },
     [onToast, spillState, task?.id],
@@ -216,70 +207,91 @@ function OverviewSection({
     }
   };
 
+  const detailRows = [
+    { label: '执行助手', value: task?.workerAgentName || context.workerId || task?.workerAgentId },
+    { label: '运行节点', value: context.nodeId || task?.workerNodeId },
+    { label: '关联工单', value: context.ticketId || task?.matchedRuleId },
+    { label: '会话编号', value: context.sessionId },
+    { label: '任务编号', value: context.taskId || task?.id },
+  ].filter((row) => Boolean((row.value || '').trim()));
+
+  const hasLineage = Boolean(
+    task?.parentThreadId ||
+      task?.rootThreadId ||
+      (task?.relation && task.relation !== 'main'),
+  );
+
   return (
     <div className="space-y-5">
-      <section className="space-y-2" aria-label="活动上下文标识">
+      <section className="space-y-2" aria-label="当前对话信息">
         <h3 className="text-[11px] font-semibold tracking-wide text-[var(--ink-subtle)]">
-          活动上下文
+          当前对话
         </h3>
-        <dl className="grid grid-cols-[72px_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-[12px]">
-          <dt className="text-[var(--ink-subtle)]">Session</dt>
-          <dd className="min-w-0">
-            <ContextValue value={context.sessionId} />
-          </dd>
-          <dt className="text-[var(--ink-subtle)]">Task</dt>
-          <dd className="min-w-0">
-            <ContextValue value={context.taskId || task?.id} />
-          </dd>
-          <dt className="text-[var(--ink-subtle)]">Ticket</dt>
-          <dd className="min-w-0">
-            <ContextValue value={context.ticketId || task?.matchedRuleId} />
-          </dd>
-          <dt className="text-[var(--ink-subtle)]">Worker</dt>
-          <dd className="min-w-0">
-            <ContextValue value={context.workerId || task?.workerAgentId} />
-          </dd>
-          <dt className="text-[var(--ink-subtle)]">Node</dt>
-          <dd className="min-w-0">
-            <ContextValue value={context.nodeId || task?.workerNodeId} />
-          </dd>
-        </dl>
         {task ? (
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-[var(--ink-subtle)]">
-            <span className="text-[var(--ink-muted)]">{task.state}</span>
+            <span className="inline-flex items-center gap-1.5 text-[var(--ink)] font-medium">
+              <span aria-hidden="true" className={cn('h-1.5 w-1.5 rounded-full', stateDotClass(task.state))} />
+              {taskStateLabel(task.state)}
+            </span>
             <span aria-hidden="true">·</span>
             <span className="font-mono tabular-nums">{formatRelativeAge(task.updatedAt)}</span>
-            <span aria-hidden="true">·</span>
-            <span className="font-mono tabular-nums">{task.durationMs}ms</span>
+            {task.durationMs > 0 ? (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="font-mono tabular-nums">耗时 {formatDurationMs(task.durationMs)}</span>
+              </>
+            ) : null}
           </div>
         ) : null}
+        {detailRows.length > 0 ? (
+          <dl className="grid grid-cols-[68px_minmax(0,1fr)] gap-x-3 gap-y-1.5 text-[12px]">
+            {detailRows.map((row) => (
+              <React.Fragment key={row.label}>
+                <dt className="text-[var(--ink-subtle)]">{row.label}</dt>
+                <dd className="min-w-0">
+                  <ContextValue value={row.value} />
+                </dd>
+              </React.Fragment>
+            ))}
+          </dl>
+        ) : (
+          <p className="text-[12px] text-[var(--ink-subtle)]">
+            发送或选中一条对话后，这里将展示运行详情与上下文用量。
+          </p>
+        )}
       </section>
 
-      <section className="space-y-2" aria-label="线程血缘">
-        <h3 className="text-[11px] font-semibold tracking-wide text-[var(--ink-subtle)]">线程血缘</h3>
-        <div className="space-y-1.5 text-[11.5px] text-[var(--ink-subtle)]">
-          <div className="flex items-center justify-between gap-2">
-            <span>关系</span>
-            <span className="text-[var(--ink-muted)]">{relationLabel(task?.relation)}</span>
+      {hasLineage ? (
+        <section className="space-y-2" aria-label="对话关联">
+          <h3 className="text-[11px] font-semibold tracking-wide text-[var(--ink-subtle)]">对话关联</h3>
+          <div className="space-y-1.5 text-[11.5px] text-[var(--ink-subtle)]">
+            <div className="flex items-center justify-between gap-2">
+              <span>类型</span>
+              <span className="text-[var(--ink-muted)]">{relationLabel(task?.relation)}</span>
+            </div>
+            {task?.parentThreadId ? (
+              <div className="flex items-center justify-between gap-2">
+                <span>来源对话</span>
+                <ContextValue value={task.parentThreadId} />
+              </div>
+            ) : null}
+            {task?.rootThreadId && task.rootThreadId !== task.parentThreadId ? (
+              <div className="flex items-center justify-between gap-2">
+                <span>主对话</span>
+                <ContextValue value={task.rootThreadId} />
+              </div>
+            ) : null}
           </div>
-          <div className="flex items-center justify-between gap-2">
-            <span>父线程</span>
-            <ContextValue value={task?.parentThreadId} />
-          </div>
-          <div className="flex items-center justify-between gap-2">
-            <span>根线程</span>
-            <ContextValue value={task?.rootThreadId} />
-          </div>
-        </div>
-      </section>
+        </section>
+      ) : null}
 
-      <section className="space-y-2" aria-label="上下文预算">
+      <section className="space-y-2" aria-label="上下文用量">
         <div className="flex items-baseline justify-between gap-2">
-          <h3 className="text-[11px] font-semibold tracking-wide text-[var(--ink-subtle)]">上下文预算</h3>
+          <h3 className="text-[11px] font-semibold tracking-wide text-[var(--ink-subtle)]">上下文用量</h3>
           <span className="font-mono text-[11.5px] text-[var(--ink-muted)] tabular-nums">
             {budget
               ? `${budget.estimatedTokens.toLocaleString()} / ${budget.maxTokens.toLocaleString()}`
-              : '暂无计量'}
+              : '未开始统计'}
             {budget ? <span className="ml-1.5 text-[var(--ink-subtle)]">{Math.round(budgetPct)}%</span> : null}
           </span>
         </div>
@@ -292,14 +304,14 @@ function OverviewSection({
           aria-valuenow={Math.round(budgetPct)}
         >
           <div
-            className={cn('h-full w-full origin-left rounded-full', budgetToneClass(budgetPct))}
+            className={cn('h-full w-full origin-left rounded-full', budgetBarClass(budgetPct))}
             style={{ transform: `scaleX(${budgetPct / 100})` }}
           />
         </div>
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11.5px] text-[var(--ink-subtle)]">
-          <span className="font-mono tabular-nums">{queuedCount} 排队</span>
+          <span className="font-mono tabular-nums">{queuedCount} 条待执行</span>
           <span aria-hidden="true">·</span>
-          <span className="font-mono tabular-nums">{steeringNotes.length} 纠偏</span>
+          <span className="font-mono tabular-nums">{steeringNotes.length} 条补充指导</span>
           <span aria-hidden="true">·</span>
           <span className="font-mono tabular-nums">{budget?.compactedCount ?? task?.compactions?.length ?? 0} 次压缩</span>
         </div>
@@ -315,7 +327,7 @@ function OverviewSection({
             className="touch-manipulation"
           >
             <Sparkles className="size-3.5 text-[var(--accent)]" strokeWidth={1.75} />
-            {compactBusy ? '压缩中…' : '/compact'}
+            {compactBusy ? '压缩中…' : '压缩上下文'}
           </Button>
           {onOpenBtw && task ? (
             <Button
@@ -325,7 +337,7 @@ function OverviewSection({
               className="touch-manipulation"
             >
               <MessageSquare className="size-3.5" strokeWidth={1.75} />
-              BTW 侧聊
+              支线讨论
             </Button>
           ) : null}
           {!readOnly && task && onSettleTask ? (
@@ -336,7 +348,7 @@ function OverviewSection({
               onClick={() => onSettleTask(task.id)}
               className="touch-manipulation"
             >
-              归档
+              {task.settledAt ? '已归档' : '归档'}
             </Button>
           ) : null}
           {!readOnly && task && onSnoozeTask ? (
@@ -346,15 +358,15 @@ function OverviewSection({
               onClick={() => onSnoozeTask(task.id, 30)}
               className="touch-manipulation"
             >
-              稍后 30m
+              30 分钟后提醒
             </Button>
           ) : null}
         </div>
       </section>
 
       {context.linkedIssue ? (
-        <section className="space-y-2" aria-label="关联 Linear 事务">
-          <h3 className="text-[11px] font-semibold tracking-wide text-[var(--ink-subtle)]">关联事务</h3>
+        <section className="space-y-2" aria-label="关联项目任务">
+          <h3 className="text-[11px] font-semibold tracking-wide text-[var(--ink-subtle)]">关联项目任务</h3>
           <button
             type="button"
             disabled={!onOpenProjectIssue}
@@ -391,12 +403,12 @@ function OverviewSection({
         </section>
       ) : null}
 
-      <section className="space-y-2" aria-label="输出溢写">
+      <section className="space-y-2" aria-label="完整输出归档">
         <h3 className="text-[11px] font-semibold tracking-wide text-[var(--ink-subtle)]">
-          输出溢写 <span className="font-mono tabular-nums">{spills.length}</span>
+          完整输出归档 <span className="font-mono tabular-nums">{spills.length}</span>
         </h3>
         {spills.length === 0 ? (
-          <p className="text-[12px] text-[var(--ink-subtle)]">当前线程没有大块输出溢写。</p>
+          <p className="text-[12px] text-[var(--ink-subtle)]">当前对话没有超长输出归档。</p>
         ) : (
           <ul className="divide-y divide-[var(--border-subtle)]">
             {spills.map((spill) => {
@@ -429,7 +441,7 @@ function OverviewSection({
                   {open ? (
                     <div className="mt-1.5 space-y-1.5 pl-5">
                       {state?.status === 'loading' ? (
-                        <p className="text-[11.5px] text-[var(--ink-subtle)]">正在加载完整溢写…</p>
+                        <p className="text-[11.5px] text-[var(--ink-subtle)]">正在加载完整内容…</p>
                       ) : state?.status === 'error' ? (
                         <p className="text-[11.5px] text-[var(--err)]">{state.error}</p>
                       ) : state?.status === 'loaded' ? (
@@ -449,29 +461,6 @@ function OverviewSection({
           </ul>
         )}
       </section>
-
-      {upcomingPanels.length > 0 ? (
-        <section className="space-y-2" aria-label="即将接入的槽位面板">
-          <h3 className="text-[11px] font-semibold tracking-wide text-[var(--ink-subtle)]">
-            PR 9b 插槽就绪
-          </h3>
-          <ul className="divide-y divide-[var(--border-subtle)]">
-            {upcomingPanels.map((panel) => {
-              const Icon = panel.icon;
-              return (
-                <li key={panel.id} className="flex items-center gap-2 py-2 first:pt-0 last:pb-0">
-                  <Icon className="size-3.5 shrink-0 text-[var(--ink-subtle)]" strokeWidth={1.75} />
-                  <span className="min-w-0 flex-1">
-                    <span className="block text-[12px] text-[var(--ink-muted)]">{panel.label}</span>
-                    <span className="block truncate text-[10.5px] text-[var(--ink-subtle)]">{panel.note}</span>
-                  </span>
-                  <span className="font-mono text-[10px] text-[var(--ink-subtle)]">slot</span>
-                </li>
-              );
-            })}
-          </ul>
-        </section>
-      ) : null}
     </div>
   );
 }
@@ -563,9 +552,6 @@ export function ContextRailHost({
   }
 
   const activeSlot = dynamicPanels.find((panel) => panel.id === activePanelId) || null;
-  const upcomingPanels = UPCOMING_PANELS.filter(
-    (panel) => !dynamicPanels.some((slot) => slot.id === panel.id),
-  );
 
   return (
     <>
@@ -688,7 +674,6 @@ export function ContextRailHost({
               onOpenProjectIssue={onOpenProjectIssue}
               onOpenBtw={onOpenBtw}
               onToast={onToast}
-              upcomingPanels={upcomingPanels}
             />
           )}
         </div>

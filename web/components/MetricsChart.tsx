@@ -37,8 +37,8 @@ function formatAxisTick(ts: number, range: MetricsRange): string {
 
 export function MetricsChart({
   series = 'fleet',
-  title = '历史指标与聚合趋势',
-  description = '直连 SQLite WAL 原始样本与 1m / 5m 聚合表，支持跨尺度回溯资源水位与探针延迟。',
+  title = '历史指标趋势',
+  description = '展示主机 CPU、内存与服务响应延迟的历史趋势，支持按时间范围切换查看。',
 }: {
   series?: string;
   title?: string;

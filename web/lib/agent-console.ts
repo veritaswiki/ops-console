@@ -164,7 +164,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/help',
     usage: '/help',
-    description: '查看所有斜杠命令与 @agent 快捷路由用法',
+    description: '查看所有快捷指令与 @ 助手切换用法',
     category: 'inspect',
     shortcutHint: 'Enter',
     acceptsArgs: false,
@@ -172,7 +172,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/agent',
     usage: '/agent <id>',
-    description: '切换默认执行目标 Agent 或设备节点',
+    description: '切换默认执行助手或设备节点',
     category: 'control',
     shortcutHint: 'Tab',
     acceptsArgs: true,
@@ -180,7 +180,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/model',
     usage: '/model <name>',
-    description: '覆盖本次/默认推理模型（如 gpt-5-codex、claude-sonnet-4-6、gemini-4-neon）',
+    description: '指定本次使用的模型，输入 default 恢复默认',
     category: 'control',
     shortcutHint: 'Tab',
     acceptsArgs: true,
@@ -188,7 +188,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/effort',
     usage: '/effort <low|medium|high|xhigh|max>',
-    description: '调整思考力度（Reasoning Effort）',
+    description: '调整思考深度（轻量 / 均衡 / 深入 / 深度 / 最高）',
     category: 'control',
     shortcutHint: 'Tab',
     acceptsArgs: true,
@@ -196,7 +196,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/mode',
     usage: '/mode <lead-router|main-sub|swarm|plan>',
-    description: '切换 Agent 编排模式（路由/主从/蜂群并行/只读规划）',
+    description: '切换协作方式（自动分配 / 主从拆解 / 多助手并行 / 先规划再执行）',
     category: 'control',
     shortcutHint: 'Tab',
     acceptsArgs: true,
@@ -204,7 +204,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/plan',
     usage: '/plan <任务>',
-    description: '以规划模式运行（架构拆解与风险评估）',
+    description: '先规划方案与风险评估，再决定是否执行',
     category: 'dispatch',
     shortcutHint: 'Tab',
     acceptsArgs: true,
@@ -212,7 +212,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/worktree',
     usage: '/worktree <分支> <任务>',
-    description: '在隔离 Git Worktree 分支中执行任务',
+    description: '在独立代码分支中开发，不影响主分支',
     category: 'dispatch',
     shortcutHint: 'Tab',
     acceptsArgs: true,
@@ -220,7 +220,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/board',
     usage: '/board',
-    description: '切换对话流与任务生命周期拖拽看板',
+    description: '在对话流与任务运行泳道之间切换',
     category: 'control',
     shortcutHint: 'Enter',
     acceptsArgs: false,
@@ -228,7 +228,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/tasks',
     usage: '/tasks [关键词]',
-    description: '按任务 ID 或提示词快速过滤任务',
+    description: '按内容、助手或分支筛选历史任务',
     category: 'inspect',
     shortcutHint: 'Enter',
     acceptsArgs: true,
@@ -236,7 +236,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/status',
     usage: '/status',
-    description: '在对话流中插入当前多机 Agent 集群与 A2A 协议状态卡片',
+    description: '查看当前在线助手、设备节点与任务概况',
     category: 'inspect',
     shortcutHint: 'Enter',
     acceptsArgs: false,
@@ -244,7 +244,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/ping',
     usage: '/ping <agentId>',
-    description: '实时拨测目标 Agent 的 Google A2A v0.3 AgentCard 与 JSON-RPC 连通性',
+    description: '检测目标助手的在线状态与响应延迟',
     category: 'inspect',
     shortcutHint: 'Tab',
     acceptsArgs: true,
@@ -252,7 +252,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/handoff',
     usage: '/handoff <agentId>',
-    description: '将当前会话上下文交接给另一设备/节点的 Agent',
+    description: '将当前对话交接给另一台设备的助手继续处理',
     category: 'context',
     shortcutHint: 'Tab',
     acceptsArgs: true,
@@ -260,7 +260,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/btw',
     usage: '/btw <问题>',
-    description: '在当前会话开启隔离 BTW 旁支侧聊（不污染主线，可审批并入）',
+    description: '开启旁支问答（不影响当前主对话，满意后再合入）',
     category: 'context',
     shortcutHint: 'Tab',
     acceptsArgs: true,
@@ -268,7 +268,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/compact',
     usage: '/compact',
-    description: '整理当前对话上下文摘要并释放冗余上下文',
+    description: '整理当前对话摘要，减少冗余上下文（原记录保留）',
     category: 'context',
     shortcutHint: 'Enter',
     acceptsArgs: false,
@@ -276,7 +276,7 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
   {
     name: '/clear',
     usage: '/clear',
-    description: '开启全新对话线程',
+    description: '开始一段全新对话',
     category: 'context',
     shortcutHint: 'Enter',
     acceptsArgs: false,
@@ -584,29 +584,29 @@ export interface KanbanLifecycleColumn {
 export const KANBAN_LIFECYCLE_COLUMNS: readonly KanbanLifecycleColumn[] = [
   {
     id: 'pending',
-    label: 'Pending',
-    subtitle: '排队待执行',
+    label: '待执行',
+    subtitle: '排队等待',
     canonicalState: 'submitted',
     accentTone: 'muted',
   },
   {
     id: 'working',
-    label: 'Working',
-    subtitle: '执行中',
+    label: '执行中',
+    subtitle: '正在运行',
     canonicalState: 'working',
     accentTone: 'warn',
   },
   {
     id: 'done',
-    label: 'Done',
-    subtitle: '已完成',
+    label: '已完成',
+    subtitle: '执行结束',
     canonicalState: 'completed',
     accentTone: 'ok',
   },
   {
     id: 'failed',
-    label: 'Failed',
-    subtitle: '失败 / 取消',
+    label: '失败 / 取消',
+    subtitle: '异常终止',
     canonicalState: 'failed',
     accentTone: 'err',
   },

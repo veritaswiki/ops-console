@@ -3793,6 +3793,16 @@ export class A2AOrchestrator {
     return { task, actor: String(actor || 'web') };
   }
 
+  async unsettleTask(taskId, { actor = 'web' } = {}) {
+    const task = this._requireTask(taskId);
+    const nowIso = new Date().toISOString();
+    task.settledAt = null;
+    task.lastActivityAt = nowIso;
+    this._normalizeWorkspaceTask(task);
+    await this.persist();
+    return { task, actor: String(actor || 'web') };
+  }
+
   async snoozeTask(taskId, payload = {}, { actor = 'web' } = {}) {
     const task = this._requireTask(taskId);
     const nowMs = Date.now();
@@ -3814,6 +3824,17 @@ export class A2AOrchestrator {
     }
     task.snoozedAt = new Date(nowMs).toISOString();
     task.snoozedUntil = new Date(untilMs).toISOString();
+    this._normalizeWorkspaceTask(task);
+    await this.persist();
+    return { task, actor: String(actor || 'web') };
+  }
+
+  async unsnoozeTask(taskId, { actor = 'web' } = {}) {
+    const task = this._requireTask(taskId);
+    const nowIso = new Date().toISOString();
+    task.snoozedAt = null;
+    task.snoozedUntil = null;
+    task.lastActivityAt = nowIso;
     this._normalizeWorkspaceTask(task);
     await this.persist();
     return { task, actor: String(actor || 'web') };

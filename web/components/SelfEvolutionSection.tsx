@@ -26,6 +26,7 @@ import type {
   EvolutionProposal,
   EvolutionStateResponse,
   HotSwapModuleEntry,
+  ToastHandler,
 } from '../types';
 import {
   applyEvolutionProposal,
@@ -46,6 +47,7 @@ import {
   verifyEvolutionProposal,
 } from '../api';
 import { cn } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import {
   buildSampleEvolutionTemplates,
   EVOLUTION_PIPELINE_STAGES,
@@ -71,7 +73,7 @@ import {
 
 export interface SelfEvolutionSectionProps {
   readOnly: boolean;
-  onToast: (msg: string, kind?: 'ok' | 'err' | 'info') => void;
+  onToast: ToastHandler;
 }
 
 interface PatchDraftRow {
@@ -215,7 +217,7 @@ export function SelfEvolutionSection({ readOnly, onToast }: SelfEvolutionSection
   };
 
   const handleSyncDeclarative = async () => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '同步助手清单')) return;
     setBusyKey('sync-declarative');
     try {
       const res = await syncDeclarativeAgents({ force: true, reason: 'manual-ui' });
@@ -224,16 +226,16 @@ export function SelfEvolutionSection({ readOnly, onToast }: SelfEvolutionSection
       } else {
         await loadAll();
       }
-      onToast('声明式 Agent 与 Skill 已零停机同步至 A2A 编排器', 'ok');
+      onToast('配置化助手与技能清单已无中断同步', 'ok');
     } catch (err) {
-      onToast(err instanceof Error ? err.message : '声明式 Agent 同步失败', 'err');
+      onToast(extractErrorMessage(err, '同步助手清单失败'), 'err');
     } finally {
       setBusyKey(null);
     }
   };
 
   const handleReloadAllModules = async () => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '热更新全部模块')) return;
     setBusyKey('reload-all-modules');
     try {
       const res = await reloadAgentModules({
@@ -246,45 +248,51 @@ export function SelfEvolutionSection({ readOnly, onToast }: SelfEvolutionSection
       } else {
         await loadAll();
       }
-      onToast('全量 Agent 模块已完成双槽位热切换', 'ok');
+      onToast('全部扩展模块已完成无中断热更新', 'ok');
     } catch (err) {
-      onToast(err instanceof Error ? err.message : '全量热切模块失败', 'err');
+      onToast(extractErrorMessage(err, '热更新模块失败'), 'err');
     } finally {
       setBusyKey(null);
     }
   };
 
   const handleReloadSingleModule = async (mod: HotSwapModuleEntry) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, `热更新模块 ${mod.id}`)) return;
     setBusyKey(`mod-reload:${mod.id}`);
     try {
       const res = await reloadSingleAgentModule(mod.id, { force: true, reason: 'manual-ui' });
       await loadAll();
-      const slotText = res.slot ? `Slot ${res.slot}` : '';
-      const revText = res.revision ? ` · ${res.revision}` : '';
-      onToast(`模块 ${mod.id} 已完成双槽热切 ${slotText}${revText}`, 'ok');
+      const revText = res.revision ? `（${res.revision}）` : '';
+      onToast(`模块 ${mod.id} 已完成无中断热更新${revText}`, 'ok');
     } catch (err) {
-      onToast(err instanceof Error ? err.message : `模块 ${mod.id} 热切失败`, 'err');
+      onToast(extractErrorMessage(err, `模块 ${mod.id} 热更新失败`), 'err');
     } finally {
       setBusyKey(null);
     }
   };
 
-  const handleRollbackSingleModule = async (mod: HotSwapModuleEntry) => {
-    if (readOnly || !mod.canRollback) return;
-    setBusyKey(`mod-rollback:${mod.id}`);
-    try {
-      const res = await rollbackSingleAgentModule(mod.id, { reason: 'manual-ui' });
-      await loadAll();
-      onToast(
-        `模块 ${mod.id} 已切回旧槽 Slot ${res.activeSlot} (${res.revision})`,
-        'ok',
-      );
-    } catch (err) {
-      onToast(err instanceof Error ? err.message : `模块 ${mod.id} 切回旧槽失败`, 'err');
-    } finally {
-      setBusyKey(null);
-    }
+  const handleRollbackSingleModule = (mod: HotSwapModuleEntry) => {
+    if (guardReadOnly(readOnly, onToast, `回滚模块 ${mod.id}`)) return;
+    if (!mod.canRollback) return;
+    setConfirmState({
+      open: true,
+      title: `回滚模块「${mod.id}」到上一版本？`,
+      description: '将切换回该模块上一次可用的运行版本，过程中不会中断其他模块服务。',
+      confirmLabel: '确认回滚',
+      danger: true,
+      onConfirm: async () => {
+        setBusyKey(`mod-rollback:${mod.id}`);
+        try {
+          const res = await rollbackSingleAgentModule(mod.id, { reason: 'manual-ui' });
+          await loadAll();
+          onToast(`模块 ${mod.id} 已回滚至上一版本（${res.revision}）`, 'ok');
+        } catch (err) {
+          onToast(extractErrorMessage(err, `模块 ${mod.id} 回滚失败`), 'err');
+        } finally {
+          setBusyKey(null);
+        }
+      },
+    });
   };
 
   const handleInvokeModule = async (mod: HotSwapModuleEntry) => {
@@ -303,7 +311,7 @@ export function SelfEvolutionSection({ readOnly, onToast }: SelfEvolutionSection
 
   const handleCreateProposal = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '创建自进化提案')) return;
     const cleanPatches: EvolutionFilePatchInput[] = patchRows
       .map((row) => ({
         path: row.path.trim(),
@@ -313,7 +321,7 @@ export function SelfEvolutionSection({ readOnly, onToast }: SelfEvolutionSection
       .filter((row) => row.path.length > 0);
 
     if (!titleInput.trim()) {
-      onToast('请填写自进化提案标题', 'err');
+      onToast('请填写提案标题', 'err');
       return;
     }
     if (cleanPatches.length === 0) {
@@ -339,58 +347,58 @@ export function SelfEvolutionSection({ readOnly, onToast }: SelfEvolutionSection
       const strategyLabel =
         UPDATE_STRATEGY_META[res.proposal.plan.strategy]?.label || res.proposal.plan.strategy;
       onToast(
-        `提案已创建 (${res.proposal.id}) · 预检 ${verdict} · 策略 ${strategyLabel}`,
+        `提案已创建（预检：${verdict === 'allow' ? '通过' : verdict === 'block' ? '拦截' : '需确认'} · 策略：${strategyLabel}）`,
         verdict === 'block' ? 'err' : 'ok',
       );
     } catch (err) {
-      onToast(err instanceof Error ? err.message : '创建自进化提案失败', 'err');
+      onToast(extractErrorMessage(err, '创建提案失败'), 'err');
     } finally {
       setBusyKey(null);
     }
   };
 
   const handlePrepareSandbox = async (proposal: EvolutionProposal) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '准备隔离沙箱')) return;
     setBusyKey(`sandbox:${proposal.id}`);
     try {
       await prepareEvolutionSandbox(proposal.id);
       await loadAll();
-      onToast(`提案 ${proposal.id} 隔离 Worktree 沙箱已就绪`, 'ok');
+      onToast('独立沙箱分支已就绪', 'ok');
     } catch (err) {
-      onToast(err instanceof Error ? err.message : '准备沙箱失败', 'err');
+      onToast(extractErrorMessage(err, '准备沙箱失败'), 'err');
     } finally {
       setBusyKey(null);
     }
   };
 
   const handleVerifyProposal = async (proposal: EvolutionProposal) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '运行沙箱校验')) return;
     setBusyKey(`verify:${proposal.id}`);
     try {
       const res = await verifyEvolutionProposal(proposal.id);
       await loadAll();
       onToast(
         res.verified
-          ? `提案 ${proposal.id} 沙箱校验全部通过`
-          : `提案 ${proposal.id} 沙箱校验未通过，请检查明细`,
+          ? '沙箱校验全部通过'
+          : '沙箱校验未通过，请查看下方明细',
         res.verified ? 'ok' : 'err',
       );
     } catch (err) {
-      onToast(err instanceof Error ? err.message : '沙箱验证失败', 'err');
+      onToast(extractErrorMessage(err, '沙箱验证失败'), 'err');
     } finally {
       setBusyKey(null);
     }
   };
 
   const handleCleanupSandbox = async (proposal: EvolutionProposal) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '清理隔离沙箱')) return;
     setBusyKey(`cleanup:${proposal.id}`);
     try {
       await cleanupEvolutionSandbox(proposal.id);
       await loadAll();
-      onToast(`提案 ${proposal.id} 隔离沙箱已清理`, 'info');
+      onToast('隔离沙箱已清理', 'info');
     } catch (err) {
-      onToast(err instanceof Error ? err.message : '清理沙箱失败', 'err');
+      onToast(extractErrorMessage(err, '清理沙箱失败'), 'err');
     } finally {
       setBusyKey(null);
     }
@@ -400,28 +408,28 @@ export function SelfEvolutionSection({ readOnly, onToast }: SelfEvolutionSection
     action: EvolutionConfirmAction,
     proposal: EvolutionProposal,
   ) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '执行提案变更')) return;
     const isPublish = action === 'publish-pr';
     const isApply = action === 'apply';
     const title = isPublish
-      ? `确认发布 PR · ${proposal.branch}`
+      ? `发布 Pull Request · ${proposal.branch}`
       : isApply
-        ? `确认${proposal.hotSwappable ? '热切生效' : '增量拉取生效'} · ${proposal.id}`
-        : `确认原子回滚 · ${proposal.id}`;
+        ? `${proposal.hotSwappable ? '应用热更新' : '应用增量更新'} · ${proposal.title}`
+        : `回滚变更 · ${proposal.title}`;
     const description = isPublish
-      ? `将在隔离沙箱中提交分支 ${proposal.branch} 并推送创建指向 ${proposal.baseBranch} 的 PR（自动签发一次性 confirmToken）。`
+      ? `将在独立沙箱中提交分支 ${proposal.branch} 并创建合入 ${proposal.baseBranch} 的 PR（自动完成安全校验）。`
       : isApply
         ? proposal.hotSwappable
-          ? `将把 ${proposal.filePatches.length} 个模块/声明式补丁原子写入并触发零停机双槽热切换，微内核不重启且保留回滚快照。`
-          : `该提案涉及核心分层变更，将按 git-pull 增量更新策略从 ${proposal.baseBranch} 拉取生效。`
-        : `将把提案 ${proposal.id} 原子回滚至生效前版本，并重新热同步受影响的模块与声明式 Agent。`;
+          ? `将写入 ${proposal.filePatches.length} 个模块补丁并执行无中断热更新，服务不重启且自动保留回滚快照。`
+          : `该提案涉及核心分层变更，将按增量更新策略从 ${proposal.baseBranch} 拉取生效。`
+        : '将把本次提案回滚至更新前版本，并重新同步受影响的模块与配置清单。';
     const confirmLabel = isPublish
       ? '确认发布 PR'
       : isApply
         ? proposal.hotSwappable
-          ? '确认零停机热切'
-          : '确认增量生效'
-        : '确认原子回滚';
+          ? '确认无中断更新'
+          : '确认应用更新'
+        : '确认回滚';
 
     setConfirmState({
       open: true,
@@ -447,17 +455,17 @@ export function SelfEvolutionSection({ readOnly, onToast }: SelfEvolutionSection
             await loadAll();
             onToast(
               res.mode === 'hot-swap'
-                ? `提案 ${proposal.id} 已完成零停机双槽热切生效`
-                : `提案 ${proposal.id} 已通过增量拉取生效`,
+                ? '变更已通过无中断热更新生效'
+                : '变更已通过增量拉取生效',
               'ok',
             );
           } else {
             await rollbackEvolutionProposal(proposal.id, { confirmToken });
             await loadAll();
-            onToast(`提案 ${proposal.id} 已原子回滚并恢复运行态`, 'ok');
+            onToast('提案已回滚并恢复运行状态', 'ok');
           }
         } catch (err) {
-          onToast(err instanceof Error ? err.message : `执行 ${action} 失败`, 'err');
+          onToast(extractErrorMessage(err, '执行提案操作失败'), 'err');
         } finally {
           setBusyKey(null);
         }
@@ -481,8 +489,8 @@ export function SelfEvolutionSection({ readOnly, onToast }: SelfEvolutionSection
   return (
     <div className="space-y-6" data-testid="self-evolution-section">
       <Panel
-        title="Agent 模块双槽位热切与声明式同步"
-        description="独立可热切模块支持 A/B 双槽原子切换与故障自动保留旧槽；声明式 Agent 清单与技能修改后可零停机热同步至 A2A 编排器。"
+        title="扩展模块热更新与清单同步"
+        description="支持模块无中断更新并在故障时自动保留旧版本；配置化助手与技能修改后可即时同步生效。"
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <Button
@@ -531,12 +539,12 @@ export function SelfEvolutionSection({ readOnly, onToast }: SelfEvolutionSection
             </div>
 
             <div className="space-y-1">
-              <div className="text-[var(--ink-muted)]">双槽热切计数</div>
+              <div className="text-[var(--ink-muted)]">无中断热更新次数</div>
               <div className="font-mono font-medium tabular-nums text-[var(--ink)]">
                 成功 {moduleSummary.totalSwaps} · 失败保护 {moduleSummary.failedSwaps}
               </div>
               <div className="text-[11.5px] text-[var(--ink-muted)]">
-                异常模块自动保留旧槽流量
+                异常模块自动保留上一稳定版本
               </div>
             </div>
 
@@ -585,8 +593,8 @@ export function SelfEvolutionSection({ readOnly, onToast }: SelfEvolutionSection
 
           {!moduleState?.modules.length ? (
             <EmptyState
-              title="尚未发现可热切 Agent 模块"
-              message="在 src/agent-modules/ 放置导出 manifest / health / handle 的 ESM 模块，即可在此查看双槽位并执行零停机热切。"
+              title="尚未发现扩展模块"
+              message="在 src/agent-modules/ 目录添加标准扩展模块后，可在此查看运行状态并执行无中断热更新。"
             />
           ) : (
             <div className="divide-y divide-[var(--border)]">
@@ -636,16 +644,16 @@ export function SelfEvolutionSection({ readOnly, onToast }: SelfEvolutionSection
                           onClick={() => void handleReloadSingleModule(mod)}
                         >
                           <Zap className="size-3.5" strokeWidth={1.75} />
-                          双槽热切
+                          热更新
                         </Button>
                         <Button
                           variant="secondary"
                           size="sm"
                           disabled={readOnly || !mod.canRollback || busyKey !== null}
-                          onClick={() => void handleRollbackSingleModule(mod)}
+                          onClick={() => handleRollbackSingleModule(mod)}
                         >
                           <RotateCcw className="size-3.5" strokeWidth={1.75} />
-                          切回旧槽
+                          回滚版本
                         </Button>
                       </div>
                     </div>

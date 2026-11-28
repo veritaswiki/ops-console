@@ -2135,6 +2135,26 @@ export function createOpsConsole(options = {}) {
         return;
       }
 
+      const a2aTaskUnsettleMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/unsettle$/);
+      if (method === 'POST' && a2aTaskUnsettleMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables A2A workspace mutations' }, {}, req);
+          return;
+        }
+        const result = await a2aOrchestrator.unsettleTask(a2aTaskUnsettleMatch[1], { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:unsettle-task',
+          target: result.task.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: 'settledAt=null',
+        });
+        eventBus.emit('a2a_updated', { action: 'unsettle_task', taskId: result.task.id });
+        sendJson(res, 200, { ok: true, task: result.task }, {}, req);
+        return;
+      }
+
       const a2aTaskSnoozeMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/snooze$/);
       if (method === 'POST' && a2aTaskSnoozeMatch) {
         if (config.console.readOnly) {
@@ -2152,6 +2172,26 @@ export function createOpsConsole(options = {}) {
           detail: `snoozedUntil=${result.task.snoozedUntil}`,
         });
         eventBus.emit('a2a_updated', { action: 'snooze_task', taskId: result.task.id, snoozedUntil: result.task.snoozedUntil });
+        sendJson(res, 200, { ok: true, task: result.task }, {}, req);
+        return;
+      }
+
+      const a2aTaskUnsnoozeMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/unsnooze$/);
+      if (method === 'POST' && a2aTaskUnsnoozeMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables A2A workspace mutations' }, {}, req);
+          return;
+        }
+        const result = await a2aOrchestrator.unsnoozeTask(a2aTaskUnsnoozeMatch[1], { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:unsnooze-task',
+          target: result.task.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: 'snoozedUntil=null',
+        });
+        eventBus.emit('a2a_updated', { action: 'unsnooze_task', taskId: result.task.id });
         sendJson(res, 200, { ok: true, task: result.task }, {}, req);
         return;
       }

@@ -32,6 +32,7 @@ import type {
   A2ASwarmMetrics,
   A2ATaskRecord,
   A2ATriggerEvent,
+  ToastHandler,
 } from '../types';
 import {
   ingestSuperAgentTrigger,
@@ -48,6 +49,7 @@ import {
 } from '../lib/swarm-memory-engine';
 import { formatCompactNumber } from '../utils/format';
 import { cn } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import { Button, inputBaseClass, KpiStrip, Panel, StatusIndicator } from './ui';
 
 interface LastTeamRunResult {
@@ -106,12 +108,12 @@ function getTicketStatusMeta(ticket: A2ASuperAgentTicket): {
 
 function getDecisionMeta(decision: string): { label: string; colorClass: string } {
   if (decision === 'fast_drop') {
-    return { label: 'FAST DROP', colorClass: 'text-emerald-600 dark:text-emerald-400' };
+    return { label: '直接过滤', colorClass: 'text-emerald-600 dark:text-emerald-400' };
   }
   if (decision === 'fast_passthrough') {
-    return { label: 'PASSTHROUGH', colorClass: 'text-sky-600 dark:text-sky-400' };
+    return { label: '订阅直通', colorClass: 'text-sky-600 dark:text-sky-400' };
   }
-  return { label: 'SLOW SPAWN', colorClass: 'text-[var(--accent)]' };
+  return { label: '新建工单', colorClass: 'text-[var(--accent)]' };
 }
 
 function formatShortTime(iso: string): string {
@@ -141,7 +143,7 @@ export function SwarmMemorySection({
   readOnly?: boolean;
   onReload: () => Promise<void> | void;
   onOpenAgentLogs?: (agentId: string) => void;
-  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast?: ToastHandler;
 }) {
   const [routerThinMode, setRouterThinMode] = React.useState(superAgentConfig.routerThinMode !== false);
   const [fastPathEnabled, setFastPathEnabled] = React.useState(superAgentConfig.fastPathEnabled !== false);
@@ -219,7 +221,8 @@ export function SwarmMemorySection({
   );
 
   const handleSaveConfig = async () => {
-    if (readOnly || savingConfig) return;
+    if (guardReadOnly(readOnly, onToast, '保存协作策略')) return;
+    if (savingConfig) return;
     setSavingConfig(true);
     try {
       const res = await updateSuperAgentConfig({
@@ -233,31 +236,32 @@ export function SwarmMemorySection({
         maxReworkRounds,
       });
       onToast?.(
-        `SuperAgent 策略已保存：Inline 预算 ${res.superAgentConfig.inlineBudgetKb}KB · Watchdog ${res.superAgentConfig.watchdogStallSec}s`,
+        `协作策略已保存：活跃上下文预算 ${res.superAgentConfig.inlineBudgetKb}KB · 停滞检测 ${res.superAgentConfig.watchdogStallSec} 秒`,
         'ok',
       );
       await onReload();
     } catch (err) {
-      onToast?.(`保存 SuperAgent 策略失败：${(err as Error).message}`, 'err');
+      onToast?.(extractErrorMessage(err, '保存协作策略失败'), 'err');
     } finally {
       setSavingConfig(false);
     }
   };
 
   const handleWatchdogSweep = async () => {
-    if (readOnly || sweepingWatchdog) return;
+    if (guardReadOnly(readOnly, onToast, '执行停滞巡检')) return;
+    if (sweepingWatchdog) return;
     setSweepingWatchdog(true);
     try {
       const res = await runSuperAgentWatchdogSweep();
       onToast?.(
         res.recoveredCount > 0
-          ? `Watchdog 巡检完成：检测 ${res.checkedCount} 个工单，已自动恢复 ${res.recoveredCount} 个阻塞会话`
-          : `Watchdog 巡检完成：${res.checkedCount} 个活跃隔离工单全部心跳正常`,
+          ? `巡检完成：检查 ${res.checkedCount} 个工单，已自动恢复 ${res.recoveredCount} 个阻塞会话`
+          : `巡检完成：${res.checkedCount} 个活跃工单全部正常`,
         'ok',
       );
       await onReload();
     } catch (err) {
-      onToast?.(`执行 Watchdog 巡检失败：${(err as Error).message}`, 'err');
+      onToast?.(extractErrorMessage(err, '执行巡检失败'), 'err');
     } finally {
       setSweepingWatchdog(false);
     }
@@ -265,7 +269,8 @@ export function SwarmMemorySection({
 
   const handleIngestTrigger = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (readOnly || sendingTrigger) return;
+    if (guardReadOnly(readOnly, onToast, '提交模拟触发事件')) return;
+    if (sendingTrigger) return;
     if (!triggerSummary.trim()) {
       onToast?.('请填写触发事件摘要', 'err');
       return;
@@ -280,31 +285,46 @@ export function SwarmMemorySection({
       });
       const meta = getDecisionMeta(res.trigger.decision);
       onToast?.(
-        `触发器分流完成 [${meta.label}]${res.ticket ? ` -> 工单 ${res.ticket.id}` : ''}${res.trigger.tokensSaved > 0 ? ` · 节省 ${res.trigger.tokensSaved} Token` : ''}`,
+        `分流完成（${meta.label}）${res.ticket ? ` → 工单 ${res.ticket.id}` : ''}${res.trigger.tokensSaved > 0 ? ` · 节省 ${res.trigger.tokensSaved} Token` : ''}`,
         'ok',
       );
       await onReload();
     } catch (err) {
-      onToast?.(`提交触发事件失败：${(err as Error).message}`, 'err');
+      onToast?.(extractErrorMessage(err, '提交触发事件失败'), 'err');
     } finally {
       setSendingTrigger(false);
     }
   };
 
   const handleToggleSpill = async (node: A2AContextSpillNode) => {
-    if (readOnly || togglingSpillId) return;
+    if (guardReadOnly(readOnly, onToast, '调整上下文加载状态')) return;
+    if (togglingSpillId) return;
     setTogglingSpillId(node.spillId);
     try {
       const res = await toggleSuperAgentContextSpill(node.spillId);
+      await onReload();
       onToast?.(
         res.node.state === 'inline'
-          ? `Chain of Recall 已按需回溯 ${res.node.spillId}（累计回溯 ${res.node.recallCount} 次）`
-          : `已将 ${res.node.spillId} 溢出降载，释放 ${formatBytesKb(res.node.bytes)} 活动窗口`,
+          ? `已按需载回上下文片段（累计载回 ${res.node.recallCount} 次）`
+          : `已将上下文片段转入冷存，释放 ${formatBytesKb(res.node.bytes)} 活跃窗口`,
         'ok',
+        {
+          action: {
+            label: '撤销',
+            onClick: async () => {
+              try {
+                await toggleSuperAgentContextSpill(node.spillId);
+                await onReload();
+                onToast?.('已恢复上下文加载状态', 'info');
+              } catch (undoErr) {
+                onToast?.(extractErrorMessage(undoErr, '撤销失败'), 'err');
+              }
+            },
+          },
+        },
       );
-      await onReload();
     } catch (err) {
-      onToast?.(`切换上下文状态失败：${(err as Error).message}`, 'err');
+      onToast?.(extractErrorMessage(err, '切换上下文状态失败'), 'err');
     } finally {
       setTogglingSpillId(null);
     }
@@ -312,7 +332,8 @@ export function SwarmMemorySection({
 
   const handleRunDshTeam = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (readOnly || runningTeam) return;
+    if (guardReadOnly(readOnly, onToast, '运行团队协同')) return;
+    if (runningTeam) return;
     if (!teamPrompt.trim()) {
       onToast?.('请输入团队协同任务描述', 'err');
       return;
@@ -333,12 +354,12 @@ export function SwarmMemorySection({
         spilledNode: res.spilledNode,
       });
       onToast?.(
-        `DSH 智能体团队协同完成：工单 ${res.ticket.id} · 评分 ${res.task.dshReview?.score ?? 92}/100 (${res.approved ? '共识放行' : '待返工'})`,
+        `团队协同完成：评分 ${res.task.dshReview?.score ?? 92}/100（${res.approved ? '已放行' : '待返工'}）`,
         'ok',
       );
       await onReload();
     } catch (err) {
-      onToast?.(`执行 DSH 团队协同失败：${(err as Error).message}`, 'err');
+      onToast?.(extractErrorMessage(err, '执行团队协同失败'), 'err');
     } finally {
       setRunningTeam(false);
     }

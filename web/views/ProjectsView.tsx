@@ -34,6 +34,7 @@ import type {
   LinearIssuePriority,
   LinearIssueStatus,
   LinearStateResponse,
+  ToastHandler,
 } from '../types';
 import {
   filterLinearIssues,
@@ -51,6 +52,7 @@ import {
   type TaskIssueLinkIndex,
 } from '../lib/workspace-controls';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import {
   Button,
   EmptyState,
@@ -59,6 +61,7 @@ import {
   InspectorDrawer,
   StatusIndicator,
   ViewSkeleton,
+  type ConfirmModalState,
 } from '../components/ui';
 
 type DisplayMode = 'board' | 'list';
@@ -70,7 +73,8 @@ export interface ProjectsViewProps {
   focusedIssueId?: string | null;
   onClearFocusedIssue?: () => void;
   onOpenAgentTask?: (taskId: string) => void;
-  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast?: ToastHandler;
+  onConfirm?: (modal: ConfirmModalState) => void;
 }
 
 function safeGithubHref(url?: string | null): string | null {
@@ -221,6 +225,7 @@ export function ProjectsView({
   onClearFocusedIssue,
   onOpenAgentTask,
   onToast,
+  onConfirm,
 }: ProjectsViewProps) {
   const [mode, setMode] = React.useState<DisplayMode>('board');
   const [linearState, setLinearState] = React.useState<LinearStateResponse | null>(null);
@@ -353,7 +358,8 @@ export function ProjectsView({
 
   const handleCreateIssue = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (readOnly || !form.title.trim()) return;
+    if (guardReadOnly(readOnly, onToast, '创建任务')) return;
+    if (!form.title.trim()) return;
     setCreating(true);
     try {
       const chosenAgent = agents.find((a) => a.id === form.assigneeId);
@@ -373,7 +379,7 @@ export function ProjectsView({
       await loadData();
       setSelectedIssueId(created.issue.id);
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '创建任务失败', 'err');
+      onToast?.(extractErrorMessage(err, '创建任务失败'), 'err');
     } finally {
       setCreating(false);
     }
@@ -389,18 +395,18 @@ export function ProjectsView({
       assigneeType: string;
     }>,
   ) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '更新任务')) return;
     try {
       const res = await updateLinearIssue(issueId, patch);
       onToast?.(`已更新 ${res.issue.identifier}`, 'ok');
       await loadData();
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '更新任务失败', 'err');
+      onToast?.(extractErrorMessage(err, '更新任务失败'), 'err');
     }
   };
 
   const handleDispatch = async (issueId: string) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '派发任务给助手')) return;
     setDispatchingId(issueId);
     try {
       const res = await dispatchLinearCommander(issueId);
@@ -430,38 +436,53 @@ export function ProjectsView({
         });
       }
       onToast?.(
-        `总指挥 ${shortAgentName(res.commander.name)} 已拆解 ${res.createdSubIssues?.length || 0} 个子任务`,
+        `主控助手 ${shortAgentName(res.commander.name)} 已拆解 ${res.createdSubIssues?.length || 0} 个子任务`,
         'ok',
       );
       await loadData({ silent: true });
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '派发失败', 'err');
+      onToast?.(extractErrorMessage(err, '派发失败'), 'err');
     } finally {
       setDispatchingId(null);
     }
   };
 
-  const handleDelete = async (issue: LinearIssueItem) => {
-    if (readOnly) return;
+  const executeDelete = async (issue: LinearIssueItem) => {
     try {
       await deleteLinearIssue(issue.id);
       if (selectedIssueId === issue.id) setSelectedIssueId(null);
-      onToast?.(`已删除 ${issue.identifier}`, 'info');
+      onToast?.(`已删除任务 ${issue.identifier}`, 'info');
       await loadData();
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '删除失败', 'err');
+      onToast?.(extractErrorMessage(err, '删除任务失败'), 'err');
     }
   };
 
+  const handleDelete = (issue: LinearIssueItem) => {
+    if (guardReadOnly(readOnly, onToast, '删除任务')) return;
+    if (onConfirm) {
+      onConfirm({
+        open: true,
+        title: `删除任务 ${issue.identifier}？`,
+        description: `将永久移除「${issue.title}」，该操作无法撤销。`,
+        confirmLabel: '确认删除',
+        danger: true,
+        onConfirm: () => executeDelete(issue),
+      });
+      return;
+    }
+    void executeDelete(issue);
+  };
+
   const handleSyncGithub = async () => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '同步 GitHub 任务')) return;
     setSyncingGithub(true);
     try {
       const res = await syncLinearGithub('pull');
-      onToast?.(res.summary || `已同步 GitHub (${res.importedCount} 新增 / ${res.updatedCount} 更新)`, 'ok');
+      onToast?.(res.summary || `已同步 GitHub（新增 ${res.importedCount} / 更新 ${res.updatedCount}）`, 'ok');
       await loadData();
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '同步 GitHub 失败', 'err');
+      onToast?.(extractErrorMessage(err, '同步 GitHub 失败'), 'err');
     } finally {
       setSyncingGithub(false);
     }

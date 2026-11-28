@@ -11,6 +11,7 @@ import type {
   MetaResponse,
   ServiceItem,
   SnapshotResponse,
+  ToastHandler,
 } from '../types';
 import { cn } from '../lib/cn';
 import { Button, StatusIndicator } from './ui';
@@ -31,7 +32,7 @@ export function ServiceLogModal({
   meta: MetaResponse | null;
   onClose: () => void;
   onExpandToLogs: (filterState: LogFilterState) => void;
-  onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast: ToastHandler;
 }) {
   const [maximized, setMaximized] = React.useState(false);
   const latestFilterRef = React.useRef<LogFilterState | null>(null);

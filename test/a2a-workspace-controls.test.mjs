@@ -538,6 +538,13 @@ test('HTTP workspace flow covers queue, steer, settle, read watermark, and resta
     assert.equal(settled.body.task.snoozedUntil, null);
     assert.equal(settled.body.task.attention.unread, false);
 
+    const unsettled = await postJson(ctx.baseUrl, `/api/a2a/tasks/${task.id}/unsettle`, {});
+    assert.equal(unsettled.status, 200);
+    assert.equal(unsettled.body.task.settledAt, null);
+    const settledAgain = await postJson(ctx.baseUrl, `/api/a2a/tasks/${task.id}/settle`, {});
+    assert.equal(settledAgain.status, 200);
+    assert.ok(settledAgain.body.task.settledAt);
+
     const restarted = await postJson(ctx.baseUrl, `/api/a2a/tasks/${task.id}/restart`, { freshContext: false });
     assert.equal(restarted.status, 200);
     assert.equal(restarted.body.freshContext, false);
@@ -628,6 +635,16 @@ test('HTTP snooze wakes early on completion and pending BTW', async () => {
     const snoozedAgain = await postJson(ctx.baseUrl, `/api/a2a/tasks/${task.id}/snooze`, { minutes: 5 });
     assert.equal(snoozedAgain.status, 200);
     assert.equal(snoozedAgain.body.task.attention.snoozed, true);
+
+    const unsnoozed = await postJson(ctx.baseUrl, `/api/a2a/tasks/${task.id}/unsnooze`, {});
+    assert.equal(unsnoozed.status, 200);
+    assert.equal(unsnoozed.body.task.snoozedAt, null);
+    assert.equal(unsnoozed.body.task.snoozedUntil, null);
+    assert.equal(unsnoozed.body.task.attention.snoozed, false);
+
+    const snoozedThird = await postJson(ctx.baseUrl, `/api/a2a/tasks/${task.id}/snooze`, { minutes: 5 });
+    assert.equal(snoozedThird.status, 200);
+    assert.equal(snoozedThird.body.task.attention.snoozed, true);
 
     const clamped = await postJson(ctx.baseUrl, `/api/a2a/tasks/${task.id}/snooze`, { minutes: 0 });
     assert.equal(clamped.status, 200);
@@ -767,7 +784,9 @@ test('Read-only mode blocks every A2A workspace mutation route with 403', async 
       ['/api/a2a/tasks/a2a-task-readonly/steer', { instruction: 'blocked' }],
       ['/api/a2a/tasks/a2a-task-readonly/restart', { freshContext: true }],
       ['/api/a2a/tasks/a2a-task-readonly/settle', {}],
+      ['/api/a2a/tasks/a2a-task-readonly/unsettle', {}],
       ['/api/a2a/tasks/a2a-task-readonly/snooze', { minutes: 5 }],
+      ['/api/a2a/tasks/a2a-task-readonly/unsnooze', {}],
       ['/api/a2a/tasks/a2a-task-readonly/read', {}],
       ['/api/a2a/tasks/a2a-task-readonly/compact', { summary: 'blocked' }],
     ];

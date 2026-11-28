@@ -14,9 +14,11 @@ import type {
   LinearIssuePriority,
   LinearIssueStatus,
   LinearStateResponse,
+  ToastHandler,
 } from '../types';
 import { shortAgentName } from '../lib/agent-console';
 import { cn } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import {
   Button,
   ErrorState,
@@ -33,7 +35,7 @@ export function AgentGraphView({
   onToast,
 }: {
   readOnly?: boolean;
-  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast?: ToastHandler;
 }) {
   const [linearState, setLinearState] = React.useState<LinearStateResponse | null>(null);
   const [liveA2ATasks, setLiveA2ATasks] = React.useState<A2ATaskRecord[]>([]);
@@ -73,14 +75,14 @@ export function AgentGraphView({
   }, []);
 
   const handleSyncGithub = async () => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '同步 GitHub 任务')) return;
     setSyncingGithub(true);
     try {
       const res = await syncLinearGithub('pull');
-      onToast?.(res.summary || `已同步 GitHub (${res.importedCount} 新增 / ${res.updatedCount} 更新)`, 'ok');
+      onToast?.(res.summary || `已同步 GitHub（新增 ${res.importedCount} / 更新 ${res.updatedCount}）`, 'ok');
       await loadState();
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '同步 GitHub 失败', 'err');
+      onToast?.(extractErrorMessage(err, '同步 GitHub 失败'), 'err');
     } finally {
       setSyncingGithub(false);
     }
@@ -100,28 +102,28 @@ export function AgentGraphView({
       assigneeType: string;
     }>,
   ) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '更新任务')) return;
     try {
       const res = await updateLinearIssue(issueId, patch);
       onToast?.(`已更新 ${res.issue.identifier}`, 'ok');
       await loadState();
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '更新任务失败', 'err');
+      onToast?.(extractErrorMessage(err, '更新任务失败'), 'err');
     }
   };
 
   const handleDispatchCommander = async (issueId: string) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '派发任务给助手')) return;
     setDispatchingId(issueId);
     try {
       const res = await dispatchLinearCommander(issueId);
       onToast?.(
-        `总指挥 ${shortAgentName(res.commander.name)} 已拆解 ${res.createdSubIssues?.length || 0} 个子任务`,
+        `主控助手 ${shortAgentName(res.commander.name)} 已拆解 ${res.createdSubIssues?.length || 0} 个子任务`,
         'ok',
       );
       await loadState();
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '总指挥派发失败', 'err');
+      onToast?.(extractErrorMessage(err, '派发任务失败'), 'err');
     } finally {
       setDispatchingId(null);
     }

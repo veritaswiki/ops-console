@@ -15,6 +15,7 @@ import type {
   ObservabilityMetricsResponse,
   ObservabilitySourceRef,
   SnapshotResponse,
+  ToastHandler,
 } from '../types';
 import {
   fetchObservabilityFingerprints,
@@ -22,6 +23,7 @@ import {
   readObservabilityAdapterLogs,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { extractErrorMessage } from '../lib/ux-errors';
 import {
   buildLogJumpFilter,
   buildObservabilityChartSeries,
@@ -83,7 +85,7 @@ export function LogsView({
   initialLevel?: string;
   initialFilter?: Partial<LogFilterState> | null;
   requestNonce?: number;
-  onToast: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast: ToastHandler;
 }) {
   const [counts, setCounts] = React.useState({ total: 0, error: 0, warn: 0, info: 0 });
   const [obsOpen, setObsOpen] = React.useState(true);
@@ -168,13 +170,13 @@ export function LogsView({
       });
       setFederatedState({
         loading: false,
-        error: res.ok === false ? res.error || '联邦直读失败' : null,
+        error: res.ok === false ? res.error || '读取远程日志失败' : null,
         data: res,
       });
     } catch (err) {
       setFederatedState({
         loading: false,
-        error: (err as Error).message || '联邦直读失败',
+        error: extractErrorMessage(err, '读取远程日志失败'),
         data: null,
       });
     }
@@ -283,8 +285,8 @@ export function LogsView({
 
   return (
     <ModuleFrame
-      title="大一统直读日志中心"
-      description="原位直读跨服务 journald、白名单原生日志文件、自身运行与审计日志；受限字节尾读防大文件拖慢，支持多源筛选与 SSE 实时追踪。"
+      title="统一日志中心"
+      description="一站式查看各服务的运行日志、本地日志文件与操作审计记录，支持筛选与实时追踪。"
       meta={`总计 ${counts.total} · 错误 ${counts.error} · 警告 ${counts.warn} · 信息 ${counts.info}`}
     >
       <section
@@ -309,16 +311,16 @@ export function LogsView({
             )}
             <Radar className="size-4 text-[var(--accent)]" strokeWidth={1.75} />
             <span className="text-[13.5px] font-semibold tracking-tight text-[var(--ink)]">
-              联邦可观测趋势与 AI 标注
+              异常趋势与智能标注
             </span>
             <span className="font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums">
-              6h · 错误 {obsMetrics?.totals?.errorCount ?? 0} · 警告 {obsMetrics?.totals?.warnCount ?? 0} · 标注{' '}
-              {modeSummary.total} · 指纹 {obsFingerprints.length}
+              近 6 小时 · 错误 {obsMetrics?.totals?.errorCount ?? 0} · 警告 {obsMetrics?.totals?.warnCount ?? 0} · 标注{' '}
+              {modeSummary.total} · 高频异常 {obsFingerprints.length}
             </span>
           </button>
           <div className="flex items-center gap-2">
-            <span className="text-[11px] font-mono text-[var(--ink-subtle)] hidden sm:inline">
-              确定性衍生指标 · 点击标注或指纹联动筛选
+            <span className="text-[11px] text-[var(--ink-subtle)] hidden sm:inline">
+              点击任意标注或错误摘要即可定位对应日志
             </span>
             <Button
               variant="ghost"
@@ -564,7 +566,7 @@ export function LogsView({
           if (!open) setFederatedTarget(null);
         }}
         size="lg"
-        title={federatedTarget?.title || '联邦只读日志预览'}
+        title={federatedTarget?.title || '远程日志预览'}
         description={federatedTarget?.subtitle}
         testId="logs-federated-preview-drawer"
       >
@@ -575,7 +577,7 @@ export function LogsView({
             </p>
           )}
           <div className="flex items-center justify-between gap-2 text-[12px]">
-            <span className="font-semibold text-[var(--ink)]">按需只读联邦日志流</span>
+            <span className="font-semibold text-[var(--ink)]">远程日志片段</span>
             {federatedState.data && (
               <span className="font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums">
                 {federatedState.data.entries.length} 行
@@ -585,13 +587,13 @@ export function LogsView({
             )}
           </div>
           {federatedState.loading ? (
-            <WidgetSkeleton heightClass="h-[180px]" label="正在按需读取联邦只读日志" />
+            <WidgetSkeleton heightClass="h-[180px]" label="正在加载远程日志" />
           ) : federatedState.error ? (
             <div className="rounded-lg border border-[var(--err)]/30 bg-[var(--err)]/5 px-3 py-2 text-[12px] text-[var(--err)]">
               {federatedState.error}
             </div>
           ) : federatedState.data && federatedState.data.entries.length === 0 ? (
-            <p className="text-[12px] text-[var(--ink-subtle)]">该联邦源最近 1 小时内无匹配日志行。</p>
+            <p className="text-[12px] text-[var(--ink-subtle)]">最近 1 小时内暂无匹配日志。</p>
           ) : (
             <div className="rounded-xl border border-[var(--border)] bg-[var(--surface-subtle)]/60 max-h-[380px] overflow-auto divide-y divide-[var(--border-subtle)] font-mono text-[11.5px]">
               {(federatedState.data?.entries || []).map((entry, idx) => (

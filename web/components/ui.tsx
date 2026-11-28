@@ -1305,6 +1305,7 @@ export interface ConfirmModalState {
   confirmLabel?: string;
   danger?: boolean;
   requireToken?: string;
+  requireTokenLabel?: string;
   onConfirm: (token?: string) => Promise<void> | void;
 }
 
@@ -1356,7 +1357,7 @@ export function ConfirmAlertDialog({
         {tokenRequired && (
           <div className="mt-4 space-y-2">
             <label className="block text-[13px] text-[var(--ink-muted)]">
-              关键基础设施二次确认：请输入{' '}
+              {state?.requireTokenLabel || '高危操作二次确认'}：请输入{' '}
               <code className="px-1.5 py-0.5 rounded-md bg-[var(--surface-subtle)] border border-[var(--border-subtle)] text-[var(--ink)] font-semibold">
                 {state?.requireToken}
               </code>
@@ -1365,8 +1366,15 @@ export function ConfirmAlertDialog({
               type="text"
               value={tokenInput}
               onChange={(e) => setTokenInput(e.target.value)}
-              placeholder={state?.requireToken}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && canSubmit) {
+                  e.preventDefault();
+                  void handleConfirm();
+                }
+              }}
+              placeholder={`输入 ${state?.requireToken} 以确认`}
               autoComplete="off"
+              autoFocus
               className={cn('w-full h-9 px-3 font-mono', inputBaseClass)}
             />
           </div>
@@ -1435,8 +1443,8 @@ export function CommandPalette({
             <Search className="size-4 text-[var(--ink-subtle)] shrink-0" strokeWidth={1.75} aria-hidden="true" />
             <Cmdk.Input
               autoFocus
-              aria-label="搜索视图、服务、日志级别、PID 进程或快捷操作"
-              placeholder="搜索视图、Error/Warn 日志、输入 PID 查找 Agent 进程..."
+              aria-label="搜索视图、服务、日志、进程或快捷操作"
+              placeholder="搜索视图、服务、错误日志、节点或快捷操作..."
               className="h-12 w-full bg-transparent text-[16px] sm:text-[14px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)] focus:outline-none"
             />
             <button

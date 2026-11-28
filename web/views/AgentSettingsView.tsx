@@ -14,6 +14,7 @@ import type {
   MagpieCatalogResponse,
   ReasoningEffort,
   SnapshotResponse,
+  ToastHandler,
 } from '../types';
 import {
   copyToClipboard,
@@ -39,6 +40,7 @@ import {
   verifyA2ASigning,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import { formatCompactNumber } from '../utils/format';
 import {
   SegmentedControl,
@@ -81,18 +83,18 @@ export interface SettingsSectionSlotContext {
   theme: 'light' | 'dark';
   modelCatalog: DynamicModelCatalogResponse | null;
   onSnapshotChanged?: () => void;
-  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast?: ToastHandler;
   onConfirm?: (modal: ConfirmModalState) => void;
 }
 
 const ORCHESTRATION_SUB_TABS = [
-  { value: 'a2a', label: 'A2A 路由与角色分工' },
+  { value: 'a2a', label: '路由与角色分工' },
   { value: 'topology', label: '集群拓扑画布' },
-  { value: 'linear', label: 'Linear 总指挥与项目' },
+  { value: 'linear', label: '主控助手与项目' },
 ] as const;
 
 const GOVERNANCE_SUB_TABS = [
-  { value: 'swarm', label: '蜂群引擎' },
+  { value: 'swarm', label: '多助手协作' },
   { value: 'guardrails', label: '安全护栏' },
   { value: 'logs', label: '协作日志' },
 ] as const;
@@ -110,7 +112,7 @@ export interface AgentSettingsViewProps {
   onSelectPid?: (pid: number | null) => void;
   onOpenLogs?: (req: LogNavigationRequest) => void;
   onSnapshotChanged?: () => void;
-  onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
+  onToast?: ToastHandler;
   onConfirm?: (modal: ConfirmModalState) => void;
 }
 
@@ -452,7 +454,7 @@ export function AgentSettingsView({
 
   const handleSaveRouting = React.useCallback(
     async (nextDraft?: RoutingDraft) => {
-      if (readOnly) return;
+      if (guardReadOnly(readOnly, onToast, '保存路由偏好')) return;
       const draft = nextDraft || routingDraft;
       setSavingRouting(true);
       try {
@@ -470,11 +472,11 @@ export function AgentSettingsView({
           tasks.push(setLeadA2AAgent(draft.leadAgentId));
         }
         await Promise.all(tasks);
-        onToast?.('默认 Agent 路由与模型偏好已生效', 'ok');
+        onToast?.('默认路由与模型偏好已生效', 'ok');
         await loadA2AState();
         onSnapshotChanged?.();
       } catch (err) {
-        onToast?.(err instanceof Error ? err.message : '保存默认路由偏好失败', 'err');
+        onToast?.(extractErrorMessage(err, '保存默认路由偏好失败'), 'err');
       } finally {
         setSavingRouting(false);
       }
@@ -484,7 +486,7 @@ export function AgentSettingsView({
 
   const handleSaveGithub = React.useCallback(
     async (nextDraft?: GithubDraft) => {
-      if (readOnly) return;
+      if (guardReadOnly(readOnly, onToast, '保存 GitHub 配置')) return;
       const draft = nextDraft || githubDraft;
       setSavingGithub(true);
       try {
@@ -500,7 +502,7 @@ export function AgentSettingsView({
         onToast?.('GitHub 同步配置已生效', 'ok');
         await loadLinear();
       } catch (err) {
-        onToast?.(err instanceof Error ? err.message : '保存 GitHub 配置失败', 'err');
+        onToast?.(extractErrorMessage(err, '保存 GitHub 配置失败'), 'err');
       } finally {
         setSavingGithub(false);
       }
@@ -509,18 +511,18 @@ export function AgentSettingsView({
   );
 
   const handleDiscoverLocal = async () => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '扫描本机助手')) return;
     setScanningLocal(true);
     try {
       const res = await discoverLocalA2AAgents();
       onToast?.(
-        `扫描完成：发现 ${res.discoveredCount} 个本机 CLI，新注册 ${res.newlyRegistered} 个`,
+        `扫描完成：发现 ${res.discoveredCount} 个本机助手，新接入 ${res.newlyRegistered} 个`,
         'ok',
       );
       await loadA2AState();
       onSnapshotChanged?.();
     } catch (err) {
-      onToast?.(err instanceof Error ? err.message : '扫描本机 CLI 失败', 'err');
+      onToast?.(extractErrorMessage(err, '扫描本机助手失败'), 'err');
     } finally {
       setScanningLocal(false);
     }
@@ -552,7 +554,7 @@ export function AgentSettingsView({
 
   const handleSaveCommander = React.useCallback(
     async (nextDraft?: CommanderDraft) => {
-      if (readOnly) return;
+      if (guardReadOnly(readOnly, onToast, '保存主控策略')) return;
       const draft = nextDraft || commanderDraft;
       setSavingCommander(true);
       try {
@@ -567,11 +569,11 @@ export function AgentSettingsView({
             requireDshReview: draft.requireDshReview,
           }),
         ]);
-        onToast?.('总指挥与分工策略已生效', 'ok');
+        onToast?.('主控与分工策略已生效', 'ok');
         await Promise.all([loadLinear(), loadA2AState()]);
         onSnapshotChanged?.();
       } catch (err) {
-        onToast?.(err instanceof Error ? err.message : '保存总指挥策略失败', 'err');
+        onToast?.(extractErrorMessage(err, '保存主控策略失败'), 'err');
       } finally {
         setSavingCommander(false);
       }
@@ -619,13 +621,13 @@ export function AgentSettingsView({
   const noopRefresh = React.useCallback(() => {}, []);
 
   const handleTopologyUpdateConfig = async (patch: Record<string, unknown>) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '更新调度策略')) return;
     try {
       await updateA2AOrchestrationConfig(patch);
       await loadA2AState();
-      onToast?.('编排调度策略已更新并持久化', 'ok');
+      onToast?.('调度策略已更新并保存', 'ok');
     } catch (err) {
-      onToast?.(`更新策略失败：${(err as Error).message}`, 'err');
+      onToast?.(extractErrorMessage(err, '更新策略失败'), 'err');
     }
   };
 
@@ -637,57 +639,94 @@ export function AgentSettingsView({
       await saveA2ATopologyPositions(positions);
       await loadA2AState();
     } catch (err) {
-      onToast?.(`保存节点排版失败：${(err as Error).message}`, 'err');
+      onToast?.(extractErrorMessage(err, '保存节点排版失败'), 'err');
     }
   };
 
   const handleTopologyUpsertRule = async (
     payload: Parameters<typeof upsertA2ARoutingRule>[0],
   ) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '保存路由规则')) return;
     try {
       const res = await upsertA2ARoutingRule(payload);
       onToast?.(`已保存路由策略「${res.rule.name}」`, 'ok');
       await loadA2AState();
     } catch (err) {
-      onToast?.(`保存路由失败：${(err as Error).message}`, 'err');
+      onToast?.(extractErrorMessage(err, '保存路由失败'), 'err');
     }
   };
 
-  const handleTopologyDeleteRule = async (ruleId: string) => {
-    if (readOnly) return;
-    try {
-      await deleteA2ARoutingRule(ruleId);
-      onToast?.('已移除路由边', 'ok');
-      await loadA2AState();
-    } catch (err) {
-      onToast?.(`删除路由失败：${(err as Error).message}`, 'err');
+  const handleTopologyDeleteRule = async (ruleId: string): Promise<void> => {
+    if (guardReadOnly(readOnly, onToast, '移除路由规则')) return;
+    const rule = (a2aState?.routingRules || []).find((r) => r.id === ruleId);
+    const executeRemove = async () => {
+      try {
+        await deleteA2ARoutingRule(ruleId);
+        onToast?.('已移除路由规则', 'info');
+        await loadA2AState();
+      } catch (err) {
+        onToast?.(extractErrorMessage(err, '移除路由失败'), 'err');
+      }
+    };
+    if (onConfirm) {
+      onConfirm({
+        open: true,
+        title: `移除路由规则${rule?.name ? `「${rule.name}」` : ''}？`,
+        description: '移除后匹配该条件的任务将交由默认主助手自动分配。',
+        confirmLabel: '确认移除',
+        danger: true,
+        onConfirm: executeRemove,
+      });
+      return;
     }
+    void executeRemove();
   };
 
   const handleTopologyUpdateAgent = async (
     agentId: string,
     patch: { modelHint?: string; reasoningEffort?: ReasoningEffort; delegatable?: boolean },
   ) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '更新助手参数')) return;
     try {
       await updateA2AAgent(agentId, patch);
-      onToast?.('Agent 参数已更新', 'ok');
+      onToast?.('助手参数已更新', 'ok');
       await loadA2AState();
     } catch (err) {
-      onToast?.(`更新 Agent 参数失败：${(err as Error).message}`, 'err');
+      onToast?.(extractErrorMessage(err, '更新助手参数失败'), 'err');
     }
   };
 
   const handleTopologySetLead = async (agentId: string) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '切换默认主助手')) return;
+    const prevLeadId = a2aState?.leadAgentId || '';
+    const prevLeadName = a2aAgents.find((a) => a.id === prevLeadId)?.name || prevLeadId;
     try {
       const res = await setLeadA2AAgent(agentId);
-      onToast?.(`已选举「${res.leadAgent?.name || agentId}」为当前总指挥`, 'ok');
       await loadA2AState();
       onSnapshotChanged?.();
+      onToast?.(
+        `已将「${res.leadAgent?.name || agentId}」设为默认主助手`,
+        'ok',
+        prevLeadId && prevLeadId !== agentId
+          ? {
+              action: {
+                label: '撤销',
+                onClick: async () => {
+                  try {
+                    await setLeadA2AAgent(prevLeadId);
+                    await loadA2AState();
+                    onSnapshotChanged?.();
+                    onToast?.(`已恢复默认主助手为「${prevLeadName}」`, 'info');
+                  } catch (undoErr) {
+                    onToast?.(extractErrorMessage(undoErr, '恢复默认主助手失败'), 'err');
+                  }
+                },
+              },
+            }
+          : undefined,
+      );
     } catch (err) {
-      onToast?.(`切换总指挥失败：${(err as Error).message}`, 'err');
+      onToast?.(extractErrorMessage(err, '切换主助手失败'), 'err');
     }
   };
 
@@ -702,17 +741,17 @@ export function AgentSettingsView({
       );
       await loadA2AState();
     } catch (err) {
-      onToast?.(`探活失败：${(err as Error).message}`, 'err');
+      onToast?.(extractErrorMessage(err, '探活失败'), 'err');
     }
   };
 
   const handleTopologyToggleSkill = async (skill: A2ASkillCatalogItem, agentId: string) => {
-    if (readOnly) return;
+    if (guardReadOnly(readOnly, onToast, '调整技能绑定')) return;
     try {
       await updateA2ASkill(skill.id, { toggleAgentId: agentId });
       await loadA2AState();
     } catch (err) {
-      onToast?.(`更新 Skill 挂载失败：${(err as Error).message}`, 'err');
+      onToast?.(extractErrorMessage(err, '更新技能绑定失败'), 'err');
     }
   };
 
