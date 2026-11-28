@@ -1,9 +1,14 @@
 import type {
   A2AAgentPeer,
+  A2ABtwMergeTarget,
+  A2ABtwMode,
+  A2ABtwSummary,
+  A2ABtwThread,
   A2ACollaborationLog,
   A2AConnectProfilesResponse,
   A2AContextSpillNode,
   A2APingResponse,
+  A2ASessionRecord,
   A2ASigningVerifyResponse,
   A2AStateResponse,
   A2ASuperAgentConfig,
@@ -887,6 +892,122 @@ export const cancelA2ATask = (taskId: string) =>
     {
       method: 'POST',
       body: JSON.stringify({}),
+    },
+  );
+
+export const fetchA2ABtwThreads = (
+  params: { sessionId?: string; taskId?: string; status?: string; contextId?: string } = {},
+  signal?: AbortSignal,
+) => {
+  const sp = new URLSearchParams();
+  if (params.sessionId) sp.set('sessionId', params.sessionId);
+  if (params.taskId) sp.set('taskId', params.taskId);
+  if (params.status && params.status !== 'all') sp.set('status', params.status);
+  if (params.contextId) sp.set('contextId', params.contextId);
+  const qs = sp.toString();
+  return apiRequest<{ ok?: boolean; threads: A2ABtwThread[]; summary: A2ABtwSummary }>(
+    `/api/a2a/btw${qs ? `?${qs}` : ''}`,
+    { cacheTtlMs: 2500, signal },
+  );
+};
+
+export const openA2ABtwThread = (payload: {
+  sessionId?: string;
+  taskId?: string;
+  prompt: string;
+  title?: string;
+  mode?: A2ABtwMode;
+  targetAgentId?: string;
+  model?: string;
+}) =>
+  apiRequest<{ ok?: boolean; thread: A2ABtwThread; forkedTask?: A2ATaskRecord | null }>(
+    '/api/a2a/btw',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+
+export const postA2ABtwMessage = (
+  threadId: string,
+  payload: { prompt: string; targetAgentId?: string; model?: string },
+) =>
+  apiRequest<{ ok?: boolean; thread: A2ABtwThread }>(
+    `/api/a2a/btw/${encodeURIComponent(threadId)}/messages`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+
+export const proposeA2ABtwMerge = (
+  threadId: string,
+  payload: { summary: string; rationale?: string; targetType?: A2ABtwMergeTarget },
+) =>
+  apiRequest<{ ok?: boolean; thread: A2ABtwThread }>(
+    `/api/a2a/btw/${encodeURIComponent(threadId)}/propose-merge`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+
+export const reviewA2ABtwMerge = (
+  threadId: string,
+  payload: {
+    decision: 'approve' | 'reject';
+    comment?: string;
+    mergeImmediately?: boolean;
+    confirmToken?: string;
+  },
+) =>
+  apiRequest<{ ok?: boolean; thread: A2ABtwThread; session?: A2ASessionRecord | null; task?: A2ATaskRecord | null }>(
+    `/api/a2a/btw/${encodeURIComponent(threadId)}/review`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+
+export const issueA2ABtwConfirm = (payload: { threadId: string; action?: string }) =>
+  apiRequest<{ ok: boolean; threadId: string; action: string; confirmToken: string; expiresInSec: number; expiresAt: string }>(
+    '/api/a2a/btw/confirm',
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+
+export const mergeA2ABtwThread = (
+  threadId: string,
+  payload: { confirmToken?: string } = {},
+) =>
+  apiRequest<{ ok?: boolean; thread: A2ABtwThread; session?: A2ASessionRecord | null; task?: A2ATaskRecord | null }>(
+    `/api/a2a/btw/${encodeURIComponent(threadId)}/merge`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
+
+export const archiveA2ABtwThread = (threadId: string) =>
+  apiRequest<{ ok?: boolean; thread: A2ABtwThread }>(
+    `/api/a2a/btw/${encodeURIComponent(threadId)}/archive`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+  );
+
+export const addA2ATaskBtwNote = (
+  taskId: string,
+  payload: { prompt: string; mode?: A2ABtwMode; targetAgentId?: string },
+) =>
+  apiRequest<{ ok?: boolean; mode: string; task: A2ATaskRecord; thread?: A2ABtwThread; forkedTask?: A2ATaskRecord }>(
+    `/api/a2a/tasks/${encodeURIComponent(taskId)}/btw`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
     },
   );
 

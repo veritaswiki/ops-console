@@ -9,6 +9,18 @@ import {
   getA2ASigningMetadata,
   getA2ASigningSecret,
 } from './a2a-protocol.mjs';
+import {
+  MAX_BTW_MESSAGES,
+  MAX_BTW_THREADS,
+  VALID_MERGE_TARGETS,
+  buildBtwMergePatchPreview,
+  buildBtwReply,
+  buildDemoBtwThreads,
+  canTransitionBtwStatus,
+  classifyBtwMergeRisk,
+  normalizeBtwThread,
+  summarizeBtwStats,
+} from './a2a-btw.mjs';
 import { validateSafeEndpointUrl } from './mcp-fleet.mjs';
 import { redactText } from './redact.mjs';
 
@@ -184,6 +196,12 @@ const VALID_LOG_EVENTS = new Set([
   'session.sync',
   'session.handoff',
   'task.state_changed',
+  'btw.opened',
+  'btw.message',
+  'btw.proposed',
+  'btw.reviewed',
+  'btw.merged',
+  'btw.archived',
 ]);
 
 /**
@@ -1093,6 +1111,11 @@ function buildDemoA2AState() {
     skillCatalog,
     sessions,
     tasks,
+    btwThreads: buildDemoBtwThreads({
+      session: sessions[0] || null,
+      task: tasks[0] || null,
+      agent: agents[0] || null,
+    }),
     superAgentConfig,
     superAgentTickets,
     contextSpillNodes,
@@ -1142,6 +1165,8 @@ export class A2AOrchestrator {
     this.contextSpillNodes = new Map();
     this.triggerEvents = [];
     this.collaborationLogs = [];
+    this.btwThreads = new Map();
+    this.btwConfirmTokens = new Map();
     this._logListener = null;
     this._initialized = false;
   }
@@ -1196,6 +1221,10 @@ export class A2AOrchestrator {
       for (const sess of demo.sessions) this.sessions.set(sess.id, sess);
       for (const tkt of demo.superAgentTickets) this.superAgentTickets.set(tkt.id, tkt);
       for (const node of demo.contextSpillNodes) this.contextSpillNodes.set(node.spillId, node);
+      for (const btwThread of demo.btwThreads || []) {
+        const normalized = normalizeBtwThread(btwThread);
+        if (normalized) this.btwThreads.set(normalized.id, normalized);
+      }
       this.orchestrationConfig = demo.orchestrationConfig;
       this.superAgentConfig = demo.superAgentConfig;
       this.triggerEvents = demo.triggerEvents;
@@ -1262,6 +1291,12 @@ export class A2AOrchestrator {
       if (Array.isArray(parsed?.collaborationLogs)) {
         this.collaborationLogs = parsed.collaborationLogs.slice(0, 300);
       }
+      if (Array.isArray(parsed?.btwThreads)) {
+        for (const rawThread of parsed.btwThreads.slice(0, MAX_BTW_THREADS)) {
+          const normalized = normalizeBtwThread(rawThread);
+          if (normalized) this.btwThreads.set(normalized.id, normalized);
+        }
+      }
     } catch {
       // Fresh state
     }
@@ -1286,6 +1321,7 @@ export class A2AOrchestrator {
         triggerEvents: this.triggerEvents.slice(0, 80),
         tasks: this.tasks.slice(0, 60),
         collaborationLogs: this.collaborationLogs.slice(0, 200),
+        btwThreads: [...this.btwThreads.values()].slice(0, MAX_BTW_THREADS),
       },
       null,
       2,
@@ -1353,6 +1389,7 @@ export class A2AOrchestrator {
     const skills = [...this.skillCatalog.values()];
     const sessions = [...this.sessions.values()];
     const outdatedAgents = agentList.filter((a) => a.updateAvailable).length;
+    const btwListing = this.listBtwThreads();
 
     return {
       ok: true,
@@ -1382,12 +1419,15 @@ export class A2AOrchestrator {
         syncedSessions: sessions.filter((s) => s.state === 'synced').length,
         totalSessions: sessions.length,
         outdatedAgents,
+        pendingBtwApprovals: btwListing.summary.attentionCount,
       },
       agents: agentList,
       routingRules: rules,
       skillCatalog: skills,
       sessions,
       tasks: this.tasks.slice(0, 30),
+      btwThreads: btwListing.threads,
+      btwSummary: btwListing.summary,
       superAgentConfig: this.superAgentConfig,
       superAgentTickets: [...this.superAgentTickets.values()],
       contextSpillNodes: [...this.contextSpillNodes.values()],
@@ -3515,88 +3555,759 @@ export class A2AOrchestrator {
    *   isolated Git worktree branch (side/<id>).
    */
   async addBtwNote(taskId, payload = {}, options = {}) {
-    const parentTask = this.tasks.find((t) => t.id === taskId);
+    const parentTask = this.tasks.find((item) => item.id === taskId);
     if (!parentTask) {
       const err = new Error(`A2A task not found: ${taskId}`);
       err.statusCode = 404;
       throw err;
     }
+    const opened = await this.openBtwThread(
+      {
+        taskId: parentTask.id,
+        sessionId: payload.sessionId,
+        prompt: payload.prompt,
+        title: payload.title,
+        mode: payload.mode,
+        targetAgentId: payload.targetAgentId,
+        model: payload.model,
+      },
+      options,
+    );
+    return {
+      ok: true,
+      mode: opened.thread.mode,
+      task: parentTask,
+      thread: opened.thread,
+      ...(opened.forkedTask ? { forkedTask: opened.forkedTask } : {}),
+      ...(opened.note ? { note: opened.note } : {}),
+    };
+  }
 
-    const prompt = redactText(String(payload.prompt || '').trim()).slice(0, 1200);
+  _pruneBtwConfirmTokens() {
+    const nowMs = Date.now();
+    for (const [tokenKey, meta] of this.btwConfirmTokens.entries()) {
+      if (!meta || meta.expiresAt <= nowMs) {
+        this.btwConfirmTokens.delete(tokenKey);
+      }
+    }
+  }
+
+  issueBtwConfirmToken(payload = {}) {
+    const threadId = String(payload?.threadId || '').trim();
+    if (!threadId) {
+      const err = new Error('threadId is required to issue a BTW confirmation token');
+      err.statusCode = 400;
+      throw err;
+    }
+    if (!this.btwThreads.has(threadId)) {
+      const err = new Error(`BTW thread not found: ${threadId}`);
+      err.statusCode = 404;
+      throw err;
+    }
+    const action = String(payload?.action || 'merge').trim() || 'merge';
+    if (action !== 'merge' && action !== 'review') {
+      const err = new Error(`Unsupported BTW confirm action: ${action}`);
+      err.statusCode = 400;
+      throw err;
+    }
+    this._pruneBtwConfirmTokens();
+    const token = crypto.randomBytes(18).toString('hex');
+    const expiresAt = Date.now() + 120_000;
+    this.btwConfirmTokens.set(token, { threadId, action, expiresAt });
+    return {
+      ok: true,
+      threadId,
+      action,
+      confirmToken: token,
+      expiresInSec: 120,
+      expiresAt: new Date(expiresAt).toISOString(),
+    };
+  }
+
+  _consumeBtwConfirmToken(token, threadId, action) {
+    if (!token || typeof token !== 'string') return false;
+    this._pruneBtwConfirmTokens();
+    const meta = this.btwConfirmTokens.get(token);
+    if (!meta || meta.threadId !== threadId || meta.action !== action) return false;
+    this.btwConfirmTokens.delete(token);
+    return true;
+  }
+
+  _requireBtwConfirmIfNeeded(threadId, action, token) {
+    if (!this.config?.security?.requireCriticalConfirm) return;
+    if (!this._consumeBtwConfirmToken(token, threadId, action)) {
+      const err = new Error(`BTW "${action}" into mainline requires a single-use confirmToken`);
+      err.statusCode = 409;
+      err.requiresConfirm = true;
+      throw err;
+    }
+  }
+
+  _syncTaskBtwNoteStatus(thread) {
+    if (!thread?.taskId) return;
+    const parentTask = this.tasks.find((item) => item.id === thread.taskId);
+    if (!parentTask || !Array.isArray(parentTask.btwNotes)) return;
+    for (const note of parentTask.btwNotes) {
+      if (note && note.threadId === thread.id) {
+        note.status = thread.status;
+      }
+    }
+  }
+
+  _evictOldBtwThreadsIfNeeded() {
+    while (this.btwThreads.size >= MAX_BTW_THREADS) {
+      const ordered = [...this.btwThreads.values()].sort((first, second) => {
+        const firstArchivable = first.status === 'archived' || first.status === 'merged' ? 0 : 1;
+        const secondArchivable = second.status === 'archived' || second.status === 'merged' ? 0 : 1;
+        if (firstArchivable !== secondArchivable) return firstArchivable - secondArchivable;
+        return Date.parse(first.updatedAt || '') - Date.parse(second.updatedAt || '');
+      });
+      const victim = ordered[0];
+      if (!victim) break;
+      this.btwThreads.delete(victim.id);
+    }
+  }
+
+  listBtwThreads(filters = {}) {
+    const sessionId = String(filters?.sessionId || '').trim();
+    const taskId = String(filters?.taskId || '').trim();
+    const status = String(filters?.status || '').trim();
+    const contextId = String(filters?.contextId || '').trim();
+
+    const statusRank = (value) => {
+      if (value === 'pending_approval') return 0;
+      if (value === 'approved') return 1;
+      if (value === 'open') return 2;
+      if (value === 'rejected') return 3;
+      if (value === 'merged') return 4;
+      return 5;
+    };
+
+    const threads = [...this.btwThreads.values()]
+      .filter((thread) => {
+        if (sessionId && thread.sessionId !== sessionId) return false;
+        if (taskId && thread.taskId !== taskId) return false;
+        if (contextId && thread.contextId !== contextId) return false;
+        if (status && status !== 'all' && thread.status !== status) return false;
+        return true;
+      })
+      .sort((first, second) => {
+        const rankDiff = statusRank(first.status) - statusRank(second.status);
+        if (rankDiff !== 0) return rankDiff;
+        return (Date.parse(second.updatedAt || '') || 0) - (Date.parse(first.updatedAt || '') || 0);
+      });
+
+    return {
+      ok: true,
+      threads,
+      summary: summarizeBtwStats(threads),
+    };
+  }
+
+  async openBtwThread(payload = {}, options = {}) {
+    const prompt = redactText(String(payload?.prompt || '').trim()).slice(0, 1200);
     if (!prompt) {
       const err = new Error('旁支问题内容不能为空');
       err.statusCode = 400;
       throw err;
     }
 
-    const mode = payload.mode === 'fork' ? 'fork' : 'btw';
-    const targetAgent =
-      (payload.targetAgentId && this.agents.get(String(payload.targetAgentId))) ||
-      this.agents.get(parentTask.workerAgentId) ||
-      this.agents.get(this.leadAgentId) ||
-      [...this.agents.values()][0];
+    const requestedSessionId = String(payload?.sessionId || '').trim();
+    const requestedTaskId = String(payload?.taskId || '').trim();
 
-    const nowIso = new Date().toISOString();
-
-    if (mode === 'fork') {
-      const forkedTask = await this.dispatchTask(
-        {
-          prompt: `[旁支会话 · 基于 ${parentTask.id}] ${prompt}`,
-          targetAgentId: targetAgent?.id,
-          contextId: parentTask.contextId,
-        },
-        { actor: options.actor || 'btw-fork' },
-      );
-      forkedTask.parentTaskId = parentTask.id;
-      forkedTask.isSideThread = true;
-      forkedTask.worktreeBranch = `side/${forkedTask.id}`;
-      if (!Array.isArray(parentTask.btwNotes)) parentTask.btwNotes = [];
-      parentTask.btwNotes.push({
-        id: `btw-${crypto.randomBytes(4).toString('hex')}`,
-        ts: nowIso,
-        prompt,
-        reply: `已派生独立旁支线程 ${forkedTask.id}（隔离分支 ${forkedTask.worktreeBranch}），主会话上下文零污染。`,
-        agentName: forkedTask.workerAgentName,
-        model: forkedTask.appliedModel,
-        promotedToTaskId: forkedTask.id,
-      });
-      await this.persist();
-      return { ok: true, mode: 'fork', task: parentTask, forkedTask };
+    let session = null;
+    if (requestedSessionId) {
+      session = this.sessions.get(requestedSessionId) || null;
+      if (!session) {
+        const err = new Error(`Session not found: ${requestedSessionId}`);
+        err.statusCode = 404;
+        throw err;
+      }
     }
 
-    const note = {
-      id: `btw-${crypto.randomBytes(4).toString('hex')}`,
-      ts: nowIso,
-      prompt,
-      reply: `已结合主会话上下文（${parentTask.worktreeBranch || parentTask.contextId || parentTask.id}）完成旁支速答：针对「${prompt.slice(0, 60)}」，建议优先在不打断主线程的前提下单独验证并按需开独立旁支分支处理。`,
-      agentName: targetAgent?.name || parentTask.workerAgentName || 'Agent',
-      model: targetAgent?.modelHint || parentTask.appliedModel || 'auto',
-      promotedToTaskId: null,
-    };
+    let parentTask = null;
+    if (requestedTaskId) {
+      parentTask = this.tasks.find((item) => item.id === requestedTaskId) || null;
+      if (!parentTask) {
+        const err = new Error(`A2A task not found: ${requestedTaskId}`);
+        err.statusCode = 404;
+        throw err;
+      }
+    }
 
-    if (!Array.isArray(parentTask.btwNotes)) parentTask.btwNotes = [];
-    parentTask.btwNotes.push(note);
-    if (parentTask.btwNotes.length > 30) parentTask.btwNotes.shift();
+    if (!session && parentTask?.contextId) {
+      session = [...this.sessions.values()].find((item) => item.contextId === parentTask.contextId) || null;
+    }
+
+    const mode = payload?.mode === 'fork' ? 'fork' : 'btw';
+    const targetAgent =
+      (payload?.targetAgentId && this.agents.get(String(payload.targetAgentId))) ||
+      (session?.primaryAgentId && this.agents.get(session.primaryAgentId)) ||
+      (parentTask?.workerAgentId && this.agents.get(parentTask.workerAgentId)) ||
+      this.agents.get(this.leadAgentId) ||
+      [...this.agents.values()][0] ||
+      null;
+
+    const nowIso = new Date().toISOString();
+    const threadId = `btw-${crypto.randomBytes(4).toString('hex')}`;
+    const contextId = session?.contextId || parentTask?.contextId || `ctx-${threadId}`;
+    const appliedModel = String(payload?.model || targetAgent?.modelHint || parentTask?.appliedModel || 'auto').trim() || 'auto';
+    const actor = String(options?.actor || 'web').trim() || 'web';
+
+    let forkedTask = null;
+    let worktreeBranch = null;
+    if (mode === 'fork') {
+      forkedTask = await this.dispatchTask(
+        {
+          prompt: `[旁支会话 · 基于 ${parentTask?.id || session?.id || contextId}] ${prompt}`,
+          targetAgentId: targetAgent?.id,
+          contextId,
+          model: appliedModel !== 'auto' ? appliedModel : undefined,
+        },
+        { actor: `${actor}:btw-fork` },
+      );
+      forkedTask.parentTaskId = parentTask?.id || null;
+      forkedTask.isSideThread = true;
+      forkedTask.worktreeBranch = `side/${forkedTask.id}`;
+      worktreeBranch = forkedTask.worktreeBranch;
+    }
+
+    const assistantReply = buildBtwReply({
+      prompt,
+      session,
+      task: parentTask,
+      agent: targetAgent ? { ...targetAgent, model: appliedModel } : { name: '主 Agent', model: appliedModel },
+      mode,
+      turnCount: 1,
+    });
+
+    const titleText = redactText(String(payload?.title || '').trim()).slice(0, 120) || prompt.slice(0, 48);
+    const thread = normalizeBtwThread({
+      id: threadId,
+      sessionId: session?.id || null,
+      taskId: parentTask?.id || null,
+      contextId,
+      title: titleText,
+      mode,
+      status: 'open',
+      isolation: mode === 'fork' ? 'worktree' : 'ephemeral',
+      worktreeBranch,
+      forkedTaskId: forkedTask?.id || null,
+      targetAgentId: targetAgent?.id || parentTask?.workerAgentId || 'agent-primary',
+      targetAgentName: targetAgent?.name || parentTask?.workerAgentName || '主 Agent',
+      model: appliedModel,
+      mainlineRevisionAtOpen: session?.revision ?? 1,
+      messages: [
+        {
+          id: `btw-msg-${crypto.randomBytes(4).toString('hex')}`,
+          ts: nowIso,
+          role: 'user',
+          content: prompt,
+          agentId: targetAgent?.id || null,
+          agentName: targetAgent?.name || null,
+          model: appliedModel,
+        },
+        {
+          id: `btw-msg-${crypto.randomBytes(4).toString('hex')}`,
+          ts: nowIso,
+          role: 'assistant',
+          content: assistantReply,
+          agentId: targetAgent?.id || null,
+          agentName: targetAgent?.name || null,
+          model: appliedModel,
+        },
+      ],
+      mergeProposal: null,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+      createdBy: actor,
+    });
+
+    this._evictOldBtwThreadsIfNeeded();
+    this.btwThreads.set(thread.id, thread);
+
+    let note = null;
+    if (parentTask) {
+      note = {
+        id: `btw-note-${crypto.randomBytes(4).toString('hex')}`,
+        ts: nowIso,
+        prompt,
+        reply: forkedTask
+          ? `已派生独立旁支线程 ${forkedTask.id}（隔离分支 ${forkedTask.worktreeBranch}），主会话上下文零污染。`
+          : assistantReply,
+        agentName: thread.targetAgentName,
+        model: thread.model,
+        promotedToTaskId: forkedTask?.id || null,
+        threadId: thread.id,
+        status: thread.status,
+      };
+      if (!Array.isArray(parentTask.btwNotes)) parentTask.btwNotes = [];
+      parentTask.btwNotes.push(note);
+      if (parentTask.btwNotes.length > 30) parentTask.btwNotes.shift();
+    }
 
     this._appendLog({
       level: 'info',
-      eventType: 'session.sync',
-      sourceAgentId: parentTask.leadAgentId,
-      sourceAgentName: parentTask.leadAgentName,
-      targetAgentId: targetAgent?.id || parentTask.workerAgentId,
-      targetAgentName: note.agentName,
-      taskId: parentTask.id,
-      contextId: parentTask.contextId,
-      worktreeBranch: parentTask.worktreeBranch,
-      model: note.model,
+      eventType: 'btw.opened',
+      sourceAgentId: this.leadAgentId || thread.targetAgentId,
+      sourceAgentName: this.agents.get(this.leadAgentId)?.name || 'SuperAgent Router',
+      targetAgentId: thread.targetAgentId,
+      targetAgentName: thread.targetAgentName,
+      taskId: thread.taskId,
+      contextId: thread.contextId,
+      worktreeBranch: thread.worktreeBranch || session?.gitBranch || parentTask?.worktreeBranch || null,
+      model: thread.model,
       effort: 'low',
-      latencyMs: 140,
-      summary: `BTW 旁支速答 (${parentTask.id})：${prompt.slice(0, 64)}`,
-      detail: note.reply,
+      latencyMs: 36,
+      summary: `开启 BTW 旁支会话 ${thread.id}（${mode}）：${thread.title.slice(0, 60)}`,
+      detail: `只读锚定主线 rev.${thread.mainlineRevisionAtOpen}，零污染主会话上下文。`,
     });
 
     await this.persist();
-    return { ok: true, mode: 'btw', task: parentTask, note };
+    return { ok: true, thread, forkedTask, note };
+  }
+
+  async postBtwMessage(threadId, payload = {}, options = {}) {
+    const thread = this.btwThreads.get(threadId);
+    if (!thread) {
+      const err = new Error(`BTW thread not found: ${threadId}`);
+      err.statusCode = 404;
+      throw err;
+    }
+    if (thread.status === 'merged' || thread.status === 'archived') {
+      const err = new Error(`Cannot post messages to ${thread.status} BTW thread`);
+      err.statusCode = 409;
+      throw err;
+    }
+
+    const prompt = redactText(String(payload?.prompt || '').trim()).slice(0, 1200);
+    if (!prompt) {
+      const err = new Error('旁支追问内容不能为空');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const session = thread.sessionId ? this.sessions.get(thread.sessionId) || null : null;
+    const parentTask = thread.taskId ? this.tasks.find((item) => item.id === thread.taskId) || null : null;
+    const targetAgent =
+      (payload?.targetAgentId && this.agents.get(String(payload.targetAgentId))) ||
+      this.agents.get(thread.targetAgentId) ||
+      null;
+    const appliedModel = String(payload?.model || thread.model || targetAgent?.modelHint || 'auto').trim() || 'auto';
+    const nowIso = new Date().toISOString();
+    const userTurnCount = thread.messages.filter((msg) => msg.role === 'user').length + 1;
+    const assistantReply = buildBtwReply({
+      prompt,
+      session,
+      task: parentTask,
+      agent: targetAgent
+        ? { ...targetAgent, model: appliedModel }
+        : { name: thread.targetAgentName, model: appliedModel },
+      mode: thread.mode,
+      turnCount: userTurnCount,
+    });
+
+    thread.messages.push(
+      {
+        id: `btw-msg-${crypto.randomBytes(4).toString('hex')}`,
+        ts: nowIso,
+        role: 'user',
+        content: prompt,
+        agentId: targetAgent?.id || thread.targetAgentId,
+        agentName: targetAgent?.name || thread.targetAgentName,
+        model: appliedModel,
+        spillRefId: null,
+      },
+      {
+        id: `btw-msg-${crypto.randomBytes(4).toString('hex')}`,
+        ts: nowIso,
+        role: 'assistant',
+        content: assistantReply,
+        agentId: targetAgent?.id || thread.targetAgentId,
+        agentName: targetAgent?.name || thread.targetAgentName,
+        model: appliedModel,
+        spillRefId: null,
+      },
+    );
+    if (thread.messages.length > MAX_BTW_MESSAGES) {
+      thread.messages = thread.messages.slice(-MAX_BTW_MESSAGES);
+    }
+    if (thread.status === 'rejected') {
+      thread.status = 'open';
+    }
+    thread.targetAgentId = targetAgent?.id || thread.targetAgentId;
+    thread.targetAgentName = targetAgent?.name || thread.targetAgentName;
+    thread.model = appliedModel;
+    thread.updatedAt = nowIso;
+    this._syncTaskBtwNoteStatus(thread);
+
+    this._appendLog({
+      level: 'info',
+      eventType: 'btw.message',
+      sourceAgentId: options?.actor || 'web',
+      sourceAgentName: String(options?.actor || 'web'),
+      targetAgentId: thread.targetAgentId,
+      targetAgentName: thread.targetAgentName,
+      taskId: thread.taskId,
+      contextId: thread.contextId,
+      worktreeBranch: thread.worktreeBranch,
+      model: thread.model,
+      effort: 'low',
+      latencyMs: 28,
+      summary: `BTW 旁支追问 #${userTurnCount} (${thread.id})`,
+      detail: prompt.slice(0, 120),
+    });
+
+    await this.persist();
+    return { ok: true, thread };
+  }
+
+  async proposeBtwMerge(threadId, payload = {}, options = {}) {
+    const thread = this.btwThreads.get(threadId);
+    if (!thread) {
+      const err = new Error(`BTW thread not found: ${threadId}`);
+      err.statusCode = 404;
+      throw err;
+    }
+    if (!canTransitionBtwStatus(thread.status, 'pending_approval')) {
+      const err = new Error(`BTW thread in status "${thread.status}" cannot submit a merge proposal`);
+      err.statusCode = 409;
+      throw err;
+    }
+    if (!Array.isArray(thread.messages) || thread.messages.length === 0) {
+      const err = new Error('旁支会话至少需要一条对话消息才能提交合并提案');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const summary = redactText(String(payload?.summary || '').trim()).slice(0, 400);
+    if (!summary) {
+      const err = new Error('合并提案摘要不能为空');
+      err.statusCode = 400;
+      throw err;
+    }
+    const rationale = redactText(String(payload?.rationale || '').trim()).slice(0, 1200);
+    const rawTargetType = String(payload?.targetType || 'session_context').trim();
+    if (!VALID_MERGE_TARGETS.has(rawTargetType)) {
+      const err = new Error(`Unsupported BTW merge targetType: ${rawTargetType}`);
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const session = thread.sessionId ? this.sessions.get(thread.sessionId) || null : null;
+    const parentTask = thread.taskId ? this.tasks.find((item) => item.id === thread.taskId) || null : null;
+    const nowIso = new Date().toISOString();
+    const preview = buildBtwMergePatchPreview({
+      thread,
+      session,
+      task: parentTask,
+      targetType: rawTargetType,
+      summary,
+      rationale,
+    });
+    const riskLevel = classifyBtwMergeRisk({
+      targetType: rawTargetType,
+      thread,
+      summary,
+      rationale,
+    });
+
+    thread.mergeProposal = {
+      id: `btw-merge-${crypto.randomBytes(4).toString('hex')}`,
+      proposedAt: nowIso,
+      proposedBy: String(options?.actor || 'web'),
+      summary,
+      rationale,
+      targetType: rawTargetType,
+      targetSessionId: session?.id || thread.sessionId || null,
+      targetTaskId: parentTask?.id || thread.taskId || null,
+      targetBranch: preview.targetBranch,
+      patchPreview: preview.patchPreview,
+      prDraftSpec: preview.prDraftSpec,
+      riskLevel,
+      status: 'pending',
+      reviewedAt: null,
+      reviewedBy: null,
+      reviewComment: null,
+      mergedAt: null,
+      mergedRevision: null,
+      mergedStepTs: null,
+      spillRefId: null,
+    };
+    thread.status = 'pending_approval';
+    thread.updatedAt = nowIso;
+    this._syncTaskBtwNoteStatus(thread);
+
+    this._appendLog({
+      level: riskLevel === 'high' ? 'warn' : 'info',
+      eventType: 'btw.proposed',
+      sourceAgentId: thread.targetAgentId,
+      sourceAgentName: thread.targetAgentName,
+      targetAgentId: this.leadAgentId || thread.targetAgentId,
+      targetAgentName: this.agents.get(this.leadAgentId)?.name || 'SuperAgent Router',
+      taskId: thread.taskId,
+      contextId: thread.contextId,
+      worktreeBranch: preview.targetBranch,
+      model: thread.model,
+      effort: 'low',
+      latencyMs: 18,
+      summary: `BTW 提交并入主线提案 (${thread.id} -> ${rawTargetType}, risk=${riskLevel})`,
+      detail: summary,
+    });
+
+    await this.persist();
+    return { ok: true, thread };
+  }
+
+  async reviewBtwMerge(threadId, payload = {}, options = {}) {
+    const thread = this.btwThreads.get(threadId);
+    if (!thread) {
+      const err = new Error(`BTW thread not found: ${threadId}`);
+      err.statusCode = 404;
+      throw err;
+    }
+    if (thread.status !== 'pending_approval' || !thread.mergeProposal) {
+      const err = new Error(`BTW thread "${threadId}" is not awaiting approval`);
+      err.statusCode = 409;
+      throw err;
+    }
+
+    const decision = String(payload?.decision || '').trim().toLowerCase();
+    if (decision !== 'approve' && decision !== 'reject') {
+      const err = new Error('Review decision must be "approve" or "reject"');
+      err.statusCode = 400;
+      throw err;
+    }
+
+    const mergeImmediately = decision === 'approve' && Boolean(payload?.mergeImmediately);
+    if (mergeImmediately) {
+      this._requireBtwConfirmIfNeeded(threadId, 'merge', payload?.confirmToken);
+    }
+
+    const nowIso = new Date().toISOString();
+    const reviewer = String(options?.actor || 'web');
+    const comment = redactText(String(payload?.comment || '').trim()).slice(0, 800) || null;
+
+    thread.mergeProposal.reviewedAt = nowIso;
+    thread.mergeProposal.reviewedBy = reviewer;
+    thread.mergeProposal.reviewComment = comment;
+    thread.updatedAt = nowIso;
+
+    if (decision === 'reject') {
+      thread.status = 'rejected';
+      thread.mergeProposal.status = 'rejected';
+      this._syncTaskBtwNoteStatus(thread);
+      this._appendLog({
+        level: 'warn',
+        eventType: 'btw.reviewed',
+        sourceAgentId: reviewer,
+        sourceAgentName: reviewer,
+        targetAgentId: thread.targetAgentId,
+        targetAgentName: thread.targetAgentName,
+        taskId: thread.taskId,
+        contextId: thread.contextId,
+        worktreeBranch: thread.worktreeBranch,
+        summary: `BTW 合并提案已驳回 (${thread.id})`,
+        detail: comment || '审批人驳回合并提案，可继续在旁支讨论后重新提交。',
+      });
+      await this.persist();
+      return { ok: true, thread };
+    }
+
+    thread.status = 'approved';
+    thread.mergeProposal.status = 'approved';
+    this._syncTaskBtwNoteStatus(thread);
+    this._appendLog({
+      level: 'info',
+      eventType: 'btw.reviewed',
+      sourceAgentId: reviewer,
+      sourceAgentName: reviewer,
+      targetAgentId: thread.targetAgentId,
+      targetAgentName: thread.targetAgentName,
+      taskId: thread.taskId,
+      contextId: thread.contextId,
+      worktreeBranch: thread.worktreeBranch,
+      summary: `BTW 合并提案已批准 (${thread.id})`,
+      detail: comment || '已通过人工审批，等待确认执行并入主线。',
+    });
+
+    if (mergeImmediately) {
+      return this._executeApprovedBtwMerge(thread, options);
+    }
+
+    await this.persist();
+    return { ok: true, thread };
+  }
+
+  async mergeBtwThread(threadId, payload = {}, options = {}) {
+    const thread = this.btwThreads.get(threadId);
+    if (!thread) {
+      const err = new Error(`BTW thread not found: ${threadId}`);
+      err.statusCode = 404;
+      throw err;
+    }
+    if (thread.status !== 'approved' || !thread.mergeProposal) {
+      const err = new Error(`BTW thread "${threadId}" must be approved before merging into mainline`);
+      err.statusCode = 409;
+      throw err;
+    }
+
+    this._requireBtwConfirmIfNeeded(threadId, 'merge', payload?.confirmToken);
+    return this._executeApprovedBtwMerge(thread, options);
+  }
+
+  async _executeApprovedBtwMerge(thread, options = {}) {
+    const proposal = thread.mergeProposal;
+    const nowIso = new Date().toISOString();
+    const spillId = `spill-btw-${crypto.randomBytes(3).toString('hex')}`;
+    const spillNode = {
+      spillId,
+      ticketId: proposal.targetTaskId || thread.taskId || thread.id,
+      threadKey: thread.contextId,
+      parentRef: `${thread.id} -> ${proposal.targetType}`,
+      label: `BTW 并入主线证据链：${thread.title.slice(0, 64)}`,
+      state: 'spilled',
+      bytes: Buffer.byteLength(proposal.patchPreview || proposal.summary || '', 'utf8'),
+      preview: proposal.summary.slice(0, 220),
+      recallCount: 0,
+      updatedAt: nowIso,
+    };
+    this.contextSpillNodes.set(spillId, spillNode);
+
+    const session = (proposal.targetSessionId && this.sessions.get(proposal.targetSessionId))
+      || (thread.sessionId && this.sessions.get(thread.sessionId))
+      || null;
+    const parentTask = (proposal.targetTaskId && this.tasks.find((item) => item.id === proposal.targetTaskId))
+      || (thread.taskId && this.tasks.find((item) => item.id === thread.taskId))
+      || null;
+
+    const recordSessionMerge = (summaryPrefix) => {
+      if (!session) return;
+      session.revision = (session.revision || 0) + 1;
+      session.lastSyncedAt = nowIso;
+      session.state = 'synced';
+      if (!Array.isArray(session.mergedBtwIds)) session.mergedBtwIds = [];
+      if (!session.mergedBtwIds.includes(thread.id)) {
+        session.mergedBtwIds.push(thread.id);
+      }
+      session.summary = redactText(`${summaryPrefix}${proposal.summary} (rev.${session.revision}, ref:${spillId})`).slice(0, 400);
+      proposal.mergedRevision = session.revision;
+    };
+
+    if (proposal.targetType === 'session_context') {
+      recordSessionMerge(`[已并入 BTW ${thread.id}] `);
+    } else if (proposal.targetType === 'task_step') {
+      if (parentTask) {
+        if (!Array.isArray(parentTask.steps)) parentTask.steps = [];
+        parentTask.steps.push({
+          ts: nowIso,
+          phase: 'btw-merge',
+          detail: redactText(`[BTW ${thread.id} 已审批并入] ${proposal.summary} (ref:${spillId})`).slice(0, 400),
+        });
+        proposal.mergedStepTs = nowIso;
+      }
+      if (session) {
+        if (!Array.isArray(session.mergedBtwIds)) session.mergedBtwIds = [];
+        if (!session.mergedBtwIds.includes(thread.id)) {
+          session.mergedBtwIds.push(thread.id);
+        }
+      }
+    } else if (proposal.targetType === 'pr_draft') {
+      if (!proposal.prDraftSpec) {
+        const regenerated = buildBtwMergePatchPreview({
+          thread,
+          session,
+          task: parentTask,
+          targetType: 'pr_draft',
+          summary: proposal.summary,
+          rationale: proposal.rationale,
+        });
+        proposal.prDraftSpec = regenerated.prDraftSpec;
+      }
+      const prLabel = proposal.prDraftSpec
+        ? `${proposal.prDraftSpec.branch} -> ${proposal.prDraftSpec.baseBranch}`
+        : thread.worktreeBranch || 'btw/draft';
+      if (parentTask) {
+        if (!Array.isArray(parentTask.steps)) parentTask.steps = [];
+        parentTask.steps.push({
+          ts: nowIso,
+          phase: 'btw-pr-draft',
+          detail: redactText(`[BTW PR 草案 ${thread.id}] ${prLabel} · ${proposal.summary} (ref:${spillId})`).slice(0, 400),
+        });
+        proposal.mergedStepTs = nowIso;
+      }
+      recordSessionMerge(`[BTW PR 草案 ${prLabel}] `);
+    }
+
+    proposal.status = 'merged';
+    proposal.mergedAt = nowIso;
+    proposal.spillRefId = spillId;
+    thread.status = 'merged';
+    thread.updatedAt = nowIso;
+    this._syncTaskBtwNoteStatus(thread);
+
+    this._appendLog({
+      level: 'info',
+      eventType: 'btw.merged',
+      sourceAgentId: String(options?.actor || 'web'),
+      sourceAgentName: String(options?.actor || 'web'),
+      targetAgentId: thread.targetAgentId,
+      targetAgentName: thread.targetAgentName,
+      taskId: thread.taskId,
+      contextId: thread.contextId,
+      worktreeBranch: proposal.targetBranch || thread.worktreeBranch,
+      model: thread.model,
+      effort: 'low',
+      latencyMs: 24,
+      spillRefId: spillId,
+      summary: `BTW 旁支已并入主线 (${thread.id} -> ${proposal.targetType})`,
+      detail: `${proposal.summary} | spillRef=${spillId}`,
+    });
+
+    await this.persist();
+    return {
+      ok: true,
+      thread,
+      session,
+      task: parentTask,
+      spillNode,
+    };
+  }
+
+  async archiveBtwThread(threadId, options = {}) {
+    const thread = this.btwThreads.get(threadId);
+    if (!thread) {
+      const err = new Error(`BTW thread not found: ${threadId}`);
+      err.statusCode = 404;
+      throw err;
+    }
+    if (!canTransitionBtwStatus(thread.status, 'archived')) {
+      const err = new Error(`BTW thread in status "${thread.status}" cannot be archived`);
+      err.statusCode = 409;
+      throw err;
+    }
+
+    const nowIso = new Date().toISOString();
+    thread.status = 'archived';
+    thread.updatedAt = nowIso;
+    this._syncTaskBtwNoteStatus(thread);
+
+    this._appendLog({
+      level: 'info',
+      eventType: 'btw.archived',
+      sourceAgentId: String(options?.actor || 'web'),
+      sourceAgentName: String(options?.actor || 'web'),
+      targetAgentId: thread.targetAgentId,
+      targetAgentName: thread.targetAgentName,
+      taskId: thread.taskId,
+      contextId: thread.contextId,
+      worktreeBranch: thread.worktreeBranch,
+      summary: `BTW 旁支已归档 (${thread.id})`,
+      detail: '旁支未并入主线，已隔离归档。',
+    });
+
+    await this.persist();
+    return { ok: true, thread };
   }
 }
 

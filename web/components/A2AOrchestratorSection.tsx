@@ -51,7 +51,9 @@ import {
   upsertA2ASkill,
 } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { countBtwAttention } from '../lib/btw';
 import { formatRelativeAge } from '../utils/format';
+import { AgentBtwDrawer } from './AgentBtwDrawer';
 import { EFFORT_OPTIONS, MODEL_PRESETS } from './AgentOrchestrationCanvas';
 import {
   Button,
@@ -211,6 +213,7 @@ export function A2AOrchestratorSection({
 
   // New Aligned Session form
   const [sessionOpen, setSessionOpen] = React.useState(false);
+  const [btwSessionId, setBtwSessionId] = React.useState<string | null>(null);
   const [sessionForm, setSessionForm] = React.useState({
     title: '',
     syncMode: 'a2a-context-bus',
@@ -1617,6 +1620,9 @@ export function A2AOrchestratorSection({
                           <GitBranch className="size-3 inline" />
                           <span>{sess.gitBranch}</span>
                           {sess.worktreePath && <span>({sess.worktreePath})</span>}
+                          {Array.isArray(sess.mergedBtwIds) && sess.mergedBtwIds.length > 0 && (
+                            <span>· 已并入 {sess.mergedBtwIds.length} 条 BTW</span>
+                          )}
                           <span>· 最近同步 {formatRelativeAge(sess.lastSyncedAt)}</span>
                         </div>
 
@@ -1626,6 +1632,32 @@ export function A2AOrchestratorSection({
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2 shrink-0">
+                        {(() => {
+                          const sessionBtw = countBtwAttention(state?.btwThreads || [], {
+                            sessionId: sess.id,
+                          });
+                          return (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => setBtwSessionId(sess.id)}
+                              data-testid={`session-btw-${sess.id}`}
+                            >
+                              <GitBranch className="size-3.5" />
+                              BTW 侧聊
+                              {sessionBtw.attentionCount > 0 ? (
+                                <span className="inline-flex items-center gap-1 font-mono text-[11px] text-[var(--warn)] tabular-nums">
+                                  <span className="h-1.5 w-1.5 rounded-full bg-[var(--warn)]" aria-hidden="true" />
+                                  {sessionBtw.attentionCount}
+                                </span>
+                              ) : sessionBtw.total > 0 ? (
+                                <span className="font-mono text-[11px] text-[var(--ink-subtle)] tabular-nums">
+                                  {sessionBtw.total}
+                                </span>
+                              ) : null}
+                            </Button>
+                          );
+                        })()}
                         <Button
                           variant="secondary"
                           size="sm"
@@ -1802,6 +1834,22 @@ export function A2AOrchestratorSection({
           </Drawer.Content>
         </Drawer.Portal>
       </Drawer.Root>
+
+      <AgentBtwDrawer
+        open={Boolean(btwSessionId)}
+        onClose={() => setBtwSessionId(null)}
+        threads={state?.btwThreads || []}
+        agents={agents}
+        sessions={sessions}
+        activeSession={sessions.find((item) => item.id === btwSessionId) || null}
+        activeTask={null}
+        initialThreadId={null}
+        readOnly={readOnly}
+        onRefresh={async () => {
+          await loadAll();
+        }}
+        onToast={(message, tone) => onToast(message, tone)}
+      />
     </div>
   );
 }

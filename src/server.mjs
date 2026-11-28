@@ -1770,6 +1770,173 @@ export function createOpsConsole(options = {}) {
         return;
       }
 
+      const a2aTaskBtwMatch = pathname.match(/^\/api\/a2a\/tasks\/([A-Za-z0-9._:-]+)\/btw$/);
+      if (method === 'POST' && a2aTaskBtwMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables BTW side chats' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.addBtwNote(a2aTaskBtwMatch[1], data, { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:btw-open',
+          target: result.thread?.id || a2aTaskBtwMatch[1],
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `mode=${result.mode}, taskId=${a2aTaskBtwMatch[1]}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'btw_opened', threadId: result.thread?.id, taskId: a2aTaskBtwMatch[1] });
+        sendJson(res, 201, result, {}, req);
+        return;
+      }
+
+      if (method === 'GET' && pathname === '/api/a2a/btw') {
+        const result = a2aOrchestrator.listBtwThreads({
+          sessionId: url.searchParams.get('sessionId') || '',
+          taskId: url.searchParams.get('taskId') || '',
+          status: url.searchParams.get('status') || '',
+          contextId: url.searchParams.get('contextId') || '',
+        });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/a2a/btw') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables opening BTW side chats' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.openBtwThread(data, { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:btw-open',
+          target: result.thread.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `mode=${result.thread.mode}, sessionId=${result.thread.sessionId || '-'}, taskId=${result.thread.taskId || '-'}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'btw_opened', threadId: result.thread.id });
+        sendJson(res, 201, result, {}, req);
+        return;
+      }
+
+      if (method === 'POST' && pathname === '/api/a2a/btw/confirm') {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables BTW confirmation tokens' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const issued = a2aOrchestrator.issueBtwConfirmToken(data);
+        sendJson(res, 200, issued, {}, req);
+        return;
+      }
+
+      const a2aBtwMessageMatch = pathname.match(/^\/api\/a2a\/btw\/([A-Za-z0-9._:-]+)\/messages$/);
+      if (method === 'POST' && a2aBtwMessageMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables BTW messages' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.postBtwMessage(a2aBtwMessageMatch[1], data, { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:btw-message',
+          target: result.thread.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `messages=${result.thread.messages.length}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'btw_message', threadId: result.thread.id });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      const a2aBtwProposeMatch = pathname.match(/^\/api\/a2a\/btw\/([A-Za-z0-9._:-]+)\/propose-merge$/);
+      if (method === 'POST' && a2aBtwProposeMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables proposing BTW merges' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.proposeBtwMerge(a2aBtwProposeMatch[1], data, { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:btw-propose-merge',
+          target: result.thread.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `target=${result.thread.mergeProposal?.targetType}, risk=${result.thread.mergeProposal?.riskLevel}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'btw_proposed', threadId: result.thread.id });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      const a2aBtwReviewMatch = pathname.match(/^\/api\/a2a\/btw\/([A-Za-z0-9._:-]+)\/review$/);
+      if (method === 'POST' && a2aBtwReviewMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables reviewing BTW merges' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.reviewBtwMerge(a2aBtwReviewMatch[1], data, { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:btw-review',
+          target: result.thread.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `status=${result.thread.status}, decision=${String(data?.decision || '')}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'btw_reviewed', threadId: result.thread.id, status: result.thread.status });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      const a2aBtwMergeMatch = pathname.match(/^\/api\/a2a\/btw\/([A-Za-z0-9._:-]+)\/merge$/);
+      if (method === 'POST' && a2aBtwMergeMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables merging BTW threads' }, {}, req);
+          return;
+        }
+        const { data } = await readBody(req);
+        const result = await a2aOrchestrator.mergeBtwThread(a2aBtwMergeMatch[1], data, { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:btw-merge',
+          target: result.thread.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: `target=${result.thread.mergeProposal?.targetType}, spill=${result.thread.mergeProposal?.spillRefId || '-'}`,
+        });
+        eventBus.emit('a2a_updated', { action: 'btw_merged', threadId: result.thread.id });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
+      const a2aBtwArchiveMatch = pathname.match(/^\/api\/a2a\/btw\/([A-Za-z0-9._:-]+)\/archive$/);
+      if (method === 'POST' && a2aBtwArchiveMatch) {
+        if (config.console.readOnly) {
+          sendJson(res, 403, { ok: false, error: 'Read-only mode disables archiving BTW threads' }, {}, req);
+          return;
+        }
+        const result = await a2aOrchestrator.archiveBtwThread(a2aBtwArchiveMatch[1], { actor: 'web' });
+        await logger.appendAudit({
+          action: 'a2a:btw-archive',
+          target: result.thread.id,
+          actor: 'web',
+          ip: auditIp(clientIp),
+          ok: true,
+          detail: 'Archived BTW side thread',
+        });
+        eventBus.emit('a2a_updated', { action: 'btw_archived', threadId: result.thread.id });
+        sendJson(res, 200, result, {}, req);
+        return;
+      }
+
       if (method === 'PUT' && pathname === '/api/a2a/config') {
         if (config.console.readOnly) {
           sendJson(res, 403, { ok: false, error: 'Read-only mode disables orchestration config changes' }, {}, req);

@@ -1431,6 +1431,103 @@ export interface A2ASessionRecord {
   lastSyncedAt: string;
   messageCount: number;
   summary?: string;
+  mergedBtwIds?: string[];
+}
+
+export type A2ABtwMode = 'btw' | 'fork';
+export type A2ABtwStatus =
+  | 'open'
+  | 'pending_approval'
+  | 'approved'
+  | 'merged'
+  | 'rejected'
+  | 'archived';
+export type A2ABtwMergeTarget = 'session_context' | 'task_step' | 'pr_draft';
+
+export interface A2ABtwNote {
+  id: string;
+  ts: string;
+  prompt: string;
+  reply: string;
+  agentName: string;
+  model?: string;
+  promotedToTaskId?: string | null;
+  threadId?: string | null;
+  status?: A2ABtwStatus | string;
+}
+
+export interface A2ABtwMessage {
+  id: string;
+  ts: string;
+  role: 'user' | 'assistant' | 'system' | string;
+  content: string;
+  agentId?: string | null;
+  agentName?: string | null;
+  model?: string | null;
+  spillRefId?: string | null;
+}
+
+export interface A2ABtwPrDraftSpec {
+  branch: string;
+  baseBranch: string;
+  title: string;
+  body: string;
+}
+
+export interface A2ABtwMergeProposal {
+  id: string;
+  proposedAt: string;
+  proposedBy: string;
+  summary: string;
+  rationale: string;
+  targetType: A2ABtwMergeTarget | string;
+  targetSessionId?: string | null;
+  targetTaskId?: string | null;
+  targetBranch?: string | null;
+  patchPreview: string;
+  prDraftSpec?: A2ABtwPrDraftSpec | null;
+  riskLevel: 'low' | 'medium' | 'high' | string;
+  status: 'pending' | 'approved' | 'rejected' | 'merged' | string;
+  reviewedAt?: string | null;
+  reviewedBy?: string | null;
+  reviewComment?: string | null;
+  mergedAt?: string | null;
+  mergedRevision?: number | null;
+  mergedStepTs?: string | null;
+  spillRefId?: string | null;
+}
+
+export interface A2ABtwThread {
+  id: string;
+  sessionId?: string | null;
+  taskId?: string | null;
+  contextId: string;
+  title: string;
+  mode: A2ABtwMode | string;
+  status: A2ABtwStatus | string;
+  isolation: 'ephemeral' | 'worktree' | string;
+  worktreeBranch?: string | null;
+  forkedTaskId?: string | null;
+  targetAgentId: string;
+  targetAgentName: string;
+  model: string;
+  mainlineRevisionAtOpen: number;
+  messages: A2ABtwMessage[];
+  mergeProposal?: A2ABtwMergeProposal | null;
+  createdAt: string;
+  updatedAt: string;
+  createdBy: string;
+}
+
+export interface A2ABtwSummary {
+  total: number;
+  open: number;
+  pendingApproval: number;
+  approved: number;
+  merged: number;
+  rejected: number;
+  archived: number;
+  attentionCount: number;
 }
 
 export interface A2ATaskSubtask {
@@ -1496,6 +1593,8 @@ export interface A2ATaskRecord {
   dshReview?: A2ADshReviewVerdict | null;
   steps: A2ATaskStep[];
   artifact?: string;
+  isSideThread?: boolean;
+  btwNotes?: A2ABtwNote[];
 }
 
 export interface A2ACollaborationLog {
@@ -1514,6 +1613,13 @@ export interface A2ACollaborationLog {
     | 'watchdog.check'
     | 'session.sync'
     | 'session.handoff'
+    | 'task.state_changed'
+    | 'btw.opened'
+    | 'btw.message'
+    | 'btw.proposed'
+    | 'btw.reviewed'
+    | 'btw.merged'
+    | 'btw.archived'
     | string;
   sourceAgentId: string;
   sourceAgentName: string;
@@ -1659,12 +1765,15 @@ export interface A2AStateResponse {
     syncedSessions?: number;
     totalSessions?: number;
     outdatedAgents?: number;
+    pendingBtwApprovals?: number;
   };
   agents: A2AAgentPeer[];
   routingRules: A2ARoutingRule[];
   skillCatalog: A2ASkillCatalogItem[];
   sessions: A2ASessionRecord[];
   tasks: A2ATaskRecord[];
+  btwThreads?: A2ABtwThread[];
+  btwSummary?: A2ABtwSummary;
   superAgentConfig?: A2ASuperAgentConfig;
   superAgentTickets?: A2ASuperAgentTicket[];
   contextSpillNodes?: A2AContextSpillNode[];

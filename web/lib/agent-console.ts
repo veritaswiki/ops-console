@@ -258,6 +258,14 @@ export const SLASH_COMMANDS: readonly SlashCommandDef[] = [
     acceptsArgs: true,
   },
   {
+    name: '/btw',
+    usage: '/btw <问题>',
+    description: '在当前会话开启隔离 BTW 旁支侧聊（不污染主线，可审批并入）',
+    category: 'context',
+    shortcutHint: 'Tab',
+    acceptsArgs: true,
+  },
+  {
     name: '/compact',
     usage: '/compact',
     description: '整理当前对话上下文摘要并释放冗余上下文',
