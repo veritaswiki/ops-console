@@ -126,10 +126,43 @@ export function buildHubAgentCard({
   version = '0.4.0',
   agents = [],
   leadAgentId = null,
+  modelCatalog = null,
 }) {
   const normalizedOrigin = String(origin || 'http://localhost:3000').replace(/\/+$/, '');
   const onlineAgents = (agents || []).filter((a) => a.status === 'healthy' || a.status === 'online');
   const lead = (agents || []).find((a) => a.id === leadAgentId) || onlineAgents[0] || null;
+  const catalogByAgentId = new Map(
+    (Array.isArray(modelCatalog?.agents) ? modelCatalog.agents : []).map((entry) => [entry.agentId, entry]),
+  );
+  const agentCapabilities = [...(agents || [])]
+    .filter((a) => a && a.id)
+    .sort((a, b) => String(a.id).localeCompare(String(b.id)))
+    .map((agent) => {
+      const catEntry = catalogByAgentId.get(agent.id) || null;
+      const isOnline = catEntry ? Boolean(catEntry.online) : (agent.status === 'healthy' || agent.status === 'online');
+      const availableModels = isOnline && catEntry
+        ? catEntry.models.map((m) => ({
+            id: m.id,
+            provider: m.provider,
+            sourceKind: m.sourceKind,
+            category: m.category,
+            boundToAgent: Boolean(m.boundToAgent),
+            effectiveEfforts: m.effectiveEfforts || [],
+          }))
+        : [];
+      return {
+        id: agent.id,
+        name: agent.name,
+        harness: agent.harness,
+        nodeId: agent.nodeId || modelCatalog?.localNodeId || 'hub-local',
+        online: isOnline,
+        defaultModel: isOnline ? (catEntry?.defaultModel || null) : null,
+        defaultSource: isOnline ? (catEntry?.defaultSource || 'none') : 'none',
+        parameterConstraints: catEntry?.parameterConstraints || null,
+        availableModelsCount: availableModels.length,
+        availableModels,
+      };
+    });
 
   const aggregatedSkills = [];
   const seenSkillIds = new Set();
@@ -187,6 +220,15 @@ export function buildHubAgentCard({
       leadHarness: lead?.harness || null,
       registeredAgents: (agents || []).length,
       onlineAgents: onlineAgents.length,
+      modelCatalog: modelCatalog
+        ? {
+            catalogHash: modelCatalog.catalogHash,
+            onlineNodesCount: modelCatalog.summary?.onlineNodesCount ?? 0,
+            offlineNodesCount: modelCatalog.summary?.offlineNodesCount ?? 0,
+            uniqueOnlineModels: modelCatalog.summary?.uniqueOnlineModels ?? 0,
+          }
+        : null,
+      agents: agentCapabilities,
     },
   };
 }

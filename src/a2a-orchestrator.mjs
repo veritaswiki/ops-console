@@ -1355,19 +1355,32 @@ export class A2AOrchestrator {
   getState(fleetNodes = [], options = {}) {
     this.syncProbeHarnesses(fleetNodes);
     const magpieBindings = Array.isArray(options?.magpieBindings) ? options.magpieBindings : [];
+    const modelCatalog = options?.modelCatalog && typeof options.modelCatalog === 'object' ? options.modelCatalog : null;
+    const catalogByAgentId = new Map(
+      (Array.isArray(modelCatalog?.agents) ? modelCatalog.agents : []).map((entry) => [entry.agentId, entry]),
+    );
     const nodeNameMap = new Map((fleetNodes || []).map((n) => [n.id, n.name || n.id]));
     const agentList = [...this.agents.values()].map((agent, idx) => {
       const { authToken: _omittedAuth, ...safeAgent } = agent;
       const binding = this._matchMagpieBinding(safeAgent, magpieBindings);
       const magpieModel = binding?.canonicalModel || null;
+      const catalogEntry = catalogByAgentId.get(safeAgent.id) || null;
+      const effectiveBinding = catalogEntry?.binding || binding;
+      const effectiveMagpieModel = effectiveBinding?.canonicalModel || magpieModel || null;
       return {
         ...safeAgent,
-        modelHint: safeAgent.modelHint || magpieModel || null,
-        magpieModel,
-        magpieEffort: binding?.effort || null,
-        magpieMode: binding?.mode || null,
-        magpieBindingName: binding?.name || null,
-        magpieConfigSource: binding?.configSource || null,
+        modelHint: safeAgent.modelHint || effectiveMagpieModel || null,
+        magpieModel: effectiveMagpieModel,
+        magpieEffort: effectiveBinding?.effort || null,
+        magpieMode: effectiveBinding?.mode || null,
+        magpieBindingName: effectiveBinding?.name || null,
+        magpieConfigSource: effectiveBinding?.configSource || null,
+        nodeOnline: catalogEntry ? Boolean(catalogEntry.online) : (safeAgent.status !== 'offline'),
+        catalogDefaultModel: catalogEntry?.defaultModel || null,
+        catalogDefaultSource: catalogEntry?.defaultSource || 'none',
+        parameterConstraints: catalogEntry?.parameterConstraints || null,
+        availableModelsCount: catalogEntry ? catalogEntry.totalModels : 0,
+        availableModels: catalogEntry && catalogEntry.online ? catalogEntry.models : [],
         nodeName: nodeNameMap.get(agent.nodeId) || agent.nodeName || agent.nodeId,
         role: agent.id === this.leadAgentId ? 'lead' : 'worker',
         reasoningEffort: sanitizeEffort(agent.reasoningEffort, agent.id === this.leadAgentId ? 'high' : 'medium'),

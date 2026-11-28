@@ -5,6 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { maskClientIp } from './redact.mjs';
 import { safeEqualString } from './security.mjs';
+import { sanitizeAgentBinding, sanitizeModelEntry, sanitizeModelSource } from './model-catalog.mjs';
 
 const NODE_ID_RE = /^[a-z0-9][a-z0-9._-]{1,47}$/;
 const VALID_DEVICE_TYPES = new Set(['hub', 'server', 'edge', 'laptop', 'mobile']);
@@ -481,6 +482,7 @@ export function sanitizeProbePayload(raw, expectedNodeId) {
             id: cleanStr(h.id || '', 64) || null,
             name: cleanStr(h.name, 80),
             harness: cleanStr(h.harness || 'custom-a2a', 32),
+            version: cleanStr(h.version || '', 64) || null,
             status: cleanStr(h.status || 'healthy', 24),
             agentCardUrl: cleanStr(h.agentCardUrl || '', 200) || null,
             rpcUrl: cleanStr(h.rpcUrl || '', 200) || null,
@@ -488,6 +490,24 @@ export function sanitizeProbePayload(raw, expectedNodeId) {
             delegatable: h.delegatable !== false,
             skills: Array.isArray(h.skills) ? h.skills.slice(0, 12) : [],
           }))
+      : [],
+    modelSources: Array.isArray(raw.modelSources)
+      ? raw.modelSources
+          .slice(0, 12)
+          .map((src) => sanitizeModelSource(src, nodeId))
+          .filter(Boolean)
+      : [],
+    models: Array.isArray(raw.models)
+      ? raw.models
+          .slice(0, 128)
+          .map((model) => sanitizeModelEntry(model, { nodeId }))
+          .filter(Boolean)
+      : [],
+    agentBindings: Array.isArray(raw.agentBindings)
+      ? raw.agentBindings
+          .slice(0, 32)
+          .map((binding) => sanitizeAgentBinding(binding))
+          .filter(Boolean)
       : [],
     regionOverride: cleanStr(raw.region || '', 64),
     note: cleanStr(raw.note || '', 120),
@@ -961,6 +981,7 @@ export class ProbeRegistry {
       const { status, transport, statusReason, offlineReason, offlineCategory } = diag;
 
       const data = tele?.data || null;
+      const nodeIsOnline = status === 'healthy' || status === 'degraded';
       const derpFallback = DERP_COORDS[String(peer?.relay || data?.tailscale?.relay || '').toLowerCase()] || null;
       const lat = Number.isFinite(Number(decl.lat)) ? Number(decl.lat)
         : Number.isFinite(Number(rec?.lat)) ? Number(rec.lat)
@@ -1001,6 +1022,9 @@ export class ProbeRegistry {
         watchedServices: data?.services || [],
         mcps: data?.mcps || [],
         harnesses: data?.harnesses || [],
+        modelSources: nodeIsOnline ? (data?.modelSources || []) : [],
+        models: nodeIsOnline ? (data?.models || []) : [],
+        agentBindings: nodeIsOnline ? (data?.agentBindings || []) : [],
         agentsCount: data?.agents?.count ?? 0,
         backupDisk: sshRem?.backupDisk || (sshRem?.backup && sshRem.backup !== 'n/a' ? sshRem.backup : null),
         rttMs: data?.hubRttMs ?? (sshRem?.reachable ? sshRem.rttMs : (extCheck?.reachable ? extCheck.rttMs : null)),

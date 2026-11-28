@@ -28,6 +28,7 @@ import type {
   A2APingResponse,
   A2AStateResponse,
   A2ATaskRecord,
+  DynamicModelCatalogResponse,
   MagpieCatalogResponse,
 } from '../types';
 import {
@@ -36,6 +37,7 @@ import {
   dispatchA2ATask,
   fetchA2AState,
   fetchMagpieModels,
+  fetchModelCatalog,
   handoffA2ASession,
   openA2ABtwThread,
   pingA2AAgent,
@@ -66,6 +68,14 @@ import {
   groupMagpieModels,
   resolveAgentDefaultModel,
 } from '../lib/magpie-models';
+import {
+  formatCatalogModelOption,
+  getAgentCatalogEntry,
+  getEffectiveEffortOptions,
+  getSelectableModelsForAgent,
+  groupCatalogModels,
+  resolveSelectedModelFallback,
+} from '../lib/model-catalog';
 import { cn, FOCUS_RING } from '../lib/cn';
 import { countBtwAttention } from '../lib/btw';
 import { formatClock, formatDateTime } from '../utils/format';
@@ -262,6 +272,7 @@ export function AgentsView({
 }: AgentsViewProps) {
   const [a2aState, setA2aState] = React.useState<A2AStateResponse | null>(null);
   const [magpieCatalog, setMagpieCatalog] = React.useState<MagpieCatalogResponse | null>(null);
+  const [modelCatalog, setModelCatalog] = React.useState<DynamicModelCatalogResponse | null>(null);
   const [workspaceMode, setWorkspaceMode] = React.useState<WorkspaceMode>('thread');
   const [localSearchQuery, setLocalSearchQuery] = React.useState('');
   const [selectedTarget, setSelectedTarget] = React.useState<string>('auto');
@@ -333,19 +344,18 @@ export function AgentsView({
 
   React.useEffect(() => {
     const controller = new AbortController();
-    fetchMagpieModels(controller.signal)
-      .then((catalog) => {
+    Promise.all([
+      fetchModelCatalog(controller.signal).catch(() => null),
+      fetchMagpieModels(controller.signal).catch(() => null),
+    ])
+      .then(([dynamicCat, legacyCat]) => {
         if (!controller.signal.aborted) {
-          setMagpieCatalog(catalog);
-        }
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setMagpieCatalog(null);
+          setModelCatalog(dynamicCat);
+          setMagpieCatalog(legacyCat);
         }
       });
     return () => controller.abort();
-  }, []);
+  }, [a2aState?.summary?.onlineAgents]);
 
   React.useEffect(() => {
     if (activeTaskId && activeTaskId !== prevActiveTaskIdRef.current) {
@@ -392,20 +402,76 @@ export function AgentsView({
         : agents.find((agent) => agent.id === selectedTarget) || leadAgent,
     [agents, leadAgent, selectedTarget],
   );
+  const selectedAgentCatalog = React.useMemo(
+    () => getAgentCatalogEntry(modelCatalog, selectedAgentPeer?.id),
+    [modelCatalog, selectedAgentPeer?.id],
+  );
+  const selectableCatalogModels = React.useMemo(
+    () => getSelectableModelsForAgent(modelCatalog, selectedAgentPeer?.id, selectedAgentPeer?.nodeId),
+    [modelCatalog, selectedAgentPeer?.id, selectedAgentPeer?.nodeId],
+  );
+  const catalogModelGroups = React.useMemo(
+    () => groupCatalogModels(selectableCatalogModels),
+    [selectableCatalogModels],
+  );
+  const effectiveEffortOptions = React.useMemo(
+    () => getEffectiveEffortOptions(selectedAgentCatalog, modelOverride),
+    [selectedAgentCatalog, modelOverride],
+  );
+
+  React.useEffect(() => {
+    if (!modelCatalog || !modelOverride) return;
+    const fallback = resolveSelectedModelFallback(
+      modelOverride,
+      selectableCatalogModels,
+      selectedAgentCatalog?.defaultModel || null,
+    );
+    if (fallback.didFallback) {
+      setModelOverride(fallback.model);
+    }
+  }, [modelCatalog, modelOverride, selectableCatalogModels, selectedAgentCatalog?.defaultModel]);
+
+  React.useEffect(() => {
+    if (!effectiveEffortOptions.length) return;
+    if (!effectiveEffortOptions.includes(reasoningEffort)) {
+      const preferred = selectedAgentCatalog?.parameterConstraints?.defaultEffort;
+      const nextEffort = (preferred && effectiveEffortOptions.includes(preferred)
+        ? preferred
+        : effectiveEffortOptions[0]) as ComposerEffortLevel;
+      if (nextEffort) setReasoningEffort(nextEffort);
+    }
+  }, [effectiveEffortOptions, reasoningEffort, selectedAgentCatalog?.parameterConstraints?.defaultEffort]);
+
   const resolvedDefaultModel = React.useMemo(
-    () =>
-      resolveAgentDefaultModel(
+    () => {
+      if (selectedAgentCatalog?.online && selectedAgentCatalog.defaultModel) {
+        return {
+          model: selectedAgentCatalog.defaultModel,
+          label: `${selectedAgentCatalog.defaultModel} (${selectedAgentCatalog.nodeName})`,
+          source: selectedAgentCatalog.defaultSource,
+        };
+      }
+      if (selectedAgentCatalog && !selectedAgentCatalog.online) {
+        return {
+          model: null,
+          label: `${selectedAgentCatalog.nodeName} 离线（已隐藏模型）`,
+          source: 'offline',
+        };
+      }
+      return resolveAgentDefaultModel(
         selectedAgentPeer,
         magpieBindings,
         a2aState?.orchestrationConfig?.mainModel,
-      ),
-    [selectedAgentPeer, magpieBindings, a2aState?.orchestrationConfig?.mainModel],
+      );
+    },
+    [selectedAgentCatalog, selectedAgentPeer, magpieBindings, a2aState?.orchestrationConfig?.mainModel],
   );
   const hasCustomModelOverride = React.useMemo(
     () =>
       Boolean(modelOverride) &&
+      !selectableCatalogModels.some((item) => item.id === modelOverride) &&
       !magpieModels.some((item) => item.id === modelOverride),
-    [modelOverride, magpieModels],
+    [modelOverride, selectableCatalogModels, magpieModels],
   );
 
   const activeTask = React.useMemo(
@@ -1537,15 +1603,19 @@ export function AgentsView({
             </select>
 
             <select
-              aria-label="选择 Magpie 模型"
+              aria-label="选择节点与 Agent 兼容模型"
               data-testid="agent-model-select"
-              disabled={readOnly || submitting}
+              disabled={readOnly || submitting || Boolean(selectedAgentCatalog && !selectedAgentCatalog.online)}
               value={modelOverride}
               onChange={(event) => setModelOverride(event.target.value)}
               title={
-                magpieCatalog?.reachable
-                  ? `Magpie 网关已连接 (${magpieCatalog.totalModels} 个模型)`
-                  : 'Magpie 模型目录（未连接时沿用 Agent 默认配置）'
+                selectedAgentCatalog
+                  ? selectedAgentCatalog.online
+                    ? `${selectedAgentCatalog.nodeName} 在线 · ${selectedAgentCatalog.totalModels} 个兼容模型`
+                    : `${selectedAgentCatalog.nodeName} 已离线 · 模型已隐藏`
+                  : magpieCatalog?.reachable
+                    ? `Magpie 网关已连接 (${magpieCatalog.totalModels} 个模型)`
+                    : '在线节点模型目录（未连接时沿用 Agent 默认配置）'
               }
               className={cn(
                 'ui-select h-8 max-w-[260px] rounded-lg border border-transparent hover:border-[var(--border)] bg-[var(--surface-subtle)]/75 pl-2.5 pr-7 font-mono text-[11.5px] font-medium text-[var(--ink-muted)] hover:text-[var(--ink)] cursor-pointer transition-colors truncate',
@@ -1557,20 +1627,40 @@ export function AgentsView({
               {hasCustomModelOverride && (
                 <option value={modelOverride}>手动 · {modelOverride}</option>
               )}
-              {magpieModelGroups.map((group) => (
-                <optgroup key={group.id} label={group.label}>
-                  {group.models.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {formatMagpieModelOption(item)}
-                    </option>
+              {catalogModelGroups.length > 0
+                ? catalogModelGroups.map((group) => (
+                    <optgroup key={group.id} label={group.label}>
+                      {group.items.map((item) => (
+                        <option key={`${item.nodeId}:${item.id}`} value={item.id}>
+                          {formatCatalogModelOption(item)}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))
+                : (!selectedAgentCatalog || selectedAgentCatalog.online) &&
+                  magpieModelGroups.map((group) => (
+                    <optgroup key={group.id} label={group.label}>
+                      {group.models.map((item) => (
+                        <option key={item.id} value={item.id}>
+                          {formatMagpieModelOption(item)}
+                        </option>
+                      ))}
+                    </optgroup>
                   ))}
-                </optgroup>
-              ))}
-              {magpieCatalog && !magpieCatalog.reachable && magpieModels.length === 0 && (
+              {selectedAgentCatalog && !selectedAgentCatalog.online && (
                 <option value="" disabled>
-                  Magpie 网关暂不可达（沿用 Agent 配置）
+                  所在节点已离线（离线节点模型不可选）
                 </option>
               )}
+              {(!selectedAgentCatalog || selectedAgentCatalog.online) &&
+                catalogModelGroups.length === 0 &&
+                magpieCatalog &&
+                !magpieCatalog.reachable &&
+                magpieModels.length === 0 && (
+                  <option value="" disabled>
+                    当前节点暂无在线模型源（沿用 Agent 默认配置）
+                  </option>
+                )}
             </select>
 
             <select
@@ -1601,11 +1691,11 @@ export function AgentsView({
                 FOCUS_RING,
               )}
             >
-              <option value="low">effort: low</option>
-              <option value="medium">effort: medium</option>
-              <option value="high">effort: high</option>
-              <option value="xhigh">effort: xhigh</option>
-              <option value="max">effort: max</option>
+              {effectiveEffortOptions.map((lvl) => (
+                <option key={lvl} value={lvl}>
+                  effort: {lvl}
+                </option>
+              ))}
             </select>
           </div>
 
