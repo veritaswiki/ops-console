@@ -13,6 +13,8 @@ const REDACT_RULES = [
   { re: /\b([A-Fa-f0-9]{40,})\b/g, replace: '[REDACTED_HEX]' },
 ];
 
+const SENSITIVE_HEADER_NAME_RE = /(?:authorization|proxy-authorization|cookie|set-cookie|api[-_]?key|auth[-_]?token|access[-_]?token|x-.*(?:token|key|secret|auth)|secret|password|passwd|credential)/i;
+
 export function redactText(input) {
   if (input === null || input === undefined) return '';
   let out = String(input);
@@ -37,6 +39,63 @@ export function redactLogEntry(entry) {
   }
   if (typeof next.error === 'string') {
     next.error = redactText(next.error);
+  }
+  return next;
+}
+
+export function redactHeaders(headers) {
+  if (!headers || typeof headers !== 'object' || Array.isArray(headers)) {
+    return headers;
+  }
+  const out = {};
+  for (const [headerName, headerValue] of Object.entries(headers)) {
+    if (SENSITIVE_HEADER_NAME_RE.test(headerName)) {
+      out[headerName] = '[REDACTED]';
+    } else if (typeof headerValue === 'string') {
+      out[headerName] = redactText(headerValue);
+    } else {
+      out[headerName] = headerValue;
+    }
+  }
+  return out;
+}
+
+export function redactConfig(config) {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) {
+    return config;
+  }
+  const next = { ...config };
+  if (next.auth && typeof next.auth === 'object' && !Array.isArray(next.auth)) {
+    next.auth = {
+      ...next.auth,
+      ...(next.auth.webKey ? { webKey: '[REDACTED]' } : {}),
+    };
+  }
+  if (next.a2a && typeof next.a2a === 'object' && !Array.isArray(next.a2a)) {
+    next.a2a = {
+      ...next.a2a,
+      ...(next.a2a.sharedSecret ? { sharedSecret: '[REDACTED]' } : {}),
+    };
+  }
+  if (next.observability && typeof next.observability === 'object' && !Array.isArray(next.observability)) {
+    next.observability = {
+      ...next.observability,
+      ...(Array.isArray(next.observability.adapters)
+        ? {
+            adapters: next.observability.adapters.map((adapter) => {
+              if (!adapter || typeof adapter !== 'object' || Array.isArray(adapter)) return adapter;
+              const nextAdapter = { ...adapter };
+              if (nextAdapter.headers && typeof nextAdapter.headers === 'object' && !Array.isArray(nextAdapter.headers)) {
+                nextAdapter.headers = redactHeaders(nextAdapter.headers);
+              }
+              if (typeof nextAdapter.url === 'string') {
+                nextAdapter.url = redactText(nextAdapter.url);
+              }
+              return nextAdapter;
+            }),
+          }
+        : {}),
+    };
   }
   return next;
 }

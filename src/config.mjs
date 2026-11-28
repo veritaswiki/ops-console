@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { validateHttpUrl } from './plugins/sdk.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const PACKAGE_ROOT = path.resolve(__dirname, '..');
@@ -35,6 +36,10 @@ const VALID_RISKS = new Set(['standard', 'critical']);
 const VALID_SVC_ACTIONS = new Set(['start', 'stop', 'restart', 'reload']);
 const VALID_STORAGE_DRIVERS = new Set(['auto', 'sqlite', 'jsonl', 'memory']);
 const UNIT_RE = /^[A-Za-z0-9@._:-]{1,128}$/;
+const VALID_OBSERVABILITY_DIGEST_INTERVALS = new Set([0, 5, 15, 30, 60]);
+const VALID_OBSERVABILITY_ADAPTER_KINDS = new Set(['journald', 'file', 'docker', 'http-json', 'remote']);
+const OBSERVABILITY_ADAPTER_ID_RE = /^[a-zA-Z0-9._:-]{1,80}$/;
+const DOCKER_CONTAINER_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
 export const GIT_REMOTE_RE = /^[A-Za-z0-9._-]{1,64}$/;
 export const GIT_REF_RE = /^(?!-)(?!.*\.\.)(?!.*[\s~^:?*[\]\\])[A-Za-z0-9._/-]{1,128}$/;
 
@@ -332,6 +337,112 @@ export function validateConfig(raw) {
       }
       if (cm.decisionModel !== undefined && (typeof cm.decisionModel !== 'string' || !cm.decisionModel.trim() || /\s/.test(cm.decisionModel))) {
         errors.push(`Invalid cacheMonitor.decisionModel: ${cm.decisionModel}`);
+      }
+    }
+  }
+
+  if (raw.observability !== undefined) {
+    if (typeof raw.observability !== 'object' || Array.isArray(raw.observability) || raw.observability === null) {
+      errors.push('observability must be an object');
+    } else {
+      const obs = raw.observability;
+      const checkBoundedNumber = (fieldName, rawVal, minVal, maxVal) => {
+        if (rawVal === undefined) return;
+        if (rawVal === null || rawVal === '' || typeof rawVal === 'boolean') {
+          errors.push(`Invalid observability.${fieldName}: ${rawVal}`);
+          return;
+        }
+        const numVal = Number(rawVal);
+        if (!Number.isFinite(numVal) || numVal < minVal || numVal > maxVal) {
+          errors.push(`Invalid observability.${fieldName}: ${rawVal}`);
+        }
+      };
+
+      checkBoundedNumber('retentionDays', obs.retentionDays, 1, 90);
+      checkBoundedNumber('maxDiskMb', obs.maxDiskMb, 16, 4096);
+      checkBoundedNumber('fastScanSec', obs.fastScanSec, 10, 300);
+      checkBoundedNumber('triageDebounceSec', obs.triageDebounceSec, 15, 120);
+      checkBoundedNumber('heartbeatDigestHours', obs.heartbeatDigestHours, 0, 24);
+
+      if (obs.digestIntervalMinutes !== undefined) {
+        const isInvalidType = obs.digestIntervalMinutes === null
+          || obs.digestIntervalMinutes === ''
+          || typeof obs.digestIntervalMinutes === 'boolean';
+        const intervalVal = Number(obs.digestIntervalMinutes);
+        if (isInvalidType || !Number.isFinite(intervalVal) || !VALID_OBSERVABILITY_DIGEST_INTERVALS.has(intervalVal)) {
+          errors.push(`Invalid observability.digestIntervalMinutes: ${obs.digestIntervalMinutes}`);
+        }
+      }
+
+      if (obs.adapters !== undefined) {
+        if (!Array.isArray(obs.adapters)) {
+          errors.push('observability.adapters must be an array');
+        } else if (obs.adapters.length > 64) {
+          errors.push('observability.adapters must contain at most 64 entries');
+        } else {
+          const adapterIds = new Set();
+          for (const adapter of obs.adapters) {
+            if (!adapter || typeof adapter !== 'object' || Array.isArray(adapter)) {
+              errors.push('Each observability adapter must be an object');
+              continue;
+            }
+            const adapterId = typeof adapter.id === 'string' ? adapter.id.trim() : '';
+            if (!adapterId || !OBSERVABILITY_ADAPTER_ID_RE.test(adapterId)) {
+              errors.push(`Invalid observability adapter id: ${adapter.id}`);
+            } else if (adapterIds.has(adapterId)) {
+              errors.push(`Duplicate observability adapter id: ${adapterId}`);
+            } else {
+              adapterIds.add(adapterId);
+            }
+
+            const kind = typeof adapter.kind === 'string' ? adapter.kind.trim().toLowerCase() : '';
+            if (!VALID_OBSERVABILITY_ADAPTER_KINDS.has(kind)) {
+              errors.push(`Invalid observability adapter kind for ${adapterId || 'adapter'}: ${adapter.kind}`);
+              continue;
+            }
+
+            if (kind === 'docker') {
+              const container = typeof adapter.container === 'string' ? adapter.container.trim() : '';
+              if (!container || !DOCKER_CONTAINER_RE.test(container)) {
+                errors.push(`Invalid observability docker container for ${adapterId || 'adapter'}: ${adapter.container}`);
+              }
+            } else if (kind === 'http-json') {
+              const rawUrl = typeof adapter.url === 'string' ? adapter.url.trim() : '';
+              if (!rawUrl) {
+                errors.push(`Missing observability http-json url for ${adapterId || 'adapter'}`);
+              } else {
+                const urlCheck = validateHttpUrl(rawUrl);
+                if (!urlCheck.ok || !urlCheck.value) {
+                  errors.push(`Invalid observability http-json url for ${adapterId || 'adapter'}: ${urlCheck.error || rawUrl}`);
+                } else {
+                  try {
+                    const parsedUrl = new URL(rawUrl);
+                    if (parsedUrl.username || parsedUrl.password) {
+                      errors.push(`Observability http-json url for ${adapterId || 'adapter'} must not embed username or password`);
+                    }
+                  } catch {
+                    errors.push(`Invalid observability http-json url for ${adapterId || 'adapter'}`);
+                  }
+                }
+              }
+              if (adapter.headers !== undefined && adapter.headers !== null) {
+                if (typeof adapter.headers !== 'object' || Array.isArray(adapter.headers)) {
+                  errors.push(`Invalid observability http-json headers for ${adapterId || 'adapter'}: must be an object`);
+                }
+              }
+            } else if (kind === 'file') {
+              const filePath = typeof adapter.path === 'string' ? adapter.path.trim() : '';
+              if (!filePath || filePath.includes('\0')) {
+                errors.push(`Missing or invalid observability file path for ${adapterId || 'adapter'}`);
+              }
+            } else if (kind === 'journald') {
+              const unit = typeof adapter.unit === 'string' ? adapter.unit.trim() : '';
+              if (!unit || !UNIT_RE.test(unit)) {
+                errors.push(`Missing or invalid observability journald unit for ${adapterId || 'adapter'}: ${adapter.unit}`);
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -661,6 +772,20 @@ export function loadConfig(options = {}) {
       maxCallsPerHour: Math.min(120, Math.max(1, Math.round(Number(raw.cacheMonitor?.maxCallsPerHour ?? 12)))),
       dailyTokenBudget: Math.min(2_000_000, Math.max(1000, Math.round(Number(raw.cacheMonitor?.dailyTokenBudget ?? 120_000)))),
     },
+    observability: raw.observability !== undefined && (typeof raw.observability !== 'object' || Array.isArray(raw.observability) || raw.observability === null)
+      ? raw.observability
+      : {
+          enabled: raw.observability?.enabled !== undefined ? Boolean(raw.observability.enabled) : true,
+          retentionDays: raw.observability?.retentionDays !== undefined ? raw.observability.retentionDays : 7,
+          maxDiskMb: raw.observability?.maxDiskMb !== undefined ? raw.observability.maxDiskMb : 256,
+          fastScanSec: raw.observability?.fastScanSec !== undefined ? raw.observability.fastScanSec : 30,
+          triageDebounceSec: raw.observability?.triageDebounceSec !== undefined ? raw.observability.triageDebounceSec : 45,
+          triageEnabled: raw.observability?.triageEnabled !== undefined ? Boolean(raw.observability.triageEnabled) : true,
+          digestIntervalMinutes: raw.observability?.digestIntervalMinutes !== undefined ? raw.observability.digestIntervalMinutes : 15,
+          silentSkip: raw.observability?.silentSkip !== undefined ? Boolean(raw.observability.silentSkip) : true,
+          heartbeatDigestHours: raw.observability?.heartbeatDigestHours !== undefined ? raw.observability.heartbeatDigestHours : 6,
+          adapters: raw.observability?.adapters !== undefined ? raw.observability.adapters : [],
+        },
     agentMatchers: Array.isArray(raw.agentMatchers) && raw.agentMatchers.length > 0
       ? raw.agentMatchers
       : DEFAULT_AGENT_MATCHERS,
@@ -738,6 +863,7 @@ export function applyHotConfigUpdate(targetConfig, nextConfig) {
     'plugins',
     'updates',
     'cacheMonitor',
+    'observability',
     'agentMatchers',
   ];
   for (const section of hotSections) {

@@ -1,14 +1,25 @@
 import React from 'react';
 import { Check, RotateCcw, SlidersHorizontal } from 'lucide-react';
-import type { IncidentItem, SnapshotResponse, StatusTone } from '../types';
+import type {
+  IncidentItem,
+  LogNavigationRequest,
+  ObservabilityStatusResponse,
+  SnapshotResponse,
+  StatusTone,
+} from '../types';
 import type { CacheMonitorStatusResponse } from '../types';
-import { fetchCacheMonitorStatus } from '../api';
+import { fetchCacheMonitorStatus, fetchObservabilityStatus } from '../api';
 import {
   classifyCacheHealth,
   extractDriftClues,
   formatCacheHitPct,
   sortCacheBuckets,
 } from '../lib/cache-monitor';
+import {
+  classifyObservabilityHealth,
+  formatDigestIntervalLabel,
+  formatDiskQuota,
+} from '../lib/observability';
 import { cn, FOCUS_RING } from '../lib/cn';
 import {
   DEFAULT_OVERVIEW_PREFS,
@@ -40,6 +51,7 @@ const OVERVIEW_PREFS_KEY = 'ops-console-overview-prefs-v1';
 const PANEL_TOGGLE_ITEMS: ReadonlyArray<{ key: keyof OverviewPanelPrefs; label: string }> = [
   { key: 'metrics', label: '历史指标趋势' },
   { key: 'cache', label: '缓存命中健康' },
+  { key: 'observability', label: '联邦日志可观测' },
   { key: 'graph', label: '架构依赖图谱' },
   { key: 'connectors', label: '插件与连接器' },
   { key: 'storageEvents', label: '存储与事件' },
@@ -69,18 +81,22 @@ export function OverviewView({
   onSelectAgentCategory,
   onOpenPlugins,
   onOpenCacheMonitor,
+  onOpenObservability,
 }: {
   snapshot: SnapshotResponse | null;
   incidents?: IncidentItem[];
-  onOpenLogs: (unit: string) => void;
+  onOpenLogs: (unitOrRequest: string | LogNavigationRequest) => void;
   onSelectAgentCategory: (category: string) => void;
   onOpenPlugins?: () => void;
   onOpenCacheMonitor?: () => void;
+  onOpenObservability?: () => void;
 }) {
   const [graphFilter, setGraphFilter] = React.useState<GraphFilter>('all');
   const [customizeOpen, setCustomizeOpen] = React.useState(false);
   const [cacheStatus, setCacheStatus] = React.useState<CacheMonitorStatusResponse | null>(null);
   const [cacheError, setCacheError] = React.useState(false);
+  const [obsStatus, setObsStatus] = React.useState<ObservabilityStatusResponse | null>(null);
+  const [obsError, setObsError] = React.useState(false);
   const [panelPrefs, setPanelPrefs] = React.useState<OverviewPanelPrefs>(() => {
     try {
       return parseOverviewPrefs(window.localStorage.getItem(OVERVIEW_PREFS_KEY));
@@ -126,9 +142,44 @@ export function OverviewView({
     return () => controller.abort();
   }, [panelPrefs.cache]);
 
+  React.useEffect(() => {
+    if (!panelPrefs.observability) return;
+    const controller = new AbortController();
+    setObsError(false);
+    fetchObservabilityStatus(controller.signal)
+      .then((res) => {
+        if (!controller.signal.aborted) setObsStatus(res);
+      })
+      .catch(() => {
+        if (!controller.signal.aborted) setObsError(true);
+      });
+    return () => controller.abort();
+  }, [panelPrefs.observability]);
+
   const topCacheBuckets = React.useMemo(
     () => sortCacheBuckets(cacheStatus?.buckets || [], 'anomaly').slice(0, 5),
     [cacheStatus?.buckets],
+  );
+
+  const obsDiskQuota = React.useMemo(
+    () =>
+      formatDiskQuota(
+        obsStatus?.storage?.totalBytes ?? 0,
+        obsStatus?.config?.maxDiskMb ?? obsStatus?.storage?.maxDiskMb ?? 256,
+      ),
+    [obsStatus?.storage?.totalBytes, obsStatus?.config?.maxDiskMb, obsStatus?.storage?.maxDiskMb],
+  );
+
+  const obsHealth = React.useMemo(
+    () =>
+      classifyObservabilityHealth({
+        errorCount: obsStatus?.summary1h?.errorCount,
+        newFingerprintCount: obsStatus?.summary1h?.newFingerprintCount,
+        restartCount: obsStatus?.summary1h?.restartCount,
+        http5xxCount: obsStatus?.summary1h?.http5xxCount,
+        diskUsedPct: obsDiskQuota.pct,
+      }),
+    [obsStatus?.summary1h, obsDiskQuota.pct],
   );
 
   const host = snapshot?.host;
@@ -555,6 +606,203 @@ export function OverviewView({
                     );
                   })}
                 </div>
+              </div>
+            )}
+          </div>
+        </Panel>
+      )}
+
+      {panelPrefs.observability && (
+        <Panel
+          title="联邦日志可观测健康"
+          description={
+            obsStatus
+              ? `1h 错误 ${obsStatus.summary1h.errorCount} · 新指纹 ${obsStatus.summary1h.newFingerprintCount} · 重启 ${obsStatus.summary1h.restartCount} · 5xx ${obsStatus.summary1h.http5xxCount} · 周期巡检 ${formatDigestIntervalLabel(obsStatus.config.digestIntervalMinutes)}`
+              : '实时聚合多源只读日志错误趋势、新指纹与磁盘分片配额，支持静默跳过（0 Token）与决策模型归因。'
+          }
+          actions={
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() =>
+                  onOpenLogs({
+                    source: 'unified',
+                    target: 'all',
+                    targets: ['all'],
+                    since: '1h',
+                    level: (obsStatus?.summary1h?.errorCount ?? 0) > 0 ? 'error' : 'all',
+                  })
+                }
+                data-testid="overview-open-logs-from-obs-btn"
+              >
+                查看日志中心
+              </Button>
+              {onOpenObservability && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={onOpenObservability}
+                  data-testid="overview-open-observability-btn"
+                >
+                  可观测与归因设置
+                </Button>
+              )}
+            </div>
+          }
+          bodyClassName="p-0"
+        >
+          <div data-testid="overview-observability-panel">
+            {!obsStatus ? (
+              obsError ? (
+                <EmptyState
+                  message="暂未获取到联邦日志可观测状态，可前往设置页检查日志适配器与索引配置。"
+                  action={
+                    onOpenObservability
+                      ? { label: '打开可观测设置', onClick: onOpenObservability }
+                      : undefined
+                  }
+                />
+              ) : (
+                <div className="p-5">
+                  <WidgetSkeleton heightClass="h-[88px]" label="正在读取联邦日志可观测汇总" />
+                </div>
+              )
+            ) : (
+              <div>
+                {(() => {
+                  const latestAnn = obsStatus.recentAnnotations?.[0] || null;
+                  const latestDigest = obsStatus.recentDigests?.[0] || null;
+                  if (!latestAnn && !latestDigest) return null;
+                  const modeRaw = String(latestAnn?.mode || latestDigest?.mode || '').toLowerCase();
+                  const modeText =
+                    modeRaw === 'llm'
+                      ? '最新模型归因'
+                      : modeRaw.includes('silent') || modeRaw.includes('skip')
+                        ? '静默跳过 · 0 Token'
+                        : '最新规则归因';
+                  const sevRaw = String(latestAnn?.severity || latestDigest?.severity || 'info').toLowerCase();
+                  const sevStatus =
+                    sevRaw === 'critical' ? 'critical' : sevRaw === 'warn' ? 'warn' : 'healthy';
+                  const summaryText =
+                    latestAnn?.detail || latestAnn?.summary || latestDigest?.summary || '';
+                  const tsText = latestAnn?.isoTs || latestDigest?.ts || '';
+                  return (
+                    <div className="px-5 sm:px-6 py-2.5 border-b border-[var(--border-subtle)] bg-[var(--surface-subtle)]/55 flex flex-wrap items-center justify-between gap-2 text-[12.5px]">
+                      <div className="min-w-0 flex items-center gap-2">
+                        <StatusIndicator status={sevStatus} label={modeText} />
+                        <span className="text-[var(--ink)] truncate">{summaryText}</span>
+                      </div>
+                      {tsText && (
+                        <span className="font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums">
+                          {formatDateTime(tsText)}
+                        </span>
+                      )}
+                    </div>
+                  );
+                })()}
+
+                <div className="px-5 sm:px-6 py-4 grid grid-cols-2 lg:grid-cols-4 gap-4 text-[12.5px]">
+                  <div className="space-y-1">
+                    <div className="text-[var(--ink-muted)]">整体状态 · 1h 错误</div>
+                    <div className="flex items-center gap-2">
+                      <StatusIndicator
+                        status={
+                          obsHealth === 'critical'
+                            ? 'critical'
+                            : obsHealth === 'warn'
+                              ? 'warn'
+                              : 'healthy'
+                        }
+                        label={
+                          obsHealth === 'critical'
+                            ? '告警异常'
+                            : obsHealth === 'warn'
+                              ? '存在波动'
+                              : '健康正常'
+                        }
+                      />
+                      <span className="font-mono font-semibold text-[var(--ink)] tabular-nums">
+                        {obsStatus.summary1h.errorCount} err
+                      </span>
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-[var(--ink-muted)]">新指纹 · 警告</div>
+                    <div className="font-mono text-[var(--ink)] tabular-nums">
+                      {obsStatus.summary1h.newFingerprintCount} 指纹 · {obsStatus.summary1h.warnCount} warn
+                    </div>
+                  </div>
+                  <div className="space-y-1">
+                    <div className="text-[var(--ink-muted)]">重启 · HTTP 5xx</div>
+                    <div className="font-mono text-[var(--ink)] tabular-nums">
+                      {obsStatus.summary1h.restartCount} 重启 · {obsStatus.summary1h.http5xxCount} 5xx
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    <div className="flex items-center justify-between gap-2 text-[var(--ink-muted)]">
+                      <span>索引磁盘配额</span>
+                      <span className="font-mono text-[11.5px] text-[var(--ink)] tabular-nums">
+                        {obsDiskQuota.usedLabel} / {obsDiskQuota.capLabel}
+                      </span>
+                    </div>
+                    <div className="h-1.5 w-full rounded-full bg-[var(--surface-subtle)] overflow-hidden">
+                      <div
+                        className={cn(
+                          'h-full w-full rounded-full origin-left transition-transform duration-200 ease-out',
+                          obsDiskQuota.tone === 'crit'
+                            ? 'bg-[var(--err-dot)]'
+                            : obsDiskQuota.tone === 'warn'
+                              ? 'bg-[var(--warn-dot)]'
+                              : 'bg-[var(--ok-dot)]',
+                        )}
+                        style={{
+                          transform: `scaleX(${Math.min(100, Math.max(0, obsDiskQuota.pct)) / 100})`,
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {(obsStatus.serviceRollups || []).length > 0 && (
+                  <div className="divide-y divide-[var(--border-subtle)] border-t border-[var(--border-subtle)]">
+                    {obsStatus.serviceRollups.slice(0, 3).map((rollup) => (
+                      <div
+                        key={`${rollup.nodeId}-${rollup.serviceId}`}
+                        className="px-5 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-2 text-[12.5px]"
+                      >
+                        <div className="min-w-0 flex items-center gap-2">
+                          <span className="font-mono text-[11.5px] text-[var(--ink-subtle)]">
+                            {rollup.nodeId}
+                          </span>
+                          <span className="font-medium text-[var(--ink)] truncate">
+                            {rollup.serviceId}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-3 font-mono text-[11.5px] text-[var(--ink-muted)] tabular-nums">
+                          <span>err {rollup.errorCount}</span>
+                          <span>fp {rollup.newFingerprintCount}</span>
+                          <span>5xx {rollup.http5xxCount}</span>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() =>
+                              onOpenLogs({
+                                source: 'unified',
+                                target: rollup.serviceId,
+                                targets: [rollup.serviceId],
+                                since: '1h',
+                                level: rollup.errorCount > 0 ? 'error' : 'all',
+                              })
+                            }
+                          >
+                            日志
+                          </Button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>

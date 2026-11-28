@@ -237,6 +237,7 @@ export function auditEntriesToCsv(entries: AuditEntry[]): string {
 export interface OverviewPanelPrefs {
   metrics: boolean;
   cache: boolean;
+  observability: boolean;
   graph: boolean;
   connectors: boolean;
   storageEvents: boolean;
@@ -245,6 +246,7 @@ export interface OverviewPanelPrefs {
 export const DEFAULT_OVERVIEW_PREFS: OverviewPanelPrefs = {
   metrics: true,
   cache: true,
+  observability: true,
   graph: true,
   connectors: true,
   storageEvents: true,
@@ -257,6 +259,7 @@ export function parseOverviewPrefs(raw: string | null | undefined): OverviewPane
     return {
       metrics: typeof parsed.metrics === 'boolean' ? parsed.metrics : true,
       cache: typeof parsed.cache === 'boolean' ? parsed.cache : true,
+      observability: typeof parsed.observability === 'boolean' ? parsed.observability : true,
       graph: typeof parsed.graph === 'boolean' ? parsed.graph : true,
       connectors: typeof parsed.connectors === 'boolean' ? parsed.connectors : true,
       storageEvents: typeof parsed.storageEvents === 'boolean' ? parsed.storageEvents : true,

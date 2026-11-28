@@ -529,6 +529,18 @@
     "maxCallsPerHour": 12,
     "dailyTokenBudget": 120000
   },
+  "observability": {
+    "enabled": true,
+    "retentionDays": 7,
+    "maxDiskMb": 256,
+    "fastScanSec": 30,
+    "triageDebounceSec": 45,
+    "triageEnabled": true,
+    "digestIntervalMinutes": 15,
+    "silentSkip": true,
+    "heartbeatDigestHours": 6,
+    "adapters": []
+  },
   "agentMatchers": [
     {
       "category": "orchestrator",

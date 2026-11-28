@@ -1638,6 +1638,7 @@ export function App() {
                       onSelectAgentCategory={handleSelectAgentCategory}
                       onOpenPlugins={() => handleSelectView('plugins')}
                       onOpenCacheMonitor={() => handleSelectView('agent-settings', 'cache')}
+                      onOpenObservability={() => handleSelectView('agent-settings', 'observability')}
                     />
                   )}
                   {view === 'alerts' && (
@@ -1770,6 +1771,7 @@ export function App() {
                         setAgentCategory(cat);
                       }}
                       onSelectPid={setAgentPid}
+                      onOpenLogs={handleOpenLogs}
                       onSnapshotChanged={() => void loadSnapshot(true)}
                       onToast={pushToast}
                       onConfirm={setConfirmState}

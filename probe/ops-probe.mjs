@@ -19,6 +19,34 @@ const HTTP_TIMEOUT_MS = 8000;
 const MAX_BACKOFF_MS = 5 * 60 * 1000;
 const DEFAULT_CPU_SAMPLE_MS = 250;
 const WATCH_SERVICE_RE = /^[A-Za-z0-9@._:-]{1,128}$/;
+const DOCKER_CONTAINER_RE = /^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$/;
+const PROBE_LOG_READ_SINCE_ALLOWLIST = new Set(['5m', '15m', '30m', '1h', '6h', '24h']);
+const PROBE_LOG_TELEMETRY_MAX_SERVICES = 24;
+const PROBE_LOG_TELEMETRY_MAX_FINGERPRINTS = 24;
+const PROBE_LOG_TELEMETRY_FILE_MAX_BYTES = 64 * 1024;
+const PROBE_LOG_READ_FILE_MAX_BYTES = 128 * 1024;
+const PROBE_LOG_SEEN_FP_CAP = 2048;
+const PROBE_LOG_LEVEL_PRIORITY = {
+  emerg: 0,
+  alert: 1,
+  crit: 2,
+  err: 3,
+  error: 3,
+  warn: 4,
+  warning: 4,
+  notice: 5,
+  info: 6,
+  debug: 7,
+};
+const PROBE_LOG_RESTART_PATTERNS = [
+  /\b(?:restarting|restarted|scheduled restart job|started .*service|stopped .*service|main process exited|oom[- ]?kill|killed with signal|exited with code [1-9])\b/i,
+  /\b(?:sigterm|sigkill|sigsegv|crashloop|backoff)\b/i,
+];
+const PROBE_LOG_HTTP_5XX_PATTERNS = [
+  /\bHTTP\/[12](?:\.[01])?["']?\s+5\d{2}\b/i,
+  /\b(?:status|code|statusCode|http_status)[=:\s"]+5\d{2}\b/i,
+  /\b50[0234]\s+(?:internal server error|bad gateway|service unavailable|gateway timeout)\b/i,
+];
 const DEVICE_TYPES = new Set(['hub', 'server', 'edge', 'laptop', 'mobile', 'auto']);
 const A2A_PROTOCOL_VERSION = '0.3.0';
 const DEFAULT_A2A_PORT = 9104;
@@ -1303,6 +1331,7 @@ export async function startA2APeerServer(config = {}, options = {}) {
   const workspaceRoot = options.workspaceRoot ?? a2aCfg.workspaceRoot ?? null;
   const nodeId = String(config.nodeId || os.hostname().toLowerCase());
   const hostname = os.hostname();
+  const execFn = typeof options.runExecFile === 'function' ? options.runExecFile : runExecFile;
 
   const tasks = new Map();
   const peerMetricsState = { prevCpu: null, prevNet: null, lastHubRttMs: null };
@@ -1563,6 +1592,27 @@ export async function startA2APeerServer(config = {}, options = {}) {
           return;
         }
 
+        if (rpcMethod === 'logs/read') {
+          const readOutcome = await handlePeerLogsRead(params, config, { runExecFileFn: execFn });
+          if (!readOutcome.ok) {
+            sendPeerJson(res, readOutcome.httpStatus || 400, {
+              jsonrpc: '2.0',
+              id: reqId,
+              error: {
+                code: readOutcome.rpcCode ?? -32602,
+                message: readOutcome.message || 'Invalid logs/read parameters',
+              },
+            });
+            return;
+          }
+          sendPeerJson(res, 200, {
+            jsonrpc: '2.0',
+            id: reqId,
+            result: readOutcome.result,
+          });
+          return;
+        }
+
         sendPeerJson(res, 404, {
           jsonrpc: '2.0',
           id: reqId,
@@ -1734,6 +1784,13 @@ export async function collectProbeMetrics(config = {}, state = {}) {
       });
 
   const cacheTelemetry = await collectLocalCacheTelemetry(config, { nowFn: () => nowMs }).catch(() => null);
+  if (!state.seenLogFingerprints) {
+    state.seenLogFingerprints = new Set();
+  }
+  const logTelemetry = await collectLocalLogTelemetry(config, {
+    nowFn: () => nowMs,
+    seenFingerprints: state.seenLogFingerprints,
+  }).catch(() => null);
 
   return {
     schemaVersion: SCHEMA_VERSION,
@@ -1766,6 +1823,7 @@ export async function collectProbeMetrics(config = {}, state = {}) {
     models: modelDiscovery.models,
     agentBindings: modelDiscovery.agentBindings,
     cache: cacheTelemetry,
+    logs: logTelemetry,
     hubRttMs,
   };
 }
@@ -2015,6 +2073,9 @@ export async function loadProbeConfig(options = {}) {
     intervalSec,
     mounts: mounts.length > 0 ? mounts : ['/'],
     watchServices,
+    services: Array.isArray(fileConfig.services) ? fileConfig.services.slice(0, 32) : [],
+    logFiles: Array.isArray(fileConfig.logFiles) ? fileConfig.logFiles.slice(0, 32) : [],
+    collectLogs: fileConfig.collectLogs !== false,
     detectAgents,
     mcps,
     harnesses,
@@ -2548,5 +2609,658 @@ export async function collectLocalCacheTelemetry(config = {}, options = {}) {
     cacheHitPct: computeProbeCacheHitPct(totalIn, totalCacheRead, totalCacheWrite),
     avgTtftMs: totalTtftCount > 0 ? Math.round(totalTtft / totalTtftCount) : 0,
     buckets: buckets.slice(0, LOCAL_CACHE_MAX_BUCKETS),
+  };
+}
+
+function scrubProbeLogText(input) {
+  if (input === null || input === undefined) return '';
+  return String(input)
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]')
+    .replace(PROBE_SECRET_RE, '[REDACTED]')
+    .replace(/\bops_prb_[A-Za-z0-9_-]{8,}\b/g, '[REDACTED_PROBE_TOKEN]')
+    .replace(/\btskey-[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_TS_KEY]')
+    .replace(/\bgh[pousr]_[A-Za-z0-9_-]{12,}\b/g, '[REDACTED_GH_TOKEN]')
+    .replace(/([?&](?:k|key|token|api_key|apikey|secret|access_token)=)[^&\s"'<>]+/gi, '$1[REDACTED]')
+    .replace(/(--?(?:api[-_]?key|token|secret|password|passwd|web[-_]?key|auth[-_]?key)[=\s]+)(?:"[^"]*"|'[^']*'|[^\s]+)/gi, '$1[REDACTED]')
+    .replace(/((?:authorization|x-api-key|x-auth-token|cookie|set-cookie)\s*:\s*)[^\r\n]+/gi, '$1[REDACTED]')
+    .replace(PROBE_EMAIL_RE, (match) => (/\.(?:service|socket|timer|target|mount|slice|scope)$/i.test(match) ? match : '[REDACTED_EMAIL]'))
+    .replace(/\b[A-Fa-f0-9]{40,}\b/g, '[REDACTED_HEX]');
+}
+
+function normalizeProbeLogLevel(rawLevel, fallbackPriority = 6) {
+  const lowered = String(rawLevel || '').trim().toLowerCase();
+  if (lowered in PROBE_LOG_LEVEL_PRIORITY) {
+    const priority = PROBE_LOG_LEVEL_PRIORITY[lowered];
+    const level = priority <= 2 ? 'crit' : priority === 3 ? 'err' : priority === 4 ? 'warn' : priority === 5 ? 'notice' : priority === 6 ? 'info' : 'debug';
+    return { level, priority };
+  }
+  const numeric = Number(rawLevel);
+  if (Number.isInteger(numeric) && numeric >= 0 && numeric <= 7) {
+    const level = numeric <= 2 ? 'crit' : numeric === 3 ? 'err' : numeric === 4 ? 'warn' : numeric === 5 ? 'notice' : numeric === 6 ? 'info' : 'debug';
+    return { level, priority: numeric };
+  }
+  const clamped = Number.isInteger(fallbackPriority) ? Math.max(0, Math.min(7, fallbackPriority)) : 6;
+  const level = clamped <= 2 ? 'crit' : clamped === 3 ? 'err' : clamped === 4 ? 'warn' : clamped === 5 ? 'notice' : clamped === 6 ? 'info' : 'debug';
+  return { level, priority: clamped };
+}
+
+function inferProbeLogLevel(text = '') {
+  const sample = String(text || '');
+  if (/\b(?:panic|fatal|emerg|critical|crit|oom[- ]?kill)\b/i.test(sample)) return { level: 'crit', priority: 2 };
+  if (/\b(?:error|err|exception|traceback|failed|failure|econnrefused|etimedout|50[0234])\b/i.test(sample)) return { level: 'err', priority: 3 };
+  if (/\b(?:warn|warning|deprecated|retry|timeout|throttl|slow)\b/i.test(sample)) return { level: 'warn', priority: 4 };
+  if (/\b(?:debug|trace)\b/i.test(sample)) return { level: 'debug', priority: 7 };
+  return { level: 'info', priority: 6 };
+}
+
+function isProbeRestartMessage(message = '') {
+  const text = String(message || '');
+  return PROBE_LOG_RESTART_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function isProbeHttp5xxMessage(message = '') {
+  const text = String(message || '');
+  return PROBE_LOG_HTTP_5XX_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+function normalizeProbeLogFingerprint(rawMessage) {
+  const cleaned = scrubProbeLogText(String(rawMessage || ''))
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 500);
+
+  if (!cleaned) {
+    return { fingerprint: 'fp-empty', template: '' };
+  }
+
+  const template = cleaned
+    .replace(/\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?\b/g, '<TS>')
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, '<UUID>')
+    .replace(/\b0x[0-9a-f]{4,}\b/gi, '<HEX>')
+    .replace(/\b[0-9a-f]{16,}\b/gi, '<HASH>')
+    .replace(/\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b/g, '<IP>')
+    .replace(/\[(?:[0-9a-f:]+)\](?::\d+)?/gi, '<IP6>')
+    .replace(/\b(?:pid|req|request|session|trace|span|port|line|offset|id|fd)[=:\s#]+[\w.-]+/gi, (match) => {
+      const sepIndex = match.search(/[=:\s#]/);
+      return sepIndex > 0 ? `${match.slice(0, sepIndex)}=<ID>` : '<ID>';
+    })
+    .replace(/\/(?:[\w.-]+\/){2,}[\w.-]+/g, '<PATH>')
+    .replace(/\b\d+(?:\.\d+)?(?:ms|us|ns|s|kb|mb|gb|bytes|b|%)\b/gi, '<NUM>')
+    .replace(/\b\d{2,}\b/g, '<N>')
+    .slice(0, 220);
+
+  const digest = crypto.createHash('sha256').update(template).digest('hex').slice(0, 16);
+  return {
+    fingerprint: `fp-${digest}`,
+    template,
+  };
+}
+
+function parseProbeGenericLogLine(rawLine, fallbackTsIso) {
+  const trimmed = String(rawLine || '').trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+    try {
+      const parsedObj = JSON.parse(trimmed);
+      if (parsedObj && typeof parsedObj === 'object') {
+        const message = parsedObj.message || parsedObj.msg || parsedObj.error || parsedObj.text || JSON.stringify(parsedObj);
+        const rawTs = parsedObj.ts || parsedObj.timestamp || parsedObj.time || parsedObj.when || fallbackTsIso;
+        const rawLevel = parsedObj.level || parsedObj.severity || parsedObj.lvl || null;
+        return { ts: rawTs, level: rawLevel, priority: parsedObj.priority ?? null, message: String(message) };
+      }
+    } catch {
+      // fall back to plain text parsing
+    }
+  }
+  const isoMatch = trimmed.match(/^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2})?)\s+(.*)$/);
+  if (isoMatch) {
+    return { ts: isoMatch[1], level: null, priority: null, message: isoMatch[2] };
+  }
+  return { ts: fallbackTsIso, level: null, priority: null, message: trimmed };
+}
+
+function parseProbeJournaldEntries(stdoutText, { unit, serviceId, sourceId, fallbackTsIso }) {
+  const entries = [];
+  const rawLines = String(stdoutText || '').split(/\r?\n/);
+  for (const line of rawLines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      const parsedObj = JSON.parse(trimmed);
+      const rawMessage = Array.isArray(parsedObj.MESSAGE)
+        ? Buffer.from(parsedObj.MESSAGE).toString('utf8')
+        : String(parsedObj.MESSAGE ?? '');
+      const message = scrubProbeLogText(rawMessage.trim()).slice(0, 2000);
+      if (!message) continue;
+      const usec = Number(parsedObj.__REALTIME_TIMESTAMP);
+      const tsIso = Number.isFinite(usec) && usec > 0
+        ? new Date(Math.floor(usec / 1000)).toISOString()
+        : fallbackTsIso;
+      const rawPriority = Number.isInteger(Number(parsedObj.PRIORITY)) ? Number(parsedObj.PRIORITY) : 6;
+      const resolved = normalizeProbeLogLevel(rawPriority, 6);
+      const resolvedUnit = scrubProbeLogText(String(parsedObj._SYSTEMD_UNIT || parsedObj.SYSLOG_IDENTIFIER || unit)).slice(0, 120);
+      entries.push({
+        ts: tsIso,
+        level: resolved.level,
+        priority: resolved.priority,
+        unit: resolvedUnit || unit,
+        serviceId: scrubProbeLogText(String(serviceId || unit)).slice(0, 120),
+        message,
+        sourceId: scrubProbeLogText(String(sourceId || unit)).slice(0, 160),
+      });
+    } catch {
+      // skip malformed JSON lines
+    }
+  }
+  return entries;
+}
+
+async function readBoundedFileTail(filePath, maxBytes) {
+  let resolvedPath;
+  try {
+    resolvedPath = await fs.realpath(path.resolve(String(filePath)));
+  } catch (err) {
+    return { ok: false, error: err?.code === 'ENOENT' ? 'Log file not found' : String(err?.message || err), text: '', truncated: false, mtimeMs: Date.now() };
+  }
+
+  let handle;
+  try {
+    handle = await fs.open(resolvedPath, 'r');
+    const stat = await handle.stat();
+    if (!stat.isFile()) {
+      return { ok: false, error: 'Log target is not a regular file', text: '', truncated: false, mtimeMs: Date.now() };
+    }
+    if (stat.size <= 0) {
+      return { ok: true, text: '', truncated: false, mtimeMs: stat.mtimeMs || Date.now() };
+    }
+    const readLength = Math.min(stat.size, maxBytes);
+    const truncated = stat.size > maxBytes;
+    const startOffset = stat.size - readLength;
+    const buffer = Buffer.allocUnsafe(readLength);
+    const { bytesRead } = await handle.read(buffer, 0, readLength, startOffset);
+    let text = buffer.subarray(0, bytesRead).toString('utf8');
+    if (startOffset > 0) {
+      const firstNewline = text.indexOf('\n');
+      if (firstNewline >= 0) text = text.slice(firstNewline + 1);
+    }
+    return { ok: true, text, truncated, mtimeMs: stat.mtimeMs || Date.now() };
+  } catch (err) {
+    return { ok: false, error: String(err?.message || err), text: '', truncated: false, mtimeMs: Date.now() };
+  } finally {
+    if (handle) await handle.close().catch(() => {});
+  }
+}
+
+function collectNormalizedWatchTargets(config = {}) {
+  const targets = [];
+  const seenUnits = new Set();
+  const rawSources = [
+    ...(Array.isArray(config.services) ? config.services : []),
+    ...(Array.isArray(config.watchServices) ? config.watchServices : []),
+  ];
+
+  for (const entry of rawSources) {
+    if (targets.length >= PROBE_LOG_TELEMETRY_MAX_SERVICES) break;
+    let unit = '';
+    let serviceId = '';
+    let isUser = false;
+    if (typeof entry === 'string') {
+      unit = entry.trim();
+      serviceId = unit;
+    } else if (entry && typeof entry === 'object') {
+      if (entry.launchd) continue;
+      unit = String(entry.unit || entry.name || '').trim();
+      serviceId = String(entry.id || entry.serviceId || unit).trim();
+      isUser = Boolean(entry.user || entry.scope === 'user');
+    }
+    if (!unit || !WATCH_SERVICE_RE.test(unit) || seenUnits.has(unit)) continue;
+    seenUnits.add(unit);
+    targets.push({ unit, serviceId: serviceId || unit, user: isUser });
+  }
+
+  return targets;
+}
+
+function collectNormalizedLogFiles(config = {}) {
+  const entries = [];
+  if (!Array.isArray(config.logFiles)) return entries;
+  for (const rawEntry of config.logFiles) {
+    if (entries.length >= 32) break;
+    if (typeof rawEntry === 'string') {
+      const filePath = rawEntry.trim();
+      if (!filePath || filePath.includes('\0')) continue;
+      const baseId = path.basename(filePath) || `file-${entries.length + 1}`;
+      entries.push({ id: baseId, name: baseId, serviceId: baseId, path: filePath });
+      continue;
+    }
+    if (!rawEntry || typeof rawEntry !== 'object') continue;
+    const filePath = String(rawEntry.path || '').trim();
+    if (!filePath || filePath.includes('\0')) continue;
+    const baseName = path.basename(filePath) || `file-${entries.length + 1}`;
+    const entryId = String(rawEntry.id || rawEntry.name || baseName).trim();
+    entries.push({
+      id: entryId,
+      name: String(rawEntry.name || entryId).trim(),
+      serviceId: String(rawEntry.serviceId || entryId).trim(),
+      path: filePath,
+    });
+  }
+  return entries;
+}
+
+function buildFilteredProbeLogEntries(entries, { level = 'all', queryText = '', limit = 150 }) {
+  const cleanLevel = String(level || 'all').trim().toLowerCase();
+  const maxPriority = cleanLevel !== 'all' && cleanLevel in PROBE_LOG_LEVEL_PRIORITY
+    ? PROBE_LOG_LEVEL_PRIORITY[cleanLevel]
+    : 7;
+  const loweredQuery = String(queryText || '').trim().toLowerCase().slice(0, 120);
+
+  const filtered = [];
+  for (const entry of entries) {
+    if (!entry) continue;
+    if (maxPriority < 7 && Number(entry.priority ?? 6) > maxPriority) continue;
+    if (loweredQuery) {
+      const haystack = `${entry.unit || ''} ${entry.serviceId || ''} ${entry.message || ''}`.toLowerCase();
+      if (!haystack.includes(loweredQuery)) continue;
+    }
+    filtered.push({
+      ts: entry.ts,
+      level: entry.level,
+      priority: entry.priority,
+      unit: entry.unit,
+      serviceId: entry.serviceId,
+      message: entry.message,
+      sourceId: entry.sourceId,
+    });
+  }
+  const truncatedByLimit = filtered.length > limit;
+  return {
+    entries: filtered.slice(-limit),
+    truncatedByLimit,
+  };
+}
+
+export async function collectLocalLogTelemetry(config = {}, options = {}) {
+  if (config.collectLogs === false) return null;
+
+  const nowMs = typeof options.nowFn === 'function' ? options.nowFn() : Date.now();
+  const fallbackTsIso = new Date(nowMs).toISOString();
+  const execFn = typeof options.runExecFile === 'function'
+    ? options.runExecFile
+    : (typeof options.runCmdFn === 'function' ? options.runCmdFn : runExecFile);
+  const platform = options.platform || process.platform;
+  const seenFingerprints = options.seenFingerprints instanceof Set ? options.seenFingerprints : new Set();
+
+  const serviceStatsByKey = new Map();
+  const fingerprintAggMap = new Map();
+
+  const ensureServiceCounter = (serviceId, unit) => {
+    const cleanServiceId = scrubProbeLogText(String(serviceId || unit || 'service')).slice(0, 120) || 'service';
+    let counter = serviceStatsByKey.get(cleanServiceId);
+    if (!counter) {
+      if (serviceStatsByKey.size >= PROBE_LOG_TELEMETRY_MAX_SERVICES) return null;
+      counter = {
+        serviceId: cleanServiceId,
+        ...(unit ? { unit: String(unit).slice(0, 128) } : {}),
+        errorCount: 0,
+        warnCount: 0,
+        newFingerprintCount: 0,
+        restartCount: 0,
+        http5xxCount: 0,
+        totalScanned: 0,
+      };
+      serviceStatsByKey.set(cleanServiceId, counter);
+    }
+    return counter;
+  };
+
+  const ingestEntry = (entry, unitHint) => {
+    const counter = ensureServiceCounter(entry.serviceId, unitHint);
+    if (!counter) return;
+    counter.totalScanned += 1;
+    if (entry.level === 'crit' || entry.level === 'err') {
+      counter.errorCount += 1;
+    } else if (entry.level === 'warn') {
+      counter.warnCount += 1;
+    }
+    if (isProbeRestartMessage(entry.message)) {
+      counter.restartCount += 1;
+    }
+    if (isProbeHttp5xxMessage(entry.message)) {
+      counter.http5xxCount += 1;
+    }
+
+    if (entry.level === 'crit' || entry.level === 'err') {
+      const { fingerprint, template } = normalizeProbeLogFingerprint(entry.message);
+      if (fingerprint && fingerprint !== 'fp-empty') {
+        const seenKey = `${counter.serviceId}|${fingerprint}`;
+        if (!seenFingerprints.has(seenKey)) {
+          if (seenFingerprints.size >= PROBE_LOG_SEEN_FP_CAP) {
+            const oldestKey = seenFingerprints.values().next().value;
+            seenFingerprints.delete(oldestKey);
+          }
+          seenFingerprints.add(seenKey);
+          counter.newFingerprintCount += 1;
+        }
+        const existingFp = fingerprintAggMap.get(seenKey);
+        if (existingFp) {
+          existingFp.count += 1;
+          if (entry.level === 'crit') existingFp.level = 'crit';
+        } else {
+          fingerprintAggMap.set(seenKey, {
+            fingerprint,
+            serviceId: counter.serviceId,
+            sourceId: scrubProbeLogText(String(entry.sourceId || counter.serviceId)).slice(0, 160),
+            level: entry.level,
+            template,
+            sampleRedacted: scrubProbeLogText(entry.message).replace(/\s+/g, ' ').trim().slice(0, 280),
+            count: 1,
+          });
+        }
+      }
+    }
+  };
+
+  const watchTargets = collectNormalizedWatchTargets(config);
+  if (platform === 'linux' && watchTargets.length > 0) {
+    for (const target of watchTargets) {
+      const args = target.user
+        ? ['--user', '-u', target.unit, '-n', '80', '--since', '-5m', '-o', 'json', '--no-pager']
+        : ['-u', target.unit, '-n', '80', '--since', '-5m', '-o', 'json', '--no-pager'];
+      const cmdRes = await execFn('journalctl', args, { timeout: 3000, maxBuffer: 1024 * 1024 });
+      if (!cmdRes?.ok) {
+        if (cmdRes?.errorCode === 'ENOENT') break;
+        continue;
+      }
+      const parsedEntries = parseProbeJournaldEntries(cmdRes.stdout, {
+        unit: target.unit,
+        serviceId: target.serviceId,
+        sourceId: target.unit,
+        fallbackTsIso,
+      });
+      for (const entry of parsedEntries) {
+        ingestEntry(entry, target.unit);
+      }
+    }
+  }
+
+  const logFiles = collectNormalizedLogFiles(config);
+  for (const logFile of logFiles) {
+    if (serviceStatsByKey.size >= PROBE_LOG_TELEMETRY_MAX_SERVICES && !serviceStatsByKey.has(logFile.serviceId)) {
+      break;
+    }
+    const tailRes = await readBoundedFileTail(logFile.path, PROBE_LOG_TELEMETRY_FILE_MAX_BYTES);
+    if (!tailRes.ok || !tailRes.text) continue;
+    const fileFallbackIso = new Date(tailRes.mtimeMs || nowMs).toISOString();
+    const lines = tailRes.text.split(/\r?\n/).filter(Boolean).slice(-200);
+    for (const rawLine of lines) {
+      const parsedLine = parseProbeGenericLogLine(rawLine, fileFallbackIso);
+      if (!parsedLine) continue;
+      const safeMessage = scrubProbeLogText(parsedLine.message.trim()).slice(0, 2000);
+      if (!safeMessage) continue;
+      const resolved = parsedLine.level || parsedLine.priority !== null
+        ? normalizeProbeLogLevel(parsedLine.level ?? parsedLine.priority, 6)
+        : inferProbeLogLevel(safeMessage);
+      const parsedTs = Date.parse(String(parsedLine.ts || ''));
+      const tsIso = Number.isFinite(parsedTs) ? new Date(parsedTs).toISOString() : fileFallbackIso;
+      ingestEntry({
+        ts: tsIso,
+        level: resolved.level,
+        priority: resolved.priority,
+        unit: logFile.name,
+        serviceId: logFile.serviceId,
+        message: safeMessage,
+        sourceId: logFile.id,
+      });
+    }
+  }
+
+  const services = Array.from(serviceStatsByKey.values())
+    .filter((svc) => svc.totalScanned > 0)
+    .slice(0, PROBE_LOG_TELEMETRY_MAX_SERVICES);
+  const fingerprints = Array.from(fingerprintAggMap.values())
+    .sort((left, right) => right.count - left.count || left.fingerprint.localeCompare(right.fingerprint))
+    .slice(0, PROBE_LOG_TELEMETRY_MAX_FINGERPRINTS);
+
+  if (services.length === 0 && fingerprints.length === 0) {
+    return null;
+  }
+
+  return {
+    collectedAt: new Date(nowMs).toISOString(),
+    windowMinutes: 5,
+    services,
+    fingerprints,
+  };
+}
+
+async function handlePeerLogsRead(params = {}, config = {}, options = {}) {
+  const sourceKind = String(params.sourceKind || '').trim().toLowerCase();
+  if (sourceKind !== 'journald' && sourceKind !== 'file' && sourceKind !== 'docker') {
+    return {
+      ok: false,
+      httpStatus: 400,
+      rpcCode: -32602,
+      message: `Invalid sourceKind: ${sourceKind || '(empty)'}; expected journald, file, or docker`,
+    };
+  }
+
+  const rawSince = params.since === undefined || params.since === null || String(params.since).trim() === ''
+    ? '15m'
+    : String(params.since).trim();
+  if (!PROBE_LOG_READ_SINCE_ALLOWLIST.has(rawSince)) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      rpcCode: -32602,
+      message: `Invalid since window: ${rawSince}; allowed values are 5m, 15m, 30m, 1h, 6h, 24h`,
+    };
+  }
+
+  const rawLimit = Number(params.limit);
+  const limit = Number.isFinite(rawLimit)
+    ? Math.max(10, Math.min(300, Math.round(rawLimit)))
+    : 150;
+  const level = String(params.level || 'all').trim().toLowerCase();
+  const queryText = String(params.q || '').trim().slice(0, 120);
+  const target = String(params.target || '').trim();
+  const execFn = typeof options.runExecFileFn === 'function' ? options.runExecFileFn : runExecFile;
+  const fallbackTsIso = new Date().toISOString();
+
+  if (sourceKind === 'journald') {
+    if (!target || !WATCH_SERVICE_RE.test(target)) {
+      return {
+        ok: false,
+        httpStatus: 400,
+        rpcCode: -32602,
+        message: `Invalid systemd unit target: ${target || '(empty)'}`,
+      };
+    }
+    const watchTargets = collectNormalizedWatchTargets(config);
+    const matchedWatch = watchTargets.find((item) => item.unit === target || item.serviceId === target);
+    const unitName = matchedWatch?.unit || target;
+    const isUserScope = Boolean(params.user === true || matchedWatch?.user);
+    const args = [
+      ...(isUserScope ? ['--user'] : []),
+      '-u', unitName,
+      '-n', String(limit),
+      '--since', `-${rawSince}`,
+      '-o', 'json',
+      '--no-pager',
+    ];
+    const cmdRes = await execFn('journalctl', args, { timeout: 4000, maxBuffer: 2 * 1024 * 1024 });
+    if (!cmdRes?.ok) {
+      return {
+        ok: false,
+        httpStatus: 200,
+        rpcCode: -32001,
+        message: scrubProbeLogText(cmdRes?.stderr || cmdRes?.errorCode || 'journalctl read failed').slice(0, 240),
+      };
+    }
+    const parsedEntries = parseProbeJournaldEntries(cmdRes.stdout, {
+      unit: unitName,
+      serviceId: matchedWatch?.serviceId || target,
+      sourceId: unitName,
+      fallbackTsIso,
+    });
+    const filtered = buildFilteredProbeLogEntries(parsedEntries, { level, queryText, limit });
+    const sources = watchTargets.length > 0 ? watchTargets.map((item) => item.unit) : [target];
+    return {
+      ok: true,
+      result: {
+        entries: filtered.entries,
+        sources,
+        truncated: filtered.truncatedByLimit || parsedEntries.length >= limit,
+      },
+    };
+  }
+
+  if (sourceKind === 'file') {
+    if (!target) {
+      return {
+        ok: false,
+        httpStatus: 400,
+        rpcCode: -32602,
+        message: 'Missing log file target',
+      };
+    }
+    const declaredFiles = collectNormalizedLogFiles(config);
+    const resolvedTargetPath = path.resolve(target);
+    let canonicalTargetPath = null;
+    try {
+      canonicalTargetPath = await fs.realpath(resolvedTargetPath);
+    } catch {
+      canonicalTargetPath = null;
+    }
+
+    let matchedFile = null;
+    for (const declared of declaredFiles) {
+      if (declared.id === target) {
+        matchedFile = declared;
+        break;
+      }
+      const resolvedDeclaredPath = path.resolve(declared.path);
+      if (resolvedDeclaredPath === resolvedTargetPath) {
+        matchedFile = declared;
+        break;
+      }
+      if (canonicalTargetPath) {
+        try {
+          const canonicalDeclaredPath = await fs.realpath(resolvedDeclaredPath);
+          if (canonicalDeclaredPath === canonicalTargetPath) {
+            matchedFile = declared;
+            break;
+          }
+        } catch {
+          // skip unresolvable declared path
+        }
+      }
+    }
+
+    if (!matchedFile) {
+      return {
+        ok: false,
+        httpStatus: 400,
+        rpcCode: -32602,
+        message: 'Requested file target is not declared in probe config.logFiles',
+      };
+    }
+
+    const tailRes = await readBoundedFileTail(matchedFile.path, PROBE_LOG_READ_FILE_MAX_BYTES);
+    if (!tailRes.ok) {
+      return {
+        ok: false,
+        httpStatus: 200,
+        rpcCode: -32001,
+        message: scrubProbeLogText(tailRes.error || 'Failed to read log file').slice(0, 240),
+      };
+    }
+    const fileFallbackIso = new Date(tailRes.mtimeMs || Date.now()).toISOString();
+    const rawLines = tailRes.text.split(/\r?\n/).filter(Boolean);
+    const parsedEntries = [];
+    for (const rawLine of rawLines) {
+      const parsedLine = parseProbeGenericLogLine(rawLine, fileFallbackIso);
+      if (!parsedLine) continue;
+      const safeMessage = scrubProbeLogText(parsedLine.message.trim()).slice(0, 2000);
+      if (!safeMessage) continue;
+      const resolved = parsedLine.level || parsedLine.priority !== null
+        ? normalizeProbeLogLevel(parsedLine.level ?? parsedLine.priority, 6)
+        : inferProbeLogLevel(safeMessage);
+      const parsedTs = Date.parse(String(parsedLine.ts || ''));
+      const tsIso = Number.isFinite(parsedTs) ? new Date(parsedTs).toISOString() : fileFallbackIso;
+      parsedEntries.push({
+        ts: tsIso,
+        level: resolved.level,
+        priority: resolved.priority,
+        unit: scrubProbeLogText(matchedFile.name).slice(0, 120),
+        serviceId: scrubProbeLogText(matchedFile.serviceId).slice(0, 120),
+        message: safeMessage,
+        sourceId: scrubProbeLogText(matchedFile.id).slice(0, 160),
+      });
+    }
+    const filtered = buildFilteredProbeLogEntries(parsedEntries, { level, queryText, limit });
+    return {
+      ok: true,
+      result: {
+        entries: filtered.entries,
+        sources: declaredFiles.map((item) => item.id),
+        truncated: Boolean(tailRes.truncated || filtered.truncatedByLimit),
+      },
+    };
+  }
+
+  if (!target || !DOCKER_CONTAINER_RE.test(target)) {
+    return {
+      ok: false,
+      httpStatus: 400,
+      rpcCode: -32602,
+      message: `Invalid docker container target: ${target || '(empty)'}`,
+    };
+  }
+
+  const dockerArgs = ['logs', '--timestamps', '--tail', String(limit), '--since', rawSince, target];
+  const cmdRes = await execFn('docker', dockerArgs, { timeout: 4000, maxBuffer: 2 * 1024 * 1024 });
+  if (!cmdRes?.ok) {
+    return {
+      ok: false,
+      httpStatus: 200,
+      rpcCode: -32001,
+      message: scrubProbeLogText(cmdRes?.stderr || cmdRes?.errorCode || 'docker logs failed').slice(0, 240),
+    };
+  }
+
+  const combined = [cmdRes.stdout || '', cmdRes.stderr || ''].filter(Boolean).join('\n');
+  const rawLines = combined.split(/\r?\n/).filter(Boolean);
+  const parsedEntries = [];
+  for (const rawLine of rawLines) {
+    const tsMatch = rawLine.match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:?\d{2}))\s+(.*)$/);
+    const rawTs = tsMatch ? tsMatch[1] : fallbackTsIso;
+    const rawMsg = tsMatch ? tsMatch[2] : rawLine;
+    const parsedLine = parseProbeGenericLogLine(rawMsg, rawTs);
+    const safeMessage = scrubProbeLogText(String(parsedLine?.message || rawMsg).trim()).slice(0, 2000);
+    if (!safeMessage) continue;
+    const resolved = parsedLine?.level || (parsedLine?.priority !== null && parsedLine?.priority !== undefined)
+      ? normalizeProbeLogLevel(parsedLine.level ?? parsedLine.priority, 6)
+      : inferProbeLogLevel(safeMessage);
+    const parsedTs = Date.parse(String(parsedLine?.ts || rawTs));
+    const tsIso = Number.isFinite(parsedTs) ? new Date(parsedTs).toISOString() : fallbackTsIso;
+    parsedEntries.push({
+      ts: tsIso,
+      level: resolved.level,
+      priority: resolved.priority,
+      unit: target,
+      serviceId: target,
+      message: safeMessage,
+      sourceId: target,
+    });
+  }
+  const filtered = buildFilteredProbeLogEntries(parsedEntries, { level, queryText, limit });
+  return {
+    ok: true,
+    result: {
+      entries: filtered.entries,
+      sources: [target],
+      truncated: filtered.truncatedByLimit || rawLines.length >= limit,
+    },
   };
 }

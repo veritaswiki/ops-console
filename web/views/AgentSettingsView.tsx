@@ -10,6 +10,7 @@ import type {
   DynamicModelCatalogResponse,
   GatewayTelemetryResponse,
   LinearStateResponse,
+  LogNavigationRequest,
   MagpieCatalogResponse,
   ReasoningEffort,
   SnapshotResponse,
@@ -70,6 +71,7 @@ import {
 } from './agent-settings/GovernanceSettingsPanel';
 import { GatewaySettingsPanel } from './agent-settings/GatewaySettingsPanel';
 import { CacheMonitorPanel } from './agent-settings/CacheMonitorPanel';
+import { ObservabilityPanel } from './agent-settings/ObservabilityPanel';
 
 export type AgentSettingsTab = AgentSettingsTabId;
 
@@ -106,6 +108,7 @@ export interface AgentSettingsViewProps {
   selectedPid?: number | null;
   onSelectCategory?: (category: string) => void;
   onSelectPid?: (pid: number | null) => void;
+  onOpenLogs?: (req: LogNavigationRequest) => void;
   onSnapshotChanged?: () => void;
   onToast?: (text: string, tone?: 'info' | 'ok' | 'err') => void;
   onConfirm?: (modal: ConfirmModalState) => void;
@@ -122,6 +125,7 @@ export function AgentSettingsView({
   selectedPid = null,
   onSelectCategory,
   onSelectPid,
+  onOpenLogs,
   onSnapshotChanged,
   onToast,
   onConfirm,
@@ -340,7 +344,8 @@ export function AgentSettingsView({
       activeTab === 'orchestration' ||
       activeTab === 'multi-device' ||
       activeTab === 'gateway' ||
-      activeTab === 'cache'
+      activeTab === 'cache' ||
+      activeTab === 'observability'
     ) {
       fetchModelCatalog(controller.signal)
         .then((catalog) => {
@@ -972,6 +977,15 @@ export function AgentSettingsView({
             <CacheMonitorPanel
               readOnly={readOnly}
               modelOptions={modelOptions}
+              onToast={onToast}
+            />
+          )}
+
+          {activeTab === 'observability' && (
+            <ObservabilityPanel
+              readOnly={readOnly}
+              modelOptions={modelOptions}
+              onOpenLogs={onOpenLogs}
               onToast={onToast}
             />
           )}
