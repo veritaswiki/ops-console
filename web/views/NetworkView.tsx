@@ -1,9 +1,7 @@
 import React from 'react';
 import {
   Activity,
-  Check,
   Cloud,
-  Copy,
   ExternalLink,
   Network,
   Radio,
@@ -21,7 +19,6 @@ import type {
   TailscalePingResult,
 } from '../types';
 import {
-  copyToClipboard,
   fetchCloudflareStatus,
   fetchTailscaleNetcheck,
   pingTailscalePeer,
@@ -31,6 +28,7 @@ import { cn, FOCUS_RING } from '../lib/cn';
 import { formatBytes, formatCompactNumber, formatRelativeAge } from '../utils/format';
 import {
   Button,
+  CopyAction,
   EmptyState,
   inputBaseClass,
   KpiStrip,
@@ -91,7 +89,6 @@ export function NetworkView({
   const [probing, setProbing] = React.useState(false);
   const [tsFilter, setTsFilter] = React.useState<TsFilter>('all');
   const [tsQuery, setTsQuery] = React.useState('');
-  const [copiedKey, setCopiedKey] = React.useState('');
   const [fwFilter, setFwFilter] = React.useState<FwFilter>('all');
 
   const [netcheck, setNetcheck] = React.useState<TailscaleNetcheckResult | null>(null);
@@ -119,16 +116,6 @@ export function NetworkView({
   const mihomo = net?.mihomo;
   const syncthing = net?.syncthing;
   const fw = snapshot?.firewall || net?.firewall;
-
-  const handleCopy = async (text: string, key: string, label = '内容') => {
-    if (!text || text === '-') return;
-    const ok = await copyToClipboard(text);
-    if (ok) {
-      setCopiedKey(key);
-      onToast(`已复制${label}：${text}`, 'ok');
-      window.setTimeout(() => setCopiedKey((cur) => (cur === key ? '' : cur)), 1600);
-    }
-  };
 
   const handleProbeRemotes = async () => {
     setProbing(true);
@@ -689,7 +676,6 @@ export function NetworkView({
                       <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
                         {filteredDevices.map((dev, idx) => {
                           const ip = dev.ip || dev.tailscaleIps?.[0] || '-';
-                          const isCopied = copiedKey === `ts:${ip}`;
                           const pingRes = ip !== '-' ? pingResults[ip] : undefined;
                           const pathText = dev.isSelf
                             ? '本机控制面'
@@ -726,22 +712,18 @@ export function NetworkView({
                               </td>
                               <td className="py-2.5 px-3 whitespace-nowrap">
                                 {ip !== '-' ? (
-                                  <button
-                                    type="button"
-                                    onClick={() => void handleCopy(ip, `ts:${ip}`, 'Tailscale IP')}
+                                  <CopyAction
+                                    variant="inline"
+                                    size="xs"
+                                    text={ip}
+                                    label={ip}
+                                    copiedLabel={ip}
                                     title="点击复制 Tailscale IP"
-                                    className={cn(
-                                      'group inline-flex items-center gap-1.5 font-mono text-[12.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] tabular-nums rounded px-1 -mx-1 py-0.5 hover:bg-[var(--surface-subtle)] transition-colors cursor-pointer',
-                                      FOCUS_RING,
-                                    )}
-                                  >
-                                    <span>{ip}</span>
-                                    {isCopied ? (
-                                      <Check className="size-3 text-[var(--ok)]" strokeWidth={2} />
-                                    ) : (
-                                      <Copy className="size-3 opacity-0 group-hover:opacity-70 transition-opacity" strokeWidth={1.75} />
-                                    )}
-                                  </button>
+                                    ariaLabel={`复制 Tailscale IP ${ip}`}
+                                    className="font-mono text-[12.5px] tabular-nums -mx-1"
+                                    onCopied={() => onToast(`已复制 Tailscale IP：${ip}`, 'ok')}
+                                    onError={() => onToast('复制失败，请检查剪贴板权限', 'err')}
+                                  />
                                 ) : (
                                   <span className="font-mono text-[12.5px] text-[var(--ink-subtle)]">-</span>
                                 )}
@@ -873,13 +855,14 @@ export function NetworkView({
                         </div>
                       </div>
                       {rule.url && (
-                        <Button
-                          variant="ghost"
+                        <CopyAction
+                          variant="icon"
                           size="sm"
-                          onClick={() => void handleCopy(rule.url!, `serve:${idx}`, 'Serve URL')}
-                        >
-                          {copiedKey === `serve:${idx}` ? <Check className="size-3.5 text-[var(--ok)]" /> : <Copy className="size-3.5" />}
-                        </Button>
+                          text={rule.url}
+                          ariaLabel={`复制 Serve URL ${rule.url}`}
+                          onCopied={() => onToast(`已复制 Serve URL：${rule.url}`, 'ok')}
+                          onError={() => onToast('复制失败，请检查剪贴板权限', 'err')}
+                        />
                       )}
                     </li>
                   ))}
@@ -903,6 +886,7 @@ export function NetworkView({
               {
                 label: '活跃隧道',
                 value: `${cf?.activeTunnelsCount ?? 0} / ${cf?.tunnels?.length ?? 0}`,
+                numeric: { primary: cf?.activeTunnelsCount ?? 0, denominator: cf?.tunnels?.length ?? 0 },
                 sub: cf?.tunnelName ? `隧道 ${cf.tunnelName}` : '按需检测本地隧道列表',
               },
               {
@@ -914,6 +898,7 @@ export function NetworkView({
               {
                 label: '局域网 / Ingress 路由',
                 value: `${cf?.lanRoutes?.length ?? 0} / ${cf?.ingress?.length ?? 0}`,
+                numeric: { primary: cf?.lanRoutes?.length ?? 0, denominator: cf?.ingress?.length ?? 0 },
                 sub: cf?.cloudflared?.configDetected ? '已发现 config.yml' : '支持 config.json 声明 CIDR',
               },
             ]}
@@ -1059,17 +1044,14 @@ export function NetworkView({
                         <Terminal className="size-3.5 text-[var(--ink-subtle)]" strokeWidth={1.75} />
                         {hint.title}
                       </span>
-                      <Button
-                        variant="ghost"
+                      <CopyAction
+                        variant="icon"
                         size="sm"
-                        onClick={() => void handleCopy(hint.command, `cfhint:${hint.id}`, '部署命令')}
-                      >
-                        {copiedKey === `cfhint:${hint.id}` ? (
-                          <Check className="size-3.5 text-[var(--ok)]" />
-                        ) : (
-                          <Copy className="size-3.5" />
-                        )}
-                      </Button>
+                        text={hint.command}
+                        ariaLabel={`复制部署命令：${hint.title}`}
+                        onCopied={() => onToast(`已复制部署命令：${hint.title}`, 'ok')}
+                        onError={() => onToast('复制失败，请检查剪贴板权限', 'err')}
+                      />
                     </div>
                     <pre className="font-mono text-[11.5px] text-[var(--ink-muted)] whitespace-pre-wrap break-all select-all">
                       {hint.command}

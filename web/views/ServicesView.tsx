@@ -4,8 +4,6 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
-  ChevronDown,
-  ChevronRight,
   ExternalLink,
   FileText,
   RotateCw,
@@ -28,7 +26,9 @@ import {
   statusTone,
 } from '../utils/format';
 import {
+  AnimatedCollapse,
   Button,
+  DisclosureChevron,
   EmptyState,
   inputBaseClass,
   LatencyMeter,
@@ -401,8 +401,8 @@ export function ServicesView({
                   <th className="py-2.5 pl-2 pr-5 sm:pr-6 text-right whitespace-nowrap">控制与日志</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[var(--border-subtle)] text-[13px]">
-                {filtered.map((svc) => {
+              <tbody className="text-[13px]">
+                {filtered.map((svc, idx) => {
                   const actions = svc.allowedActions || svc.actions || ['restart', 'start', 'stop'];
                   const secondaryActions = actions.filter((a) => a !== 'restart');
                   const canRestart = actions.includes('restart');
@@ -413,7 +413,12 @@ export function ServicesView({
                   const isExpanded = expandedId === svc.id;
                   return (
                     <React.Fragment key={svc.id}>
-                      <tr className="hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out">
+                      <tr
+                        className={cn(
+                          'hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out',
+                          idx > 0 && 'border-t border-[var(--border-subtle)]',
+                        )}
+                      >
                         <td className="py-3 pl-5 sm:pl-6 pr-2 max-w-[250px]">
                           <div className="flex items-start gap-1.5 min-w-0">
                             <button
@@ -422,15 +427,11 @@ export function ServicesView({
                               aria-expanded={isExpanded}
                               aria-label={`${isExpanded ? '收起' : '展开'} ${svc.name || svc.id} 详情`}
                               className={cn(
-                                'mt-0.5 p-0.5 rounded text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-subtle)] transition-colors cursor-pointer shrink-0',
+                                'ui-press-icon mt-0.5 p-0.5 rounded text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-subtle)] cursor-pointer shrink-0',
                                 FOCUS_RING,
                               )}
                             >
-                              {isExpanded ? (
-                                <ChevronDown className="size-3.5" strokeWidth={1.75} />
-                              ) : (
-                                <ChevronRight className="size-3.5" strokeWidth={1.75} />
-                              )}
+                              <DisclosureChevron open={isExpanded} />
                             </button>
                             <div className="min-w-0">
                               <div className="flex items-center gap-2 min-w-0">
@@ -544,10 +545,10 @@ export function ServicesView({
                           </div>
                         </td>
                       </tr>
-                      {isExpanded && (
-                        <tr className="bg-[var(--surface-subtle)]/55">
-                          <td colSpan={7} className="px-5 sm:px-6 py-3.5">
-                            <div className="flex flex-wrap items-start justify-between gap-4">
+                      <tr className="border-0">
+                        <td colSpan={7} className="p-0 border-0">
+                          <AnimatedCollapse open={isExpanded}>
+                            <div className="px-5 sm:px-6 py-3.5 bg-[var(--surface-subtle)]/55 border-t border-[var(--border-subtle)] flex flex-wrap items-start justify-between gap-4">
                               <dl className="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-2.5 text-[12px] flex-1 min-w-[260px]">
                                 <div>
                                   <dt className="text-[var(--ink-subtle)]">Systemd 状态</dt>
@@ -614,9 +615,9 @@ export function ServicesView({
                                 </Button>
                               </div>
                             </div>
-                          </td>
-                        </tr>
-                      )}
+                          </AnimatedCollapse>
+                        </td>
+                      </tr>
                     </React.Fragment>
                   );
                 })}

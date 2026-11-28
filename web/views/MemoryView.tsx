@@ -1,17 +1,19 @@
 import React from 'react';
-import { Copy, FlaskConical, Search, Stethoscope } from 'lucide-react';
+import { FlaskConical, Search, Stethoscope } from 'lucide-react';
 import type {
   MemoryCompareResponse,
   MemorySearchResultItem,
   SnapshotResponse,
   ToastHandler,
 } from '../types';
-import { compareMemoryRetrieval, copyToClipboard, runMemoryDoctor, searchMemory } from '../api';
+import { compareMemoryRetrieval, runMemoryDoctor, searchMemory } from '../api';
 import { cn, FOCUS_RING } from '../lib/cn';
 import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import { formatCompactNumber, formatInteger } from '../utils/format';
 import {
+  AnimatedCollapse,
   Button,
+  CopyAction,
   EmptyState,
   inputBaseClass,
   Panel,
@@ -112,12 +114,6 @@ export function MemoryView({
     await runCompareQuery(compareQuery);
   };
 
-  const handleCopyCompareJson = async () => {
-    if (!compareRes) return;
-    const ok = await copyToClipboard(JSON.stringify(compareRes, null, 2));
-    if (ok) onToast('已复制召回评测 JSON 报告', 'ok');
-  };
-
   const handleDoctor = async () => {
     if (guardReadOnly(readOnly, onToast, '执行记忆引擎自检')) return;
     setDoctorBusy(true);
@@ -153,7 +149,7 @@ export function MemoryView({
       }
     >
 
-      {doctorOutput && (
+      <AnimatedCollapse open={Boolean(doctorOutput)}>
         <Panel
           title="官方诊断报告"
           actions={
@@ -166,7 +162,7 @@ export function MemoryView({
             {doctorOutput}
           </pre>
         </Panel>
-      )}
+      </AnimatedCollapse>
 
       <Panel
         title="跨引擎召回与 Rerank 重排对比实验室"
@@ -177,10 +173,15 @@ export function MemoryView({
               <span className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums">
                 nmem {compareRes.timingsMs.nmem}ms · ov {compareRes.timingsMs.openviking}ms · rerank {compareRes.timingsMs.rerank}ms
               </span>
-              <Button variant="secondary" size="sm" onClick={handleCopyCompareJson}>
-                <Copy className="size-3.5" strokeWidth={1.75} />
-                复制 JSON
-              </Button>
+              <CopyAction
+                variant="button"
+                size="sm"
+                text={() => JSON.stringify(compareRes, null, 2)}
+                label="复制 JSON"
+                copiedLabel="已复制"
+                onCopied={() => onToast('已复制召回评测 JSON 报告', 'ok')}
+                onError={() => onToast('复制失败，请检查剪贴板权限', 'err')}
+              />
             </div>
           ) : undefined
         }

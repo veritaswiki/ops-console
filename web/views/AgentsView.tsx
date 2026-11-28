@@ -3,8 +3,6 @@ import {
   Activity,
   ArrowUp,
   Check,
-  ChevronDown,
-  ChevronRight,
   Copy,
   GitBranch,
   KanbanSquare,
@@ -111,7 +109,11 @@ import { NodeAgentModelSelector } from '../components/workspace/NodeAgentModelSe
 import { SessionRuntimeLane } from '../components/workspace/SessionRuntimeLane';
 import {
   Button,
+  Disclosure,
+  DisclosureChevron,
+  IconSwap,
   inputBaseClass,
+  SegmentedControl,
   StatusIndicator,
   type ConfirmModalState,
 } from '../components/ui';
@@ -2007,51 +2009,29 @@ export function AgentsView({
     >
       <header className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[var(--border-subtle)]">
         <div className="flex flex-wrap items-center gap-3 min-w-0">
-          <div
-            role="tablist"
-            aria-label="工作区视图模式"
-            className="inline-flex items-center rounded-lg border border-[var(--border)] bg-[var(--surface-subtle)] p-0.5"
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={workspaceMode === 'thread'}
-              data-testid="agent-workspace-mode-thread"
-              onClick={() => setWorkspaceMode('thread')}
-              className={cn(
-                'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[12.5px] font-medium transition-colors cursor-pointer',
-                workspaceMode === 'thread'
-                  ? 'bg-[var(--surface-elevated)] text-[var(--ink)] shadow-[0_1px_2px_rgba(0,0,0,0.06)]'
-                  : 'text-[var(--ink-muted)] hover:text-[var(--ink)]',
-                FOCUS_RING,
-              )}
-            >
-              <MessageSquare className="size-3.5" strokeWidth={1.75} />
-              对话流
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={workspaceMode === 'kanban'}
-              data-testid="agent-workspace-mode-kanban"
-              onClick={() => setWorkspaceMode('kanban')}
-              className={cn(
-                'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[12.5px] font-medium transition-colors cursor-pointer',
-                workspaceMode === 'kanban'
-                  ? 'bg-[var(--surface-elevated)] text-[var(--ink)] shadow-[0_1px_2px_rgba(0,0,0,0.06)]'
-                  : 'text-[var(--ink-muted)] hover:text-[var(--ink)]',
-                FOCUS_RING,
-              )}
-            >
-              <KanbanSquare className="size-3.5" strokeWidth={1.75} />
-              运行泳道
-              <span className="font-mono text-[11px] text-[var(--ink-subtle)] tabular-nums">
-                {effectiveSearchQuery.trim()
-                  ? `${filteredTasksCount}/${tasks.length}`
-                  : tasks.length}
-              </span>
-            </button>
-          </div>
+          <SegmentedControl<WorkspaceMode>
+            ariaLabel="工作区视图模式"
+            value={workspaceMode}
+            onChange={setWorkspaceMode}
+            options={[
+              {
+                value: 'thread',
+                label: '对话流',
+                testId: 'agent-workspace-mode-thread',
+                icon: <MessageSquare className="size-3.5" strokeWidth={1.75} />,
+              },
+              {
+                value: 'kanban',
+                label: `运行泳道 (${
+                  effectiveSearchQuery.trim()
+                    ? `${filteredTasksCount}/${tasks.length}`
+                    : tasks.length
+                })`,
+                testId: 'agent-workspace-mode-kanban',
+                icon: <KanbanSquare className="size-3.5" strokeWidth={1.75} />,
+              },
+            ]}
+          />
           {onOpenProjectIssue && (
             <button
               type="button"
@@ -2537,17 +2517,7 @@ export function AgentsView({
                           )}
                         >
                           <div className="flex items-center gap-2 min-w-0">
-                            {traceExpanded ? (
-                              <ChevronDown
-                                className="size-3.5 text-[var(--ink-subtle)] shrink-0"
-                                strokeWidth={1.75}
-                              />
-                            ) : (
-                              <ChevronRight
-                                className="size-3.5 text-[var(--ink-subtle)] shrink-0"
-                                strokeWidth={1.75}
-                              />
-                            )}
+                            <DisclosureChevron open={traceExpanded} className="text-[var(--ink-subtle)]" />
                             <span className="font-mono text-[11.5px] font-medium text-[var(--ink-muted)] tabular-nums shrink-0">
                               执行轨迹 · {task.steps.length} 步
                             </span>
@@ -2562,7 +2532,7 @@ export function AgentsView({
                           </span>
                         </button>
 
-                        {traceExpanded && (
+                        <Disclosure open={traceExpanded}>
                           <ol className="px-3.5 pb-3 pt-1 space-y-2 border-t border-[var(--border-subtle)]">
                             {task.steps.map((step, idx) => {
                               const stepTone = taskStatusTone(step.state);
@@ -2599,7 +2569,7 @@ export function AgentsView({
                               );
                             })}
                           </ol>
-                        )}
+                        </Disclosure>
                       </div>
                     )}
 
@@ -2775,16 +2745,28 @@ export function AgentsView({
                           type="button"
                           onClick={() => void handleCopyArtifact(task)}
                           className={cn(
-                            'inline-flex items-center gap-1 h-7 px-2 rounded-md hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] transition-colors cursor-pointer',
+                            'ui-press inline-flex items-center gap-1 h-7 px-2 rounded-md border cursor-pointer',
+                            copiedTaskId === task.id
+                              ? 'bg-[var(--ok-soft)] text-[var(--ok)] border-[var(--ok-border)]'
+                              : 'border-transparent hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
                             FOCUS_RING,
                           )}
                         >
-                          {copiedTaskId === task.id ? (
-                            <Check className="size-3.5 text-[var(--ok)]" strokeWidth={1.75} />
-                          ) : (
-                            <Copy className="size-3.5" strokeWidth={1.75} />
-                          )}
-                          复制输出
+                          <IconSwap iconKey={copiedTaskId === task.id ? 'copied' : 'copy'}>
+                            {copiedTaskId === task.id ? (
+                              <Check className="size-3.5 text-[var(--ok)]" strokeWidth={2.2} />
+                            ) : (
+                              <Copy className="size-3.5" strokeWidth={1.75} />
+                            )}
+                          </IconSwap>
+                          <span className="inline-grid text-left">
+                            <span className={cn('col-start-1 row-start-1', copiedTaskId === task.id && 'invisible')}>
+                              复制输出
+                            </span>
+                            <span className={cn('col-start-1 row-start-1', copiedTaskId !== task.id && 'invisible')}>
+                              已复制
+                            </span>
+                          </span>
                         </button>
 
                         <button

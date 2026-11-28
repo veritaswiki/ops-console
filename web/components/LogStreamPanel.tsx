@@ -40,7 +40,9 @@ import {
 import { countLogLevels, formatClock } from '../utils/format';
 import {
   Button,
+  ClearInputButton,
   ErrorState,
+  IconSwap,
   inputBaseClass,
   SegmentedFilter,
   ToggleSwitch,
@@ -656,12 +658,18 @@ export function LogStreamPanel({
               strokeWidth={1.75}
             />
             <input
-              type="search"
+              type="text"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               placeholder={regex ? '输入正则表达式过滤...' : '按关键词 / 服务 / 错误码过滤...'}
               aria-label="日志关键词搜索"
-              className={cn('h-9 w-full pl-9 pr-3', inputBaseClass)}
+              className={cn('h-9 w-full pl-9 pr-8', inputBaseClass)}
+            />
+            <ClearInputButton
+              visible={Boolean(query)}
+              onClear={() => setQuery('')}
+              ariaLabel="清空日志搜索"
+              placement="overlay"
             />
           </div>
 
@@ -678,17 +686,14 @@ export function LogStreamPanel({
               onClick={toggleStream}
               data-testid="log-stream-toggle"
             >
-              {streaming ? (
-                <>
+              <IconSwap iconKey={streaming ? 'stop' : 'live'}>
+                {streaming ? (
                   <Square className="size-3.5" strokeWidth={1.75} />
-                  停止追踪
-                </>
-              ) : (
-                <>
+                ) : (
                   <Radio className="size-3.5" strokeWidth={1.75} />
-                  实时追踪
-                </>
-              )}
+                )}
+              </IconSwap>
+              <span>{streaming ? '停止追踪' : '实时追踪'}</span>
             </Button>
           )}
 
@@ -700,17 +705,18 @@ export function LogStreamPanel({
               onClick={handleTogglePauseStream}
               data-testid="log-stream-pause"
             >
-              {streamPaused ? (
-                <>
+              <IconSwap iconKey={streamPaused ? 'resume' : 'pause'}>
+                {streamPaused ? (
                   <Play className="size-3.5" strokeWidth={1.75} />
-                  恢复{pausedBufferCount > 0 ? ` (+${pausedBufferCount})` : ''}
-                </>
-              ) : (
-                <>
+                ) : (
                   <Pause className="size-3.5" strokeWidth={1.75} />
-                  暂停
-                </>
-              )}
+                )}
+              </IconSwap>
+              <span className="tabular-nums">
+                {streamPaused
+                  ? `恢复${pausedBufferCount > 0 ? ` (+${pausedBufferCount})` : ''}`
+                  : '暂停'}
+              </span>
             </Button>
           )}
         </form>
@@ -729,7 +735,7 @@ export function LogStreamPanel({
               type="button"
               onClick={() => setTargets(['all'])}
               className={cn(
-                'px-2.5 py-1 rounded-md text-[12px] font-medium border transition-colors duration-150 cursor-pointer',
+                'ui-press px-2.5 py-1 rounded-md text-[12px] font-medium border cursor-pointer',
                 FOCUS_RING,
                 targets.includes('all')
                   ? 'bg-[var(--surface-active)] border-[var(--border-strong)] text-[var(--ink)]'
@@ -748,7 +754,7 @@ export function LogStreamPanel({
                   onClick={() => setTargets((prev) => toggleUnifiedTarget(prev, token))}
                   title={`${svc.name || svc.id} (${svc.unit})${svc.hasLogFile ? ' · 含原生日志文件' : ''}`}
                   className={cn(
-                    'inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] border transition-colors duration-150 cursor-pointer',
+                    'ui-press inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] border cursor-pointer',
                     FOCUS_RING,
                     selected
                       ? 'bg-[var(--accent-subtle)] border-[var(--accent)]/40 text-[var(--ink)] font-medium'
@@ -772,7 +778,7 @@ export function LogStreamPanel({
                     type="button"
                     onClick={() => setTargets((prev) => toggleUnifiedTarget(prev, fileItem.id))}
                     className={cn(
-                      'inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] border transition-colors duration-150 cursor-pointer',
+                      'ui-press inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] border cursor-pointer',
                       FOCUS_RING,
                       selected
                         ? 'bg-[var(--accent-subtle)] border-[var(--accent)]/40 text-[var(--ink)] font-medium'
@@ -792,7 +798,7 @@ export function LogStreamPanel({
                   type="button"
                   onClick={() => setTargets((prev) => toggleUnifiedTarget(prev, builtinId))}
                   className={cn(
-                    'px-2.5 py-1 rounded-md text-[12px] border transition-colors duration-150 cursor-pointer',
+                    'ui-press px-2.5 py-1 rounded-md text-[12px] border cursor-pointer',
                     FOCUS_RING,
                     selected
                       ? 'bg-[var(--accent-subtle)] border-[var(--accent)]/40 text-[var(--ink)] font-medium'
@@ -881,7 +887,7 @@ export function LogStreamPanel({
                       type="button"
                       onClick={() => handleApplyPreset(preset)}
                       className={cn(
-                        'px-2.5 py-1 text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors duration-150 cursor-pointer',
+                        'ui-press px-2.5 py-1 text-[var(--ink)] hover:bg-[var(--surface-hover)] cursor-pointer',
                         FOCUS_RING,
                       )}
                     >
@@ -891,7 +897,7 @@ export function LogStreamPanel({
                       type="button"
                       onClick={() => handleDeletePreset(preset.id)}
                       aria-label={`删除视图 ${preset.name}`}
-                      className="px-1.5 py-1 text-[var(--ink-subtle)] hover:text-[var(--err)] transition-colors duration-150 cursor-pointer border-l border-[var(--border-subtle)]"
+                      className="ui-press-icon px-1.5 py-1 text-[var(--ink-subtle)] hover:text-[var(--err)] cursor-pointer border-l border-[var(--border-subtle)]"
                     >
                       <Trash2 className="size-3" strokeWidth={1.75} />
                     </button>
@@ -1065,11 +1071,16 @@ export function LogStreamPanel({
                           <button
                             type="button"
                             onClick={() => void handleCopyLogRow(rowKey, entry)}
-                            aria-label="复制该行日志"
-                            className="opacity-0 group-hover:opacity-100 focus:opacity-100 inline-flex items-center justify-center text-zinc-400 hover:text-zinc-100 transition-opacity cursor-pointer"
+                            aria-label={copiedRowKey === rowKey ? '已复制该行日志' : '复制该行日志'}
+                            className={cn(
+                              'ui-press-icon inline-flex items-center justify-center text-zinc-400 hover:text-zinc-100 transition-opacity duration-150 cursor-pointer',
+                              copiedRowKey === rowKey
+                                ? 'opacity-100 text-emerald-400'
+                                : 'opacity-0 group-hover:opacity-100 focus:opacity-100',
+                            )}
                           >
                             {copiedRowKey === rowKey ? (
-                              <Check className="size-3.5 text-emerald-400" strokeWidth={2} />
+                              <Check className="size-3.5 text-emerald-400" strokeWidth={2.2} />
                             ) : (
                               <Copy className="size-3.5" strokeWidth={1.75} />
                             )}
@@ -1144,11 +1155,16 @@ export function LogStreamPanel({
                   <button
                     type="button"
                     onClick={() => void handleCopyLogRow(rowKey, entry)}
-                    aria-label="复制该行日志"
-                    className="opacity-0 group-hover:opacity-100 focus:opacity-100 inline-flex items-center justify-center text-zinc-400 hover:text-zinc-100 transition-opacity cursor-pointer mt-0.5"
+                    aria-label={copiedRowKey === rowKey ? '已复制该行日志' : '复制该行日志'}
+                    className={cn(
+                      'ui-press-icon inline-flex items-center justify-center text-zinc-400 hover:text-zinc-100 transition-opacity duration-150 cursor-pointer mt-0.5',
+                      copiedRowKey === rowKey
+                        ? 'opacity-100 text-emerald-400'
+                        : 'opacity-0 group-hover:opacity-100 focus:opacity-100',
+                    )}
                   >
                     {copiedRowKey === rowKey ? (
-                      <Check className="size-3.5 text-emerald-400" strokeWidth={2} />
+                      <Check className="size-3.5 text-emerald-400" strokeWidth={2.2} />
                     ) : (
                       <Copy className="size-3.5" strokeWidth={1.75} />
                     )}

@@ -1,7 +1,10 @@
 import React from 'react';
+import { AnimatePresence, motion, useReducedMotion } from 'motion/react';
 import {
+  Activity,
   ChevronDown,
   ChevronRight,
+  Database,
   ExternalLink,
   GripVertical,
   Link2,
@@ -20,6 +23,7 @@ import {
 } from '../../lib/workspace-controls';
 import { cn, FOCUS_RING } from '../../lib/cn';
 import { extractErrorMessage } from '../../lib/ux-errors';
+import { DURATION, EASE_EXIT, EASE_OUT_CRAFT, SPRING_SNAPPY, TRANSITION_SHEET } from '../../lib/motion';
 import {
   contextBudgetPercent as calcBudgetPercent,
   formatBytes,
@@ -29,7 +33,7 @@ import {
   taskStateLabel,
   taskStateTone,
 } from '../../utils/format';
-import { Button } from '../ui';
+import { Button, Disclosure, DisclosureChevron, ViewStage } from '../ui';
 
 const RAIL_WIDTH_KEY = 'ops-console:context-rail-width';
 
@@ -425,11 +429,7 @@ function OverviewSection({
                       FOCUS_RING,
                     )}
                   >
-                    {open ? (
-                      <ChevronDown className="size-3.5 shrink-0 text-[var(--ink-subtle)]" strokeWidth={1.75} />
-                    ) : (
-                      <ChevronRight className="size-3.5 shrink-0 text-[var(--ink-subtle)]" strokeWidth={1.75} />
-                    )}
+                    <DisclosureChevron open={open} className="text-[var(--ink-subtle)]" />
                     <span className="min-w-0 flex-1">
                       <span className="block truncate text-[12px] text-[var(--ink)]">{spill.label}</span>
                       <span className="block text-[10.5px] text-[var(--ink-subtle)] tabular-nums">
@@ -438,8 +438,8 @@ function OverviewSection({
                       </span>
                     </span>
                   </button>
-                  {open ? (
-                    <div className="mt-1.5 space-y-1.5 pl-5">
+                  <Disclosure open={open}>
+                    <div className="mt-1.5 space-y-1.5 pl-5 pb-1">
                       {state?.status === 'loading' ? (
                         <p className="text-[11.5px] text-[var(--ink-subtle)]">正在加载完整内容…</p>
                       ) : state?.status === 'error' ? (
@@ -454,7 +454,7 @@ function OverviewSection({
                         </p>
                       )}
                     </div>
-                  ) : null}
+                  </Disclosure>
                 </li>
               );
             })}
@@ -480,8 +480,10 @@ export function ContextRailHost({
 }: ContextRailHostProps) {
   const [width, setWidth] = React.useState<number>(() => readStoredRailWidth());
   const [activePanelId, setActivePanelId] = React.useState<string>('overview');
+  const [isDragging, setIsDragging] = React.useState(false);
   const draggingRef = React.useRef(false);
   const dynamicPanels = useUiSlots<ContextRailContext>('rail.panel', { viewId: 'agents' });
+  const reduced = useReducedMotion();
 
   React.useEffect(() => {
     persistRailWidth(width);
@@ -514,6 +516,7 @@ export function ContextRailHost({
     const onPointerUp = () => {
       if (!draggingRef.current) return;
       draggingRef.current = false;
+      setIsDragging(false);
       document.body.style.userSelect = '';
       document.body.style.cursor = '';
     };
@@ -526,166 +529,227 @@ export function ContextRailHost({
       window.removeEventListener('pointercancel', onPointerUp);
       if (draggingRef.current) {
         draggingRef.current = false;
+        setIsDragging(false);
         document.body.style.userSelect = '';
         document.body.style.cursor = '';
       }
     };
   }, [open]);
 
-  if (!open) {
-    return (
-      <button
-        type="button"
-        onClick={() => onOpenChange(true)}
-        aria-label="打开会话上下文侧栏 (Cmd/Ctrl + ])"
-        title="打开上下文侧栏 (⌘])"
-        data-testid="context-rail-toggle"
-        className={cn(
-          'fixed right-0 top-1/2 z-30 flex -translate-y-1/2 items-center gap-1.5 rounded-l-lg border border-r-0 border-[var(--border)] bg-[var(--surface-elevated)] py-2 pl-2 pr-1.5 text-[11.5px] font-medium text-[var(--ink-muted)] shadow-[var(--shadow-card)] transition-colors duration-150 ease-out hover:text-[var(--ink)]',
-          FOCUS_RING,
-        )}
-      >
-        <PanelRight className="size-3.5" strokeWidth={1.75} />
-        上下文
-      </button>
-    );
-  }
-
   const activeSlot = dynamicPanels.find((panel) => panel.id === activePanelId) || null;
 
   return (
     <>
-      <div
-        className="fixed inset-0 z-30 bg-zinc-950/25 sm:hidden"
-        onClick={() => onOpenChange(false)}
-        aria-hidden="true"
-      />
-      <aside
-        data-testid="context-rail-host"
-        aria-label="会话上下文侧栏"
-        className="fixed inset-y-0 right-0 z-40 flex w-full flex-col border-l border-[var(--border)] bg-[var(--surface-elevated)] shadow-[var(--shadow-modal)] sm:w-[var(--rail-width)]"
-        style={{ '--rail-width': `${width}px` } as React.CSSProperties}
-      >
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="调整上下文侧栏宽度"
-          data-testid="context-rail-resize-handle"
-          onPointerDown={(event) => {
-            event.preventDefault();
-            draggingRef.current = true;
-            document.body.style.userSelect = 'none';
-            document.body.style.cursor = 'col-resize';
-          }}
-          className="absolute inset-y-0 left-0 hidden w-2 -translate-x-1 cursor-col-resize touch-none items-center justify-center sm:flex"
-        >
-          <span className="flex h-10 w-1 items-center justify-center rounded-full bg-[var(--border-strong)]">
-            <GripVertical className="size-2.5 text-[var(--ink-subtle)]" strokeWidth={2} />
-          </span>
-        </div>
-
-        <header className="flex shrink-0 items-start justify-between gap-2 border-b border-[var(--border-subtle)] px-4 py-3">
-          <div className="min-w-0">
-            <h2 className="text-[13.5px] font-semibold tracking-tight text-[var(--ink)] text-balance">
-              会话上下文
-            </h2>
-            <p className="mt-0.5 truncate text-[11.5px] text-[var(--ink-subtle)]">
-              {context.taskId || context.sessionId || '未选择线程'}
-              <span className="mx-1.5">·</span>
-              Cmd/Ctrl + ] 切换
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              onClick={() => onOpenChange(false)}
-              aria-label="关闭上下文侧栏"
-              className={cn(
-                'inline-flex size-8 items-center justify-center rounded-md text-[var(--ink-subtle)] transition-colors duration-150 ease-out hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] cursor-pointer',
-                FOCUS_RING,
-              )}
-            >
-              <X className="size-4" strokeWidth={1.75} />
-            </button>
-          </div>
-        </header>
-
-        <nav
-          aria-label="上下文面板切换"
-          className="flex shrink-0 items-center gap-4 overflow-x-auto border-b border-[var(--border-subtle)] px-4"
-        >
-          <button
+      <AnimatePresence initial={false}>
+        {!open && (
+          <motion.button
+            key="context-rail-toggle"
             type="button"
-            onClick={() => setActivePanelId('overview')}
-            aria-current={activePanelId === 'overview' ? 'page' : undefined}
+            onClick={() => onOpenChange(true)}
+            aria-label="打开会话上下文侧栏 (Cmd/Ctrl + ])"
+            title="打开上下文侧栏 (⌘])"
+            data-testid="context-rail-toggle"
+            initial={reduced ? { opacity: 0 } : { opacity: 0, x: 20 }}
+            animate={{ opacity: 1, x: 0 }}
+            exit={reduced ? { opacity: 0 } : { opacity: 0, x: 20 }}
+            transition={
+              reduced
+                ? { duration: 0.08, ease: 'linear' }
+                : { duration: DURATION.fast, ease: EASE_OUT_CRAFT }
+            }
             className={cn(
-              '-mb-px shrink-0 border-b-2 py-2 text-[12px] font-medium transition-colors duration-150 ease-out cursor-pointer',
-              activePanelId === 'overview'
-                ? 'border-[var(--accent)] text-[var(--ink)]'
-                : 'border-transparent text-[var(--ink-subtle)] hover:text-[var(--ink)]',
+              'ui-press fixed right-0 top-1/2 z-30 flex -translate-y-1/2 items-center gap-1.5 rounded-l-lg border border-r-0 border-[var(--border)] bg-[var(--surface-elevated)] py-2 pl-2 pr-1.5 text-[11.5px] font-medium text-[var(--ink-muted)] shadow-[var(--shadow-card)] hover:text-[var(--ink)] cursor-pointer',
               FOCUS_RING,
             )}
           >
-            会话概览
-          </button>
-          {dynamicPanels.map((panel) => (
-            <button
-              key={panel.id}
-              type="button"
-              data-slot-id={panel.id}
-              onClick={() => setActivePanelId(panel.id)}
-              aria-current={activePanelId === panel.id ? 'page' : undefined}
-              title={panel.description}
-              className={cn(
-                '-mb-px shrink-0 border-b-2 py-2 text-[12px] font-medium transition-colors duration-150 ease-out cursor-pointer',
-                activePanelId === panel.id
-                  ? 'border-[var(--accent)] text-[var(--ink)]'
-                  : 'border-transparent text-[var(--ink-subtle)] hover:text-[var(--ink)]',
-                FOCUS_RING,
-              )}
-            >
-              {panel.label}
-            </button>
-          ))}
-        </nav>
+            <PanelRight className="size-3.5" strokeWidth={1.75} />
+            上下文
+          </motion.button>
+        )}
+      </AnimatePresence>
 
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
-          {activeSlot ? (
-            <div data-slot-id={activeSlot.id} className="min-w-0">
-              {activeSlot.render ? (
-                activeSlot.render(context)
-              ) : (
-                <div className="space-y-2">
-                  <h3 className="text-[13px] font-semibold text-[var(--ink)]">{activeSlot.label}</h3>
-                  <p className="text-[12px] leading-relaxed text-[var(--ink-muted)] text-pretty">
-                    {activeSlot.description || '该面板由动态 UI 插槽注册。'}
+      <AnimatePresence initial={false}>
+        {open && (
+          <React.Fragment key="context-rail-panel">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: reduced ? 0.08 : DURATION.fast, ease: EASE_OUT_CRAFT }}
+              className="fixed inset-0 z-30 bg-zinc-950/30 backdrop-blur-[2px] sm:hidden"
+              onClick={() => onOpenChange(false)}
+              aria-hidden="true"
+            />
+            <motion.aside
+              data-testid="context-rail-host"
+              data-dragging={isDragging ? 'true' : 'false'}
+              aria-label="会话上下文侧栏"
+              initial={reduced ? { opacity: 0 } : { x: '100%', opacity: 0.96 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={
+                reduced
+                  ? { opacity: 0, transition: { duration: 0.08, ease: 'linear' } }
+                  : { x: '100%', opacity: 0.92, transition: { duration: 0.16, ease: EASE_EXIT } }
+              }
+              transition={reduced ? { duration: 0.08, ease: 'linear' } : TRANSITION_SHEET}
+              className="fixed inset-y-0 right-0 z-40 flex w-full flex-col border-l border-[var(--border)] bg-[var(--surface-elevated)] shadow-[var(--shadow-modal)] sm:w-[var(--rail-width)]"
+              style={{ '--rail-width': `${width}px` } as React.CSSProperties}
+            >
+              <div
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="调整上下文侧栏宽度"
+                data-testid="context-rail-resize-handle"
+                onPointerDown={(event) => {
+                  event.preventDefault();
+                  draggingRef.current = true;
+                  setIsDragging(true);
+                  document.body.style.userSelect = 'none';
+                  document.body.style.cursor = 'col-resize';
+                }}
+                className="group absolute inset-y-0 left-0 hidden w-2.5 -translate-x-1 cursor-col-resize touch-none items-center justify-center sm:flex"
+              >
+                <span
+                  className={cn(
+                    'flex h-10 w-1 items-center justify-center rounded-full transition-colors duration-150 ease-out',
+                    isDragging
+                      ? 'bg-[var(--accent)]'
+                      : 'bg-[var(--border-strong)] group-hover:bg-[var(--accent)]',
+                  )}
+                >
+                  <GripVertical
+                    className={cn(
+                      'size-2.5 transition-colors duration-150 ease-out',
+                      isDragging ? 'text-white' : 'text-[var(--ink-subtle)] group-hover:text-white',
+                    )}
+                    strokeWidth={2}
+                  />
+                </span>
+              </div>
+
+              <header className="flex shrink-0 items-start justify-between gap-2 border-b border-[var(--border-subtle)] px-4 py-3">
+                <div className="min-w-0">
+                  <h2 className="text-[13.5px] font-semibold tracking-tight text-[var(--ink)] text-balance">
+                    会话上下文
+                  </h2>
+                  <p className="mt-0.5 truncate text-[11.5px] text-[var(--ink-subtle)]">
+                    {context.taskId || context.sessionId || '未选择线程'}
+                    <span className="mx-1.5">·</span>
+                    Cmd/Ctrl + ] 切换
                   </p>
                 </div>
-              )}
-            </div>
-          ) : (
-            <OverviewSection
-              context={context}
-              readOnly={readOnly}
-              busyAction={busyAction}
-              onCompactTask={onCompactTask}
-              onSettleTask={onSettleTask}
-              onSnoozeTask={onSnoozeTask}
-              onOpenProjectIssue={onOpenProjectIssue}
-              onOpenBtw={onOpenBtw}
-              onToast={onToast}
-            />
-          )}
-        </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => onOpenChange(false)}
+                    aria-label="关闭上下文侧栏"
+                    className={cn(
+                      'ui-press-icon inline-flex size-8 items-center justify-center rounded-md text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] cursor-pointer',
+                      FOCUS_RING,
+                    )}
+                  >
+                    <X className="size-4" strokeWidth={1.75} />
+                  </button>
+                </div>
+              </header>
 
-        <footer className="flex shrink-0 items-center justify-between border-t border-[var(--border-subtle)] px-4 py-2 text-[10.5px] text-[var(--ink-subtle)]">
-          <span className="inline-flex items-center gap-1">
-            <ShieldCheck className="size-3" strokeWidth={1.75} />
-            {readOnly ? '只读模式' : '可交互'}
-          </span>
-          <span className="font-mono tabular-nums">{Math.round(width)}px</span>
-        </footer>
-      </aside>
+              <nav
+                aria-label="上下文面板切换"
+                className="flex shrink-0 items-center gap-4 overflow-x-auto border-b border-[var(--border-subtle)] px-4"
+              >
+                <button
+                  type="button"
+                  onClick={() => setActivePanelId('overview')}
+                  aria-current={activePanelId === 'overview' ? 'page' : undefined}
+                  className={cn(
+                    'relative shrink-0 py-2 text-[12px] font-medium transition-colors duration-150 ease-out cursor-pointer',
+                    activePanelId === 'overview'
+                      ? 'text-[var(--ink)]'
+                      : 'text-[var(--ink-subtle)] hover:text-[var(--ink)]',
+                    FOCUS_RING,
+                  )}
+                >
+                  会话概览
+                  {activePanelId === 'overview' && (
+                    <motion.span
+                      layoutId="context-rail-tab-indicator"
+                      transition={reduced ? { duration: 0 } : SPRING_SNAPPY}
+                      className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] rounded-full bg-[var(--accent)]"
+                      aria-hidden="true"
+                    />
+                  )}
+                </button>
+                {dynamicPanels.map((panel) => (
+                  <button
+                    key={panel.id}
+                    type="button"
+                    data-slot-id={panel.id}
+                    onClick={() => setActivePanelId(panel.id)}
+                    aria-current={activePanelId === panel.id ? 'page' : undefined}
+                    title={panel.description}
+                    className={cn(
+                      'relative shrink-0 py-2 text-[12px] font-medium transition-colors duration-150 ease-out cursor-pointer',
+                      activePanelId === panel.id
+                        ? 'text-[var(--ink)]'
+                        : 'text-[var(--ink-subtle)] hover:text-[var(--ink)]',
+                      FOCUS_RING,
+                    )}
+                  >
+                    {panel.label}
+                    {activePanelId === panel.id && (
+                      <motion.span
+                        layoutId="context-rail-tab-indicator"
+                        transition={reduced ? { duration: 0 } : SPRING_SNAPPY}
+                        className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] rounded-full bg-[var(--accent)]"
+                        aria-hidden="true"
+                      />
+                    )}
+                  </button>
+                ))}
+              </nav>
+
+              <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+                <ViewStage stageKey={activeSlot ? activeSlot.id : 'overview'}>
+                  {activeSlot ? (
+                    <div data-slot-id={activeSlot.id} className="min-w-0">
+                      {activeSlot.render ? (
+                        activeSlot.render(context)
+                      ) : (
+                        <div className="space-y-2">
+                          <h3 className="text-[13px] font-semibold text-[var(--ink)]">{activeSlot.label}</h3>
+                          <p className="text-[12px] leading-relaxed text-[var(--ink-muted)] text-pretty">
+                            {activeSlot.description || '该面板由动态 UI 插槽注册。'}
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  ) : (
+                    <OverviewSection
+                      context={context}
+                      readOnly={readOnly}
+                      busyAction={busyAction}
+                      onCompactTask={onCompactTask}
+                      onSettleTask={onSettleTask}
+                      onSnoozeTask={onSnoozeTask}
+                      onOpenProjectIssue={onOpenProjectIssue}
+                      onOpenBtw={onOpenBtw}
+                      onToast={onToast}
+                    />
+                  )}
+                </ViewStage>
+              </div>
+
+              <footer className="flex shrink-0 items-center justify-between border-t border-[var(--border-subtle)] px-4 py-2 text-[10.5px] text-[var(--ink-subtle)]">
+                <span className="inline-flex items-center gap-1">
+                  <ShieldCheck className="size-3" strokeWidth={1.75} />
+                  {readOnly ? '只读模式' : '可交互'}
+                </span>
+                <span className="font-mono tabular-nums">{Math.round(width)}px</span>
+              </footer>
+            </motion.aside>
+          </React.Fragment>
+        )}
+      </AnimatePresence>
     </>
   );
 }

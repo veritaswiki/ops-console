@@ -1,7 +1,7 @@
 import React from 'react';
 import { Check, Copy } from 'lucide-react';
 import { cn, FOCUS_RING } from '../../lib/cn';
-import { ToggleSwitch } from '../ui';
+import { IconSwap, ToggleSwitch } from '../ui';
 
 export function SettingsField({
   label,
@@ -123,16 +123,22 @@ export function CommandSnippet({
         <button
           type="button"
           onClick={() => onCopy(copyKey, command, title)}
+          data-copied={isCopied ? 'true' : 'false'}
           className={cn(
-            'inline-flex items-center gap-1 h-7 px-2 rounded-md text-[12px] font-medium cursor-pointer transition-colors duration-150 ease-out',
+            'ui-press inline-flex items-center gap-1 h-7 px-2 rounded-md border text-[12px] font-medium cursor-pointer',
             isCopied
-              ? 'text-[var(--ok)] bg-[var(--ok-soft)]'
-              : 'text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)]',
+              ? 'text-[var(--ok)] bg-[var(--ok-soft)] border-[var(--ok-border)]'
+              : 'border-transparent text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)]',
             FOCUS_RING,
           )}
         >
-          {isCopied ? <Check className="size-3.5" strokeWidth={2} /> : <Copy className="size-3.5" strokeWidth={1.75} />}
-          <span>{isCopied ? '已复制' : '复制'}</span>
+          <IconSwap iconKey={isCopied ? 'copied' : 'copy'}>
+            {isCopied ? <Check className="size-3.5 text-[var(--ok)]" strokeWidth={2.2} /> : <Copy className="size-3.5" strokeWidth={1.75} />}
+          </IconSwap>
+          <span className="inline-grid text-left">
+            <span className={cn('col-start-1 row-start-1', isCopied && 'invisible')}>复制</span>
+            <span className={cn('col-start-1 row-start-1', !isCopied && 'invisible')}>已复制</span>
+          </span>
         </button>
       </div>
       <pre className="px-3.5 py-3 overflow-x-auto font-mono text-[12px] leading-relaxed text-[var(--ink)] whitespace-pre">
