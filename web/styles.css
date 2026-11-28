@@ -29,6 +29,7 @@
   --border-strong: rgba(0, 0, 0, 0.14);
 
   /* Typography */
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
   --ink: #09090b;
   --ink-muted: #52525b;
   --ink-subtle: #71717a;
@@ -37,15 +38,39 @@
   --accent: #4f46e5;
   --accent-hover: #4338ca;
   --accent-soft: rgba(79, 70, 229, 0.08);
+  --accent-subtle: rgba(79, 70, 229, 0.055);
 
   /* Semantic state tokens */
   --ok: #15803d;
   --ok-dot: #16a34a;
+  --ok-soft: rgba(22, 163, 74, 0.09);
+  --ok-border: rgba(22, 163, 74, 0.26);
   --warn: #b45309;
   --warn-dot: #d97706;
+  --warn-soft: rgba(217, 119, 6, 0.09);
+  --warn-border: rgba(217, 119, 6, 0.28);
   --err: #b91c1c;
   --err-dot: #dc2626;
+  --err-soft: rgba(220, 38, 38, 0.08);
+  --err-border: rgba(220, 38, 38, 0.26);
   --muted-dot: #a1a1aa;
+
+  /* Unified Apple-grade Motion Grammar */
+  --dur-instant: 0ms;
+  --dur-micro: 110ms;
+  --dur-fast: 150ms;
+  --dur-standard: 200ms;
+  --dur-sheet: 260ms;
+  --dur-emphasis: 320ms;
+  --ease-out-craft: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-exit: cubic-bezier(0.32, 0, 0.67, 0);
+  --ease-in-out: cubic-bezier(0.25, 0.1, 0.25, 1);
+  --ease-linear: linear;
+  --press-scale: 0.97;
+  --press-scale-icon: 0.94;
+  --enter-scale-modal: 0.965;
+  --enter-scale-popover: 0.975;
+  --enter-y-subtle: 6px;
 
   /* Multi-layer physical shadows (Light) */
   --shadow-card:
@@ -102,13 +127,20 @@
   --accent: #6366f1;
   --accent-hover: #818cf8;
   --accent-soft: rgba(99, 102, 241, 0.14);
+  --accent-subtle: rgba(99, 102, 241, 0.1);
 
   --ok: #4ade80;
   --ok-dot: #22c55e;
+  --ok-soft: rgba(34, 197, 94, 0.13);
+  --ok-border: rgba(34, 197, 94, 0.28);
   --warn: #fbbf24;
   --warn-dot: #f59e0b;
+  --warn-soft: rgba(245, 158, 11, 0.13);
+  --warn-border: rgba(245, 158, 11, 0.3);
   --err: #f87171;
   --err-dot: #ef4444;
+  --err-soft: rgba(239, 68, 68, 0.13);
+  --err-border: rgba(239, 68, 68, 0.3);
   --muted-dot: #52525b;
 
   /* Multi-layer physical shadows with subtle specular top edge (Dark) */
@@ -138,6 +170,10 @@
 }
 
 @layer base {
+  html {
+    scrollbar-gutter: stable;
+  }
+
   html,
   body {
     background-color: var(--bg);
@@ -164,7 +200,7 @@
   pre,
   kbd,
   .font-mono {
-    font-family: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
   }
 
@@ -245,7 +281,7 @@
   border-radius: 7px;
   background-color: var(--surface-elevated);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 0 0 1px var(--border);
-  transition: transform 170ms cubic-bezier(0.23, 1, 0.32, 1), width 170ms cubic-bezier(0.23, 1, 0.32, 1);
+  transition: transform var(--dur-standard) var(--ease-out-craft), width var(--dur-standard) var(--ease-out-craft);
   pointer-events: none;
   z-index: 0;
 }
@@ -268,7 +304,7 @@
   cursor: pointer;
   white-space: nowrap;
   user-select: none;
-  transition: color 150ms ease-out;
+  transition: color var(--dur-fast) var(--ease-out-craft);
 }
 
 .ui-seg-item:hover {
@@ -307,10 +343,10 @@
   left: 0;
   height: 2px;
   border-radius: 2px 2px 0 0;
-  transform: translateX(var(--active-tab-left, 0px));
+  transform: translate3d(var(--active-tab-left, 0px), 0, 0);
   width: var(--active-tab-width, 0px);
   background-color: var(--accent);
-  transition: transform 180ms cubic-bezier(0.23, 1, 0.32, 1), width 180ms cubic-bezier(0.23, 1, 0.32, 1);
+  transition: transform var(--dur-standard) var(--ease-out-craft), width var(--dur-standard) var(--ease-out-craft);
   pointer-events: none;
 }
 
@@ -326,7 +362,7 @@
   cursor: pointer;
   white-space: nowrap;
   user-select: none;
-  transition: color 150ms ease-out;
+  transition: color var(--dur-fast) var(--ease-out-craft);
 }
 
 .ui-tabs-tab:hover {
@@ -354,7 +390,7 @@
   border: 1px solid var(--border);
   background-color: var(--surface-subtle);
   cursor: pointer;
-  transition: background-color 150ms ease-out, border-color 150ms ease-out;
+  transition: background-color var(--dur-fast) var(--ease-out-craft), border-color var(--dur-fast) var(--ease-out-craft);
 }
 
 .ui-switch-root:focus-visible {
@@ -380,15 +416,15 @@
   border-radius: 999px;
   background-color: #ffffff;
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
-  transform: translateX(0);
-  transition: transform 160ms cubic-bezier(0.23, 1, 0.32, 1);
+  transform: translate3d(0, 0, 0);
+  transition: transform var(--dur-fast) var(--ease-out-craft);
 }
 
 .ui-switch-root[data-checked] .ui-switch-thumb {
-  transform: translateX(15px);
+  transform: translate3d(15px, 0, 0);
 }
 
-/* @ui-sdk/react Meter — GPU compositor scaleX via width/color */
+/* @ui-sdk/react Meter — GPU compositor scaleX via transform/color */
 .ui-meter-track {
   position: relative;
   width: 100%;
@@ -404,7 +440,7 @@
   border-radius: 999px;
   background-color: var(--accent);
   transform-origin: left center;
-  transition: transform 220ms cubic-bezier(0.23, 1, 0.32, 1), background-color 160ms ease-out;
+  transition: transform var(--dur-standard) var(--ease-out-craft), background-color var(--dur-fast) var(--ease-out-craft);
 }
 
 .ui-meter-indicator[data-tone="ok"] {
@@ -434,7 +470,7 @@
   width: 100%;
   border-radius: 999px;
   transform-origin: left center;
-  transition: transform 220ms cubic-bezier(0.23, 1, 0.32, 1), background-color 160ms ease-out;
+  transition: transform var(--dur-standard) var(--ease-out-craft), background-color var(--dur-fast) var(--ease-out-craft);
 }
 
 .ui-latency-indicator[data-tier="fast"] {
@@ -493,63 +529,44 @@
   fill: rgba(0, 0, 0, 0.52);
 }
 
-/* Dialog / AlertDialog physical entrance: scale(0.96) + opacity, 180ms cubic-bezier(0.23, 1, 0.32, 1) */
-@keyframes ui-backdrop-in {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-@keyframes ui-dialog-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, -4px) scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: translate(-50%, 0) scale(1);
-  }
-}
-
-@keyframes ui-alert-in {
-  from {
-    opacity: 0;
-    transform: translate(-50%, -50%) scale(0.95);
-  }
-  to {
-    opacity: 1;
-    transform: translate(-50%, -50%) scale(1);
-  }
-}
-
-@keyframes ui-drawer-in {
-  from {
-    opacity: 0;
-    transform: translateX(24px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-.ui-dialog-backdrop {
+/* Dialog / AlertDialog / ModalShell / Drawer bidirectional interruptible transitions
+ * Driven natively by @ui-sdk/core presence engine ([data-starting-style] / [data-ending-style])
+ */
+.ui-dialog-backdrop,
+.ui-alert-backdrop {
   position: fixed;
   inset: 0;
   z-index: 60;
-  background-color: rgba(9, 9, 11, 0.56);
-  backdrop-filter: blur(4px);
-  animation: ui-backdrop-in 160ms ease-out both;
+  background-color: rgba(9, 9, 11, 0.54);
+  backdrop-filter: blur(2px);
+  opacity: 1;
+  will-change: opacity;
+  transition-property: opacity;
+  transition-duration: 180ms;
+  transition-timing-function: var(--ease-out-craft);
+}
+
+.ui-alert-backdrop {
+  z-index: 70;
+}
+
+.ui-dialog-backdrop[data-starting-style],
+.ui-alert-backdrop[data-starting-style] {
+  opacity: 0;
+}
+
+.ui-dialog-backdrop[data-ending-style],
+.ui-alert-backdrop[data-ending-style] {
+  opacity: 0;
+  transition-duration: 120ms;
+  transition-timing-function: var(--ease-exit);
 }
 
 .ui-dialog-content {
   position: fixed;
   left: 50%;
   top: 15vh;
-  transform: translateX(-50%);
+  transform: translate3d(-50%, 0, 0) scale(1);
   transform-origin: center top;
   z-index: 61;
   width: min(580px, calc(100vw - 24px));
@@ -559,14 +576,93 @@
   border-radius: 16px;
   box-shadow: var(--shadow-modal);
   overflow: hidden;
-  animation: ui-dialog-in 190ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  opacity: 1;
+  transition-property: opacity, transform;
+  transition-duration: var(--dur-standard);
+  transition-timing-function: var(--ease-out-craft);
+}
+
+.ui-dialog-content[data-starting-style] {
+  opacity: 0;
+  transform: translate3d(-50%, -4px, 0) scale(var(--enter-scale-modal));
+}
+
+.ui-dialog-content[data-ending-style] {
+  opacity: 0;
+  transform: translate3d(-50%, -2px, 0) scale(0.975);
+  transition-duration: 120ms;
+  transition-timing-function: var(--ease-exit);
+}
+
+.ui-modal-content {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate3d(-50%, -50%, 0) scale(1);
+  transform-origin: center center;
+  z-index: 61;
+  width: min(580px, calc(100vw - 24px));
+  max-height: min(88vh, calc(100dvh - 32px));
+  display: flex;
+  flex-direction: column;
+  background-color: var(--surface-elevated);
+  color: var(--ink);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  box-shadow: var(--shadow-modal);
+  overflow: hidden;
+  opacity: 1;
+  transition-property: opacity, transform, width, height, border-radius;
+  transition-duration: var(--dur-standard), var(--dur-standard), 180ms, 180ms, 180ms;
+  transition-timing-function: var(--ease-out-craft);
+}
+
+.ui-modal-content[data-size='sm'] {
+  width: min(460px, calc(100vw - 24px));
+}
+
+.ui-modal-content[data-size='md'] {
+  width: min(580px, calc(100vw - 24px));
+}
+
+.ui-modal-content[data-size='lg'] {
+  width: min(760px, calc(100vw - 24px));
+}
+
+.ui-modal-content[data-size='xl'] {
+  width: min(980px, calc(100vw - 24px));
+}
+
+.ui-modal-content[data-size='window'] {
+  width: min(1320px, calc(100vw - 24px));
+  height: min(84vh, calc(100dvh - 32px));
+  max-height: calc(100dvh - 16px);
+}
+
+.ui-modal-content[data-maximized='true'] {
+  width: calc(100vw - 16px);
+  height: calc(100dvh - 16px);
+  max-height: calc(100dvh - 16px);
+  border-radius: 12px;
+}
+
+.ui-modal-content[data-starting-style] {
+  opacity: 0;
+  transform: translate3d(-50%, calc(-50% + var(--enter-y-subtle)), 0) scale(var(--enter-scale-modal));
+}
+
+.ui-modal-content[data-ending-style] {
+  opacity: 0;
+  transform: translate3d(-50%, calc(-50% + 4px), 0) scale(0.975);
+  transition-duration: 120ms;
+  transition-timing-function: var(--ease-exit);
 }
 
 .ui-alert-content {
   position: fixed;
   left: 50%;
   top: 50%;
-  transform: translate(-50%, -50%);
+  transform: translate3d(-50%, -50%, 0) scale(1);
   transform-origin: center center;
   z-index: 71;
   width: min(460px, calc(100vw - 24px));
@@ -576,7 +672,22 @@
   border-radius: 16px;
   box-shadow: var(--shadow-modal);
   padding: 24px;
-  animation: ui-alert-in 190ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  opacity: 1;
+  transition-property: opacity, transform;
+  transition-duration: var(--dur-standard);
+  transition-timing-function: var(--ease-out-craft);
+}
+
+.ui-alert-content[data-starting-style] {
+  opacity: 0;
+  transform: translate3d(-50%, calc(-50% + 4px), 0) scale(var(--enter-scale-modal));
+}
+
+.ui-alert-content[data-ending-style] {
+  opacity: 0;
+  transform: translate3d(-50%, calc(-50% + 2px), 0) scale(0.975);
+  transition-duration: 120ms;
+  transition-timing-function: var(--ease-exit);
 }
 
 .ui-drawer-content {
@@ -592,7 +703,23 @@
   color: var(--ink);
   border-left: 1px solid var(--border);
   box-shadow: var(--shadow-modal);
-  animation: ui-drawer-in 190ms cubic-bezier(0.23, 1, 0.32, 1) both;
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+  transition-property: opacity, transform;
+  transition-duration: var(--dur-sheet);
+  transition-timing-function: var(--ease-out-craft);
+}
+
+.ui-drawer-content[data-starting-style] {
+  opacity: 0;
+  transform: translate3d(28px, 0, 0);
+}
+
+.ui-drawer-content[data-ending-style] {
+  opacity: 0;
+  transform: translate3d(24px, 0, 0);
+  transition-duration: 160ms;
+  transition-timing-function: var(--ease-exit);
 }
 
 .ui-drawer-content[data-size='lg'] {
@@ -601,6 +728,136 @@
 
 .ui-drawer-content[data-size='xl'] {
   width: min(760px, 100vw);
+}
+
+.ui-drawer-content[data-size='wide'] {
+  width: min(1080px, 100vw);
+}
+
+/* Unified micro-interaction primitives (explicit properties only — never wildcard transitions) */
+.ui-press {
+  transition-property: color, background-color, border-color, transform, opacity;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out-craft);
+}
+
+.ui-press:active:not(:disabled):not([aria-disabled="true"]) {
+  transform: scale(var(--press-scale));
+}
+
+.ui-press-icon {
+  transition-property: color, background-color, border-color, transform, opacity;
+  transition-duration: var(--dur-fast);
+  transition-timing-function: var(--ease-out-craft);
+}
+
+.ui-press-icon:active:not(:disabled):not([aria-disabled="true"]) {
+  transform: scale(var(--press-scale-icon));
+}
+
+.ui-chevron {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transform: rotate(0deg);
+  transition: transform var(--dur-fast) var(--ease-out-craft), color var(--dur-fast) var(--ease-out-craft);
+}
+
+.ui-chevron[data-open="true"] {
+  transform: rotate(90deg);
+}
+
+/* Smooth interruptible CSS Grid disclosure (0fr <-> 1fr) */
+.ui-disclosure {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  transition: grid-template-rows 160ms var(--ease-exit), opacity 130ms var(--ease-exit);
+}
+
+.ui-disclosure[data-open="true"] {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  transition: grid-template-rows var(--dur-standard) var(--ease-out-craft), opacity 170ms var(--ease-out-craft);
+}
+
+.ui-disclosure-inner {
+  overflow: hidden;
+  min-height: 0;
+}
+
+/* Main shell sidebar collapse transition — synced with desktop sidebar sheet timing */
+.ui-main-shell {
+  transition: padding-left var(--dur-sheet) var(--ease-out-craft);
+}
+
+/* Restrained Apple-grade skeleton shimmer (compositor-only opacity + transform) */
+@keyframes ui-skeleton-breathe {
+  0%, 100% {
+    opacity: 0.92;
+  }
+  50% {
+    opacity: 0.56;
+  }
+}
+
+.ui-skeleton {
+  position: relative;
+  overflow: hidden;
+  animation: ui-skeleton-breathe 1.8s var(--ease-in-out) infinite;
+}
+
+/* Subtle error head-shake (macOS password feel, strictly translate3d) */
+@keyframes ui-shake {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  22% {
+    transform: translate3d(-4px, 0, 0);
+  }
+  44% {
+    transform: translate3d(3.5px, 0, 0);
+  }
+  66% {
+    transform: translate3d(-2.5px, 0, 0);
+  }
+  84% {
+    transform: translate3d(1.5px, 0, 0);
+  }
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.ui-shake {
+  animation: ui-shake 280ms ease-out;
+}
+
+/* Subtle settle glow after Kanban card drop */
+@keyframes ui-card-settled {
+  0% {
+    border-color: var(--accent);
+    background-color: var(--accent-soft);
+  }
+  100% {
+    border-color: var(--border);
+    background-color: var(--surface-elevated);
+  }
+}
+
+.ui-card-settled {
+  animation: ui-card-settled 600ms var(--ease-out-craft);
+}
+
+/* Subtle hover arrow nudge — pointer devices only to avoid touch sticky hover */
+.ui-hover-nudge {
+  transition: transform var(--dur-fast) var(--ease-out-craft), color var(--dur-fast) var(--ease-out-craft);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .group:hover .ui-hover-nudge {
+    transform: translate3d(2px, 0, 0);
+  }
 }
 
 /* cmdk Command Palette — zero-latency keyboard navigation */
@@ -663,7 +920,7 @@
   fill: none;
   stroke: var(--accent);
   stroke-opacity: 0.4;
-  transition: stroke-opacity 150ms ease-out, stroke 150ms ease-out;
+  transition: stroke-opacity var(--dur-fast) var(--ease-out-craft), stroke var(--dur-fast) var(--ease-out-craft);
 }
 
 .wm-arc.is-inactive {
@@ -702,6 +959,35 @@
 .wm-select-ring {
   fill: none;
   stroke: var(--accent);
+  transition: stroke-opacity var(--dur-fast) var(--ease-out-craft);
+}
+
+/* Align Vaul swipe drawers and overlays with unified Apple sheet timing & curve.
+ * Keep transition-duration without !important so Vaul's inline `transition: none`
+ * preserves 1:1 direct drag tracking.
+ */
+[data-vaul-drawer] {
+  transition-duration: var(--dur-sheet);
+  transition-timing-function: var(--ease-out-craft);
+  animation-duration: var(--dur-sheet) !important;
+  animation-timing-function: var(--ease-out-craft) !important;
+}
+
+[data-vaul-drawer][data-state="closed"] {
+  animation-duration: 180ms !important;
+  animation-timing-function: var(--ease-exit) !important;
+}
+
+[data-vaul-overlay] {
+  transition-duration: var(--dur-standard);
+  transition-timing-function: var(--ease-out-craft);
+  animation-duration: 180ms !important;
+  animation-timing-function: var(--ease-out-craft) !important;
+}
+
+[data-vaul-overlay][data-state="closed"] {
+  animation-duration: 140ms !important;
+  animation-timing-function: var(--ease-exit) !important;
 }
 
 .wm-node-halo {
@@ -802,18 +1088,84 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-micro: 0ms;
+    --dur-fast: 0ms;
+    --dur-standard: 0ms;
+    --dur-sheet: 0ms;
+    --dur-emphasis: 0ms;
+  }
+
   .ui-seg-indicator,
   .ui-tabs-indicator,
   .ui-switch-thumb,
   .ui-meter-indicator,
   .ui-latency-indicator,
+  .ui-chevron,
+  .ui-disclosure,
+  .ui-disclosure[data-open="true"],
+  .ui-main-shell,
+  .ui-hover-nudge,
   .wm-arc {
     transition: none !important;
   }
 
+  .ui-press:active,
+  .ui-press-icon:active,
+  .group:hover .ui-hover-nudge {
+    transform: none !important;
+  }
+
   .ui-dialog-backdrop,
+  .ui-alert-backdrop,
   .ui-dialog-content,
-  .ui-alert-content {
+  .ui-modal-content,
+  .ui-alert-content,
+  .ui-drawer-content {
+    transition-property: opacity !important;
+    transition-duration: 80ms !important;
+    transition-timing-function: linear !important;
+  }
+
+  .ui-dialog-content[data-starting-style],
+  .ui-dialog-content[data-ending-style] {
+    transform: translate3d(-50%, 0, 0) !important;
+  }
+
+  .ui-modal-content[data-starting-style],
+  .ui-modal-content[data-ending-style],
+  .ui-alert-content[data-starting-style],
+  .ui-alert-content[data-ending-style] {
+    transform: translate3d(-50%, -50%, 0) !important;
+  }
+
+  .ui-drawer-content[data-starting-style],
+  .ui-drawer-content[data-ending-style] {
+    transform: translate3d(0, 0, 0) !important;
+  }
+
+  [data-vaul-drawer][data-state="open"],
+  [data-vaul-overlay][data-state="open"] {
+    animation-name: fadeIn !important;
+    animation-duration: 80ms !important;
+    animation-timing-function: linear !important;
+    transition: none !important;
+  }
+
+  [data-vaul-drawer][data-state="closed"],
+  [data-vaul-overlay][data-state="closed"] {
+    animation-name: fadeOut !important;
+    animation-duration: 80ms !important;
+    animation-timing-function: linear !important;
+    transition: none !important;
+  }
+
+  .ui-skeleton,
+  .ui-shake,
+  .ui-card-settled,
+  .animate-pulse,
+  .animate-ping,
+  .animate-bounce {
     animation: none !important;
   }
 }

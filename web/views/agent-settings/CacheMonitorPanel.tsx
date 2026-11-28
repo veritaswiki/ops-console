@@ -448,7 +448,7 @@ export function CacheMonitorPanel({
               type="button"
               onClick={() => setInspectedDiagnosis(latestDiagnosis)}
               className={cn(
-                'w-full text-left rounded-xl border px-3.5 py-2.5 flex items-center justify-between gap-3 transition-colors duration-150 cursor-pointer',
+                'group ui-press w-full text-left rounded-xl border px-3.5 py-2.5 flex items-center justify-between gap-3 cursor-pointer',
                 latestDiagnosis.chartAnnotation.severity === 'critical'
                   ? 'border-[var(--err)]/30 bg-[var(--err)]/5 hover:bg-[var(--err)]/10'
                   : latestDiagnosis.chartAnnotation.severity === 'warn'
@@ -466,7 +466,7 @@ export function CacheMonitorPanel({
                   {latestDiagnosis.chartAnnotation.detail}
                 </span>
               </div>
-              <ChevronRight className="size-4 shrink-0 text-[var(--ink-subtle)]" strokeWidth={1.75} />
+              <ChevronRight className="ui-hover-nudge size-4 shrink-0 text-[var(--ink-subtle)]" strokeWidth={1.75} />
             </button>
           )}
 

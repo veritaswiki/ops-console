@@ -54,11 +54,15 @@ import {
 import { cn, FOCUS_RING } from '../lib/cn';
 import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import {
+  AnimatedCollapse,
   Button,
+  ClearInputButton,
   EmptyState,
   ErrorState,
   inputBaseClass,
   InspectorDrawer,
+  LiveNumber,
+  SegmentedControl,
   StatusIndicator,
   ViewSkeleton,
   type ConfirmModalState,
@@ -505,38 +509,27 @@ export function ProjectsView({
             任务看板
           </h1>
           <span className="font-mono text-[12px] text-[var(--ink-subtle)] tabular-nums">
-            {filteredIssues.length}
+            <LiveNumber value={filteredIssues.length} />
           </span>
 
           {/* Linear Board / List toggle */}
-          <div className="inline-flex items-center rounded-lg border border-[var(--border)] bg-[var(--surface)] p-0.5">
-            <button
-              type="button"
-              onClick={() => setMode('board')}
-              className={cn(
-                'h-7 px-2.5 rounded-md text-[12px] font-medium inline-flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap',
-                mode === 'board'
-                  ? 'bg-[var(--surface-active)] text-[var(--ink)]'
-                  : 'text-[var(--ink-muted)] hover:text-[var(--ink)]',
-              )}
-            >
-              <LayoutGrid className="size-3.5" />
-              看板
-            </button>
-            <button
-              type="button"
-              onClick={() => setMode('list')}
-              className={cn(
-                'h-7 px-2.5 rounded-md text-[12px] font-medium inline-flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap',
-                mode === 'list'
-                  ? 'bg-[var(--surface-active)] text-[var(--ink)]'
-                  : 'text-[var(--ink-muted)] hover:text-[var(--ink)]',
-              )}
-            >
-              <List className="size-3.5" />
-              列表
-            </button>
-          </div>
+          <SegmentedControl<'board' | 'list'>
+            ariaLabel="任务看板视图模式"
+            value={mode}
+            onChange={setMode}
+            options={[
+              {
+                value: 'board',
+                label: '看板',
+                icon: <LayoutGrid className="size-3.5" strokeWidth={1.75} />,
+              },
+              {
+                value: 'list',
+                label: '列表',
+                icon: <List className="size-3.5" strokeWidth={1.75} />,
+              },
+            ]}
+          />
 
           {/* Inline Assignee Filter */}
           <select
@@ -558,12 +551,18 @@ export function ProjectsView({
           <div className="relative w-40 sm:w-52">
             <Search className="size-3.5 text-[var(--ink-subtle)] absolute left-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
             <input
-              type="search"
+              type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="筛选任务..."
               aria-label="筛选任务"
-              className={cn('w-full h-8 pl-8 pr-2.5 text-[12.5px]', inputBaseClass)}
+              className={cn('w-full h-8 pl-8 pr-7 text-[12.5px]', inputBaseClass)}
+            />
+            <ClearInputButton
+              visible={Boolean(searchQuery)}
+              onClear={() => setSearchQuery('')}
+              ariaLabel="清空任务筛选"
+              placement="overlay"
             />
           </div>
 
@@ -592,7 +591,7 @@ export function ProjectsView({
       </div>
 
       {/* Slim Inline Linear Quick-Create Bar */}
-      {showCreate && (
+      <AnimatedCollapse open={showCreate}>
         <form
           onSubmit={handleCreateIssue}
           data-testid="create-linear-issue-form"
@@ -675,7 +674,7 @@ export function ProjectsView({
             </div>
           </div>
         </form>
-      )}
+      </AnimatedCollapse>
 
       {/* Main Linear Board or Grouped List */}
       {filteredIssues.length === 0 ? (
@@ -702,7 +701,7 @@ export function ProjectsView({
                     <ColumnStatusIcon colId={col.id} />
                     <span className="text-[13px] font-medium text-[var(--ink)] truncate">{col.label}</span>
                     <span className="font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums">
-                      {colItems.length}
+                      <LiveNumber value={colItems.length} />
                     </span>
                   </div>
                   {!readOnly && (
@@ -711,7 +710,7 @@ export function ProjectsView({
                       aria-label={`在${col.label}中新建任务`}
                       onClick={() => openCreateWithStatus(col.targetStatus)}
                       className={cn(
-                        'h-6 w-6 rounded-md inline-flex items-center justify-center text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] cursor-pointer transition-colors',
+                        'ui-press-icon h-6 w-6 rounded-md inline-flex items-center justify-center text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] cursor-pointer',
                         FOCUS_RING,
                       )}
                     >
@@ -794,11 +793,11 @@ export function ProjectsView({
                                   onOpenAgentTask(linkedTask.id);
                                 }}
                                 className={cn(
-                                  'h-6 w-6 -mr-1 rounded-md inline-flex items-center justify-center text-[var(--ink-subtle)] hover:text-[var(--accent)] hover:bg-[var(--surface-hover)] cursor-pointer transition-colors',
+                                  'group ui-press-icon h-6 w-6 -mr-1 rounded-md inline-flex items-center justify-center text-[var(--ink-subtle)] hover:text-[var(--accent)] hover:bg-[var(--surface-hover)] cursor-pointer',
                                   FOCUS_RING,
                                 )}
                               >
-                                <ArrowUpRight className="size-3.5" />
+                                <ArrowUpRight className="size-3.5 ui-hover-nudge" />
                               </button>
                             )}
                           </div>
@@ -824,7 +823,7 @@ export function ProjectsView({
                     <ColumnStatusIcon colId={col.id} />
                     <span className="text-[12.5px] font-medium text-[var(--ink)]">{col.label}</span>
                     <span className="font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums">
-                      {colItems.length}
+                      <LiveNumber value={colItems.length} />
                     </span>
                   </div>
                 </div>

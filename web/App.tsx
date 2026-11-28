@@ -1,10 +1,8 @@
 import React from 'react';
-import { MotionConfig } from 'motion/react';
+import { AnimatePresence, MotionConfig, motion } from 'motion/react';
 import { Toaster, toast } from 'sonner';
 import { Drawer } from 'vaul';
 import {
-  ChevronDown,
-  ChevronRight,
   LogOut,
   Menu,
   Moon,
@@ -42,13 +40,19 @@ import {
   logoutSession,
 } from './api';
 import { cn, FOCUS_RING } from './lib/cn';
+import { DURATION, EASE_EXIT, EASE_OUT_CRAFT } from './lib/motion';
 import { formatClock, formatRelativeAge, statusLabel, taskStateLabel } from './utils/format';
 import {
   Button,
   CommandPalette,
   ConfirmAlertDialog,
+  Disclosure,
+  DisclosureChevron,
+  IconSwap,
   NativeSelect,
+  PresenceBanner,
   ViewSkeleton,
+  ViewStage,
   type CommandEntry,
   type ConfirmModalState,
 } from './components/ui';
@@ -904,7 +908,7 @@ export function App() {
     const subMenuExpanded = Boolean(navSubMenus[mod.id]);
     const activeSubTab = viewSubTabs[mod.id] || mod.children?.[0]?.subTab || '';
     return (
-      <div key={mod.id} className="space-y-0.5">
+      <div key={mod.id}>
         <div className="flex items-center gap-0.5">
           <button
             type="button"
@@ -914,8 +918,7 @@ export function App() {
             onMouseEnter={() => prefetchModule(mod.id)}
             onFocus={() => prefetchModule(mod.id)}
             className={cn(
-              'flex-1 min-w-0 flex items-center justify-between gap-2.5 px-2.5 py-2 rounded-lg text-[13.5px] font-medium select-none cursor-pointer whitespace-nowrap',
-              'transition-colors duration-150 ease-out',
+              'ui-press flex-1 min-w-0 flex items-center justify-between gap-2.5 px-2.5 py-2 rounded-lg text-[13.5px] font-medium select-none cursor-pointer whitespace-nowrap',
               FOCUS_RING,
               isActive
                 ? 'bg-[var(--surface-active)] text-[var(--ink)]'
@@ -952,15 +955,11 @@ export function App() {
               aria-expanded={subMenuExpanded}
               data-testid={`sidebar-submenu-toggle-${mod.id}`}
               className={cn(
-                'h-8 w-7 shrink-0 inline-flex items-center justify-center rounded-lg text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] transition-colors duration-150 ease-out cursor-pointer',
+                'ui-press-icon h-8 w-7 shrink-0 inline-flex items-center justify-center rounded-lg text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] cursor-pointer',
                 FOCUS_RING,
               )}
             >
-              {subMenuExpanded ? (
-                <ChevronDown className="size-3.5" strokeWidth={1.75} />
-              ) : (
-                <ChevronRight className="size-3.5" strokeWidth={1.75} />
-              )}
+              <DisclosureChevron open={subMenuExpanded} />
             </button>
           )}
           {isAgentHome && (
@@ -981,7 +980,7 @@ export function App() {
                 aria-expanded={agentSearchOpen}
                 data-testid="sidebar-agent-search-toggle"
                 className={cn(
-                  'relative h-8 w-7 shrink-0 inline-flex items-center justify-center rounded-lg transition-colors cursor-pointer',
+                  'ui-press-icon relative h-8 w-7 shrink-0 inline-flex items-center justify-center rounded-lg cursor-pointer',
                   agentSearchOpen || agentSearchQuery.trim().length > 0
                     ? 'bg-[var(--surface-active)] text-[var(--accent)]'
                     : 'text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
@@ -1003,7 +1002,7 @@ export function App() {
                 aria-label="新建 Agent 对话"
                 data-testid="sidebar-new-agent-btn"
                 className={cn(
-                  'h-8 w-7 shrink-0 inline-flex items-center justify-center rounded-lg text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] transition-colors cursor-pointer',
+                  'ui-press-icon h-8 w-7 shrink-0 inline-flex items-center justify-center rounded-lg text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] cursor-pointer',
                   FOCUS_RING,
                 )}
               >
@@ -1016,12 +1015,12 @@ export function App() {
         {/* Agent task search (hidden behind icon toggle) + recent / filtered threads directly under Agent */}
         {isAgentHome && sidebarThreadsSlot && (agentSearchOpen || agentSearchQuery.trim().length > 0 || filteredSidebarAgentTasks.length > 0) && (
           <div
-            className="ml-3.5 pl-2.5 border-l border-[var(--border-subtle)] py-1 space-y-1.5"
+            className="mt-0.5 ml-3.5 pl-2.5 border-l border-[var(--border-subtle)] py-1"
             data-testid="sidebar-agent-threads"
             data-slot-id={sidebarThreadsSlot.id}
           >
-            {(agentSearchOpen || agentSearchQuery.trim().length > 0) && (
-              <div className="relative">
+            <Disclosure open={agentSearchOpen || agentSearchQuery.trim().length > 0}>
+              <div className="relative pb-1.5">
                 <Search
                   className="size-3.5 text-[var(--ink-subtle)] absolute left-2 top-1/2 -translate-y-1/2 pointer-events-none"
                   strokeWidth={1.75}
@@ -1061,14 +1060,14 @@ export function App() {
                   aria-label={agentSearchQuery.length > 0 ? '清空任务搜索' : '收起任务搜索'}
                   data-testid="sidebar-agent-search-clear"
                   className={cn(
-                    'h-5 w-5 absolute right-1 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer',
+                    'ui-press-icon h-5 w-5 absolute right-1 top-1/2 -translate-y-1/2 inline-flex items-center justify-center rounded text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] cursor-pointer',
                     FOCUS_RING,
                   )}
                 >
                   <X className="size-3" strokeWidth={1.75} />
                 </button>
               </div>
-            )}
+            </Disclosure>
 
             {filteredSidebarAgentTasks.length > 0 ? (
               <div className="space-y-0.5">
@@ -1090,7 +1089,7 @@ export function App() {
                       onClick={() => handleOpenAgentThread(task.id)}
                       title={`${task.prompt || task.id} (${task.id})`}
                       className={cn(
-                        'w-full flex flex-col gap-0.5 px-2 py-1.5 rounded-md text-left cursor-pointer transition-colors min-w-0',
+                        'ui-press w-full flex flex-col gap-0.5 px-2 py-1.5 rounded-md text-left cursor-pointer min-w-0',
                         FOCUS_RING,
                         threadActive
                           ? 'bg-[var(--surface-active)] text-[var(--ink)]'
@@ -1121,35 +1120,37 @@ export function App() {
             ) : null}
           </div>
         )}
-        {hasChildren && subMenuExpanded && mod.children && (
-          <div
-            data-testid={`sidebar-submenu-${mod.id}`}
-            className="ml-3.5 pl-2.5 border-l border-[var(--border-subtle)] space-y-0.5 py-0.5"
-          >
-            {mod.children.map((child) => {
-              const childActive = view === mod.id && activeSubTab === child.subTab;
-              return (
-                <button
-                  key={child.id}
-                  type="button"
-                  data-testid={`sidebar-subitem-${child.id}`}
-                  aria-current={childActive ? 'page' : undefined}
-                  onClick={() => handleSelectView(mod.id, child.subTab)}
-                  onMouseEnter={() => prefetchModule(mod.id)}
-                  onFocus={() => prefetchModule(mod.id)}
-                  className={cn(
-                    'w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-md text-[12.5px] font-medium text-left cursor-pointer select-none whitespace-nowrap transition-colors duration-150 ease-out',
-                    FOCUS_RING,
-                    childActive
-                      ? 'bg-[var(--surface-active)] text-[var(--ink)]'
-                      : 'text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
-                  )}
-                >
-                  <span className="truncate">{child.label}</span>
-                </button>
-              );
-            })}
-          </div>
+        {hasChildren && mod.children && (
+          <Disclosure open={subMenuExpanded}>
+            <div
+              data-testid={`sidebar-submenu-${mod.id}`}
+              className="mt-0.5 ml-3.5 pl-2.5 border-l border-[var(--border-subtle)] space-y-0.5 py-0.5"
+            >
+              {mod.children.map((child) => {
+                const childActive = view === mod.id && activeSubTab === child.subTab;
+                return (
+                  <button
+                    key={child.id}
+                    type="button"
+                    data-testid={`sidebar-subitem-${child.id}`}
+                    aria-current={childActive ? 'page' : undefined}
+                    onClick={() => handleSelectView(mod.id, child.subTab)}
+                    onMouseEnter={() => prefetchModule(mod.id)}
+                    onFocus={() => prefetchModule(mod.id)}
+                    className={cn(
+                      'ui-press w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded-md text-[12.5px] font-medium text-left cursor-pointer select-none whitespace-nowrap',
+                      FOCUS_RING,
+                      childActive
+                        ? 'bg-[var(--surface-active)] text-[var(--ink)]'
+                        : 'text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
+                    )}
+                  >
+                    <span className="truncate">{child.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </Disclosure>
         )}
       </div>
     );
@@ -1185,7 +1186,7 @@ export function App() {
             onClick={() => setMobileNavOpen(false)}
             aria-label="关闭导航菜单"
             className={cn(
-              'h-8 w-8 inline-flex items-center justify-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] transition-colors duration-150 ease-out cursor-pointer',
+              'ui-press-icon h-8 w-8 inline-flex items-center justify-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] cursor-pointer',
               FOCUS_RING,
             )}
           >
@@ -1199,7 +1200,7 @@ export function App() {
             title="折叠侧边栏"
             data-testid="sidebar-collapse-btn"
             className={cn(
-              'h-8 w-8 inline-flex items-center justify-center rounded-lg text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] transition-colors duration-150 ease-out cursor-pointer',
+              'ui-press-icon h-8 w-8 inline-flex items-center justify-center rounded-lg text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] cursor-pointer',
               FOCUS_RING,
             )}
           >
@@ -1235,16 +1236,12 @@ export function App() {
                 aria-expanded={expanded}
                 onClick={() => toggleNavGroup(group.domain.id)}
                 className={cn(
-                  'w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[11.5px] font-semibold tracking-wide text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer select-none',
+                  'ui-press w-full flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg text-[11.5px] font-semibold tracking-wide text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] cursor-pointer select-none',
                   FOCUS_RING,
                 )}
               >
                 <span className="inline-flex items-center gap-1.5">
-                  {expanded ? (
-                    <ChevronDown className="size-3.5" strokeWidth={1.75} />
-                  ) : (
-                    <ChevronRight className="size-3.5" strokeWidth={1.75} />
-                  )}
+                  <DisclosureChevron open={expanded} />
                   <span>{group.domain.title}</span>
                 </span>
                 {!expanded && collapsedBadgeCount > 0 && (
@@ -1258,11 +1255,11 @@ export function App() {
                   </span>
                 )}
               </button>
-              {expanded && (
+              <Disclosure open={expanded}>
                 <div className="mt-1 flex flex-col gap-0.5">
                   {group.modules.map((mod) => renderNavItem(mod))}
                 </div>
-              )}
+              </Disclosure>
             </div>
           );
         })}
@@ -1285,8 +1282,7 @@ export function App() {
                 onMouseEnter={() => prefetchModule(mod.id)}
                 onFocus={() => prefetchModule(mod.id)}
                 className={cn(
-                  'w-full flex items-center justify-between gap-2.5 px-2.5 py-2 rounded-lg text-[13.5px] font-medium select-none cursor-pointer whitespace-nowrap',
-                  'transition-colors duration-150 ease-out',
+                  'ui-press w-full flex items-center justify-between gap-2.5 px-2.5 py-2 rounded-lg text-[13.5px] font-medium select-none cursor-pointer whitespace-nowrap',
                   FOCUS_RING,
                   isActive
                     ? 'bg-[var(--surface-active)] text-[var(--ink)]'
@@ -1383,7 +1379,7 @@ export function App() {
             data-testid="command-trigger"
             data-slot-id={slot.id}
             className={cn(
-              'h-8 px-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-[12.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:border-[var(--border-strong)] transition-[color,border-color,transform] duration-150 ease-out active:scale-[0.97] inline-flex items-center gap-2 cursor-pointer whitespace-nowrap select-none',
+              'ui-press h-8 px-2.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] text-[12.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] hover:border-[var(--border-strong)] inline-flex items-center gap-2 cursor-pointer whitespace-nowrap select-none',
               FOCUS_RING,
             )}
           >
@@ -1480,11 +1476,13 @@ export function App() {
             data-testid="theme-toggle"
             data-slot-id={slot.id}
           >
-            {theme === 'dark' ? (
-              <Sun className="size-4" strokeWidth={1.75} />
-            ) : (
-              <Moon className="size-4" strokeWidth={1.75} />
-            )}
+            <IconSwap iconKey={theme} rotateDeg={24}>
+              {theme === 'dark' ? (
+                <Sun className="size-4" strokeWidth={1.75} />
+              ) : (
+                <Moon className="size-4" strokeWidth={1.75} />
+              )}
+            </IconSwap>
           </Button>
         );
       case 'session-logout':
@@ -1511,14 +1509,25 @@ export function App() {
     <MotionConfig reducedMotion="user">
       <div className="min-h-dvh bg-[var(--bg)] text-[var(--ink)] flex">
         {/* Collapsible Desktop Sidebar */}
-        {!sidebarCollapsed && (
-          <aside
-            data-testid="desktop-sidebar"
-            className="hidden lg:flex lg:w-[244px] lg:shrink-0 lg:flex-col lg:fixed lg:inset-y-0 lg:left-0 bg-[var(--surface-elevated)] border-r border-[var(--border)] z-30"
-          >
-            {renderSidebarContent(false)}
-          </aside>
-        )}
+        <AnimatePresence initial={false}>
+          {!sidebarCollapsed && (
+            <motion.aside
+              key="desktop-sidebar"
+              data-testid="desktop-sidebar"
+              initial={{ x: -244, opacity: 0.92 }}
+              animate={{ x: 0, opacity: 1 }}
+              exit={{
+                x: -244,
+                opacity: 0.92,
+                transition: { duration: 0.18, ease: EASE_EXIT },
+              }}
+              transition={{ duration: DURATION.sheet, ease: EASE_OUT_CRAFT }}
+              className="hidden lg:flex lg:w-[244px] lg:shrink-0 lg:flex-col lg:fixed lg:inset-y-0 lg:left-0 bg-[var(--surface-elevated)] border-r border-[var(--border)] z-30"
+            >
+              {renderSidebarContent(false)}
+            </motion.aside>
+          )}
+        </AnimatePresence>
 
         {/* Native Gesture Mobile Drawer via Vaul */}
         <Drawer.Root
@@ -1544,7 +1553,7 @@ export function App() {
         {/* Main Content Column */}
         <div
           className={cn(
-            'flex-1 min-w-0 flex flex-col min-h-dvh',
+            'ui-main-shell flex-1 min-w-0 flex flex-col min-h-dvh',
             sidebarCollapsed ? 'lg:pl-0' : 'lg:pl-[244px]',
           )}
         >
@@ -1561,19 +1570,29 @@ export function App() {
                 >
                   <Menu className="size-4" strokeWidth={1.75} />
                 </Button>
-                {sidebarCollapsed && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => setSidebarCollapsed(false)}
-                    aria-label="展开侧边栏"
-                    title="展开侧边栏"
-                    data-testid="sidebar-expand-btn"
-                    className="hidden lg:inline-flex"
-                  >
-                    <PanelLeftOpen className="size-4" strokeWidth={1.75} />
-                  </Button>
-                )}
+                <AnimatePresence initial={false}>
+                  {sidebarCollapsed && (
+                    <motion.div
+                      key="sidebar-expand-wrap"
+                      initial={{ opacity: 0, scale: 0.9, x: -4 }}
+                      animate={{ opacity: 1, scale: 1, x: 0 }}
+                      exit={{ opacity: 0, scale: 0.9, x: -4, transition: { duration: 0.11, ease: EASE_EXIT } }}
+                      transition={{ duration: DURATION.fast, ease: EASE_OUT_CRAFT }}
+                      className="hidden lg:inline-flex"
+                    >
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        onClick={() => setSidebarCollapsed(false)}
+                        aria-label="展开侧边栏"
+                        title="展开侧边栏"
+                        data-testid="sidebar-expand-btn"
+                      >
+                        <PanelLeftOpen className="size-4" strokeWidth={1.75} />
+                      </Button>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
                 <div className="flex items-center gap-2 min-w-0 text-[13px] select-none">
                   <span className="hidden sm:inline text-[var(--ink-subtle)] whitespace-nowrap">
                     {activeDomainTitle}
@@ -1610,19 +1629,24 @@ export function App() {
           </header>
 
           {/* Inline Error Notice only when sync actually fails */}
-          {syncError && !isHarnessView && (
-            <div className="border-b border-[var(--err)]/20 bg-[var(--err)]/5">
-              <div className="max-w-[1200px] mx-auto px-4 sm:px-8 py-2 flex items-center justify-between gap-2 text-[12.5px] text-[var(--err)]">
-                <span className="truncate">数据同步异常：{syncError}</span>
-              </div>
+          <PresenceBanner
+            open={Boolean(syncError && !isHarnessView)}
+            edge="top"
+            role="alert"
+            className="border-b border-[var(--err-border)] bg-[var(--err-soft)]"
+          >
+            <div className="max-w-[1200px] mx-auto px-4 sm:px-8 py-2 flex items-center justify-between gap-2 text-[12.5px] text-[var(--err)]">
+              <span className="truncate">数据同步异常：{syncError}</span>
             </div>
-          )}
+          </PresenceBanner>
 
-          {hotUpdateNotice && (
-            <div
-              data-testid="hot-update-banner"
-              className="border-b border-[var(--accent)]/25 bg-[var(--accent)]/[0.06]"
-            >
+          <PresenceBanner
+            open={Boolean(hotUpdateNotice)}
+            edge="top"
+            testId="hot-update-banner"
+            className="border-b border-[var(--accent)]/25 bg-[var(--accent-soft)]"
+          >
+            {hotUpdateNotice && (
               <div className="max-w-[1200px] mx-auto px-4 sm:px-8 py-2 flex flex-wrap items-center justify-between gap-2 text-[12.5px] text-[var(--ink)]">
                 <span className="truncate font-medium">{hotUpdateNotice.message}</span>
                 <div className="flex items-center gap-2">
@@ -1647,8 +1671,8 @@ export function App() {
                   )}
                 </div>
               </div>
-            </div>
-          )}
+            )}
+          </PresenceBanner>
 
           {/* Active View Shell with per-module fault boundary */}
           <main className={mainContainerClass}>
@@ -1657,6 +1681,10 @@ export function App() {
             ) : (
               <ModuleBoundary moduleId={activeModule.id} moduleLabel={activeModule.label}>
                 <React.Suspense fallback={<ViewSkeleton />}>
+                  <ViewStage
+                    stageKey={view}
+                    className={view === 'agents' ? 'flex-1 flex flex-col min-h-0' : undefined}
+                  >
                   {view === 'overview' && (
                     <OverviewView
                       snapshot={snapshot}
@@ -1841,6 +1869,7 @@ export function App() {
                       onConfirm={setConfirmState}
                     />
                   )}
+                  </ViewStage>
                 </React.Suspense>
               </ModuleBoundary>
             )}

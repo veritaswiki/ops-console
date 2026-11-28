@@ -1,7 +1,7 @@
 import React from 'react';
 import { cva, type VariantProps } from 'class-variance-authority';
 import { Command as Cmdk } from 'cmdk';
-import NumberFlow from '@number-flow/react';
+import { motion, useReducedMotion } from 'motion/react';
 import {
   SegmentedControl as UiSegmentedControl,
   SegmentedControlIndicator,
@@ -27,13 +27,36 @@ import { Meter, MeterIndicator, MeterTrack } from '@ui-sdk/react/meter';
 import { AlertTriangle, Check, ChevronDown, ChevronRight, Inbox, RefreshCw, Search, X } from 'lucide-react';
 import type { StatusTone } from '../types';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { EASE_OUT_CRAFT } from '../lib/motion';
 import { clampPercent, classifyLatency, statusLabel, statusTone } from '../utils/format';
+import {
+  ClearInputButton,
+  LiveNumber,
+  PresencePopover,
+} from './motion-primitives';
+
+export {
+  ActionStateButton,
+  AnimatedCollapse,
+  ClearInputButton,
+  CopyAction,
+  Disclosure,
+  DisclosureChevron,
+  IconSwap,
+  LiveNumber,
+  ModalShell,
+  PresenceBanner,
+  PresencePopover,
+  TopProgressBar,
+  ViewStage,
+  useDelayedBusy,
+  type ActionButtonStatus,
+} from './motion-primitives';
 
 export const buttonVariants = cva(
   cn(
     'inline-flex items-center justify-center gap-1.5 rounded-lg font-medium select-none whitespace-nowrap shrink-0 cursor-pointer',
-    'transition-[color,background-color,border-color,transform,opacity] duration-150 ease-out',
-    'active:scale-[0.97] disabled:opacity-45 disabled:pointer-events-none',
+    'ui-press disabled:opacity-45 disabled:pointer-events-none',
     FOCUS_RING,
   ),
   {
@@ -131,6 +154,7 @@ NativeSelect.displayName = 'NativeSelect';
 export interface SegmentedOption<T extends string = string> {
   value: T;
   label: string;
+  title?: string;
   disabled?: boolean;
   testId?: string;
   icon?: React.ReactNode;
@@ -169,6 +193,7 @@ export function SegmentedControl<T extends string>({
           key={opt.value}
           value={opt.value}
           disabled={disabled || opt.disabled}
+          title={opt.title}
           data-testid={opt.testId}
           className="ui-seg-item inline-flex items-center gap-1.5"
         >
@@ -325,8 +350,8 @@ export function LatencyMeter({
       className="min-w-[124px] max-w-[156px]"
     >
       <div className="flex items-baseline justify-between gap-2 text-[12px]">
-        <span className="font-mono font-medium text-[var(--ink)] tabular-nums">
-          {info.ms}ms
+        <span className="font-mono font-medium text-[var(--ink)] tabular-nums inline-flex items-baseline">
+          <LiveNumber value={info.ms} suffix="ms" />
           {statusCode ? (
             <span className="ml-1.5 font-normal text-[11px] text-[var(--ink-subtle)]">
               {statusCode}
@@ -529,7 +554,7 @@ export function SettingRow({
           {control}
           {onClick && (
             <ChevronRight
-              className="size-4 text-[var(--ink-subtle)] shrink-0"
+              className="size-4 text-[var(--ink-subtle)] group-hover:text-[var(--ink-muted)] ui-hover-nudge shrink-0"
               strokeWidth={1.75}
               aria-hidden="true"
             />
@@ -547,8 +572,8 @@ export function SettingRow({
         onClick={onClick}
         data-testid={testId}
         className={cn(
-          'w-full text-left flex items-center justify-between gap-4 px-5 sm:px-6 py-4 cursor-pointer',
-          'transition-colors duration-150 ease-out hover:bg-[var(--surface-hover)] disabled:opacity-50 disabled:cursor-not-allowed',
+          'group w-full text-left flex items-center justify-between gap-4 px-5 sm:px-6 py-4 cursor-pointer',
+          'transition-colors duration-150 ease-out hover:bg-[var(--surface-hover)] active:bg-[var(--surface-active)] disabled:opacity-50 disabled:cursor-not-allowed',
           FOCUS_RING,
           className,
         )}
@@ -589,16 +614,33 @@ export function InspectorDrawer({
   title: string;
   description?: string;
   meta?: React.ReactNode;
-  size?: 'md' | 'lg' | 'xl';
+  size?: 'md' | 'lg' | 'xl' | 'wide';
   footer?: React.ReactNode;
   testId?: string;
   children: React.ReactNode;
 }) {
+  const lastOpenContentRef = React.useRef<{
+    title: string;
+    description?: string;
+    meta?: React.ReactNode;
+    size: 'md' | 'lg' | 'xl' | 'wide';
+    footer?: React.ReactNode;
+    children: React.ReactNode;
+  } | null>(null);
+
+  if (open) {
+    lastOpenContentRef.current = { title, description, meta, size, footer, children };
+  }
+
+  const display = open
+    ? { title, description, meta, size, footer, children }
+    : (lastOpenContentRef.current ?? { title, description, meta, size, footer, children });
+
   return (
     <Dialog open={open} onOpenChange={(next) => onOpenChange(next)}>
       <DialogBackdrop className="ui-dialog-backdrop" />
       <DialogContent
-        data-size={size}
+        data-size={display.size}
         data-testid={testId}
         className="ui-drawer-content"
       >
@@ -606,20 +648,20 @@ export function InspectorDrawer({
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-baseline gap-2">
               <DialogTitle className="text-[15.5px] font-semibold tracking-tight text-[var(--ink)] leading-snug text-balance">
-                {title}
+                {display.title}
               </DialogTitle>
-              {meta && (
+              {display.meta && (
                 <span className="text-[12px] text-[var(--ink-subtle)] font-mono tabular-nums">
-                  {meta}
+                  {display.meta}
                 </span>
               )}
             </div>
-            {description ? (
+            {display.description ? (
               <DialogDescription className="mt-1 text-[12.5px] text-[var(--ink-muted)] leading-relaxed text-pretty">
-                {description}
+                {display.description}
               </DialogDescription>
             ) : (
-              <DialogDescription className="sr-only">{title}</DialogDescription>
+              <DialogDescription className="sr-only">{display.title}</DialogDescription>
             )}
           </div>
           <button
@@ -627,17 +669,17 @@ export function InspectorDrawer({
             onClick={() => onOpenChange(false)}
             aria-label="关闭抽屉"
             className={cn(
-              'h-8 w-8 inline-flex items-center justify-center rounded-lg text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out cursor-pointer shrink-0',
+              'ui-press-icon h-8 w-8 inline-flex items-center justify-center rounded-lg text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] cursor-pointer shrink-0',
               FOCUS_RING,
             )}
           >
             <X className="size-4" strokeWidth={1.75} />
           </button>
         </div>
-        <div className="flex-1 overflow-y-auto px-5 sm:px-6 py-5 space-y-5">{children}</div>
-        {footer && (
+        <div className="flex-1 overflow-y-auto px-5 sm:px-6 py-5 space-y-5">{display.children}</div>
+        {display.footer && (
           <div className="px-5 sm:px-6 py-3.5 border-t border-[var(--border-subtle)] bg-[var(--surface)]/95 flex flex-wrap items-center justify-end gap-2 shrink-0">
-            {footer}
+            {display.footer}
           </div>
         )}
       </DialogContent>
@@ -835,7 +877,7 @@ export function CommandCombobox({
           )}
           <ChevronDown
             className={cn(
-              'size-3.5 text-[var(--ink-subtle)] transition-transform duration-150 ease-out',
+              'size-3.5 text-[var(--ink-subtle)] transition-transform duration-150 ease-[var(--ease-out-craft)]',
               open && 'rotate-180',
             )}
             strokeWidth={1.75}
@@ -844,33 +886,25 @@ export function CommandCombobox({
         </div>
       </button>
 
-      {open && (
-        <div
-          role="listbox"
-          className="absolute left-0 right-0 z-50 mt-1.5 min-w-[260px] rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] shadow-[var(--shadow-modal)] overflow-hidden"
-        >
-          <div className="flex items-center gap-2 px-3 border-b border-[var(--border-subtle)]">
-            <Search className="size-3.5 text-[var(--ink-subtle)] shrink-0" strokeWidth={1.75} />
-            <input
-              ref={inputRef}
-              type="text"
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={searchPlaceholder}
-              className="h-9 w-full bg-transparent text-[13px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)] focus:outline-none"
-            />
-            {query && (
-              <button
-                type="button"
-                onClick={() => setQuery('')}
-                aria-label="清空搜索"
-                className="text-[var(--ink-subtle)] hover:text-[var(--ink)] cursor-pointer"
-              >
-                <X className="size-3.5" strokeWidth={1.75} />
-              </button>
-            )}
-          </div>
+      <PresencePopover
+        open={open}
+        side="bottom"
+        role="listbox"
+        className="absolute left-0 right-0 z-50 mt-1.5 min-w-[260px] rounded-xl border border-[var(--border)] bg-[var(--surface-elevated)] shadow-[var(--shadow-modal)] overflow-hidden"
+      >
+        <div className="flex items-center gap-2 px-3 border-b border-[var(--border-subtle)]">
+          <Search className="size-3.5 text-[var(--ink-subtle)] shrink-0" strokeWidth={1.75} />
+          <input
+            ref={inputRef}
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={searchPlaceholder}
+            className="h-9 w-full bg-transparent text-[13px] text-[var(--ink)] placeholder:text-[var(--ink-subtle)] focus:outline-none"
+          />
+          <ClearInputButton visible={Boolean(query)} onClear={() => setQuery('')} ariaLabel="清空搜索" />
+        </div>
 
           {headerSlot && (
             <div className="px-2.5 py-2 border-b border-[var(--border-subtle)] bg-[var(--surface-subtle)]/40">
@@ -954,8 +988,7 @@ export function CommandCombobox({
               ))
             )}
           </div>
-        </div>
-      )}
+      </PresencePopover>
     </div>
   );
 }
@@ -1045,7 +1078,7 @@ function KpiValueDisplay({ cell, large = false }: { cell: KpiCellData; large?: b
         )}
       >
         {cell.numeric.prefix && <span className="text-[0.72em] text-[var(--ink-muted)]">{cell.numeric.prefix}</span>}
-        <NumberFlow value={cell.numeric.primary} />
+        <LiveNumber value={cell.numeric.primary} />
         {cell.numeric.denominator != null && (
           <span className="text-[0.65em] font-medium text-[var(--ink-subtle)] ml-0.5">
             /{cell.numeric.denominator}
@@ -1195,12 +1228,17 @@ export function ErrorState({
   onRetry?: () => void;
   retrying?: boolean;
 }) {
+  const reduced = useReducedMotion();
+
   return (
-    <div
+    <motion.div
       role="alert"
+      initial={reduced ? { opacity: 0 } : { opacity: 0, y: 4 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={reduced ? { duration: 0.08, ease: 'linear' } : { duration: 0.18, ease: EASE_OUT_CRAFT }}
       className="py-12 px-6 flex flex-col items-center justify-center text-center gap-3"
     >
-      <div className="h-10 w-10 rounded-xl border border-[var(--err)]/25 bg-[var(--err)]/5 flex items-center justify-center text-[var(--err)]">
+      <div className="h-10 w-10 rounded-xl border border-[var(--err-border)] bg-[var(--err-soft)] flex items-center justify-center text-[var(--err)]">
         <AlertTriangle className="size-4" strokeWidth={1.75} aria-hidden="true" />
       </div>
       <div className="space-y-1 max-w-sm">
@@ -1212,10 +1250,10 @@ export function ErrorState({
       {onRetry && (
         <Button variant="secondary" size="sm" onClick={onRetry} disabled={retrying} className="mt-1">
           <RefreshCw className={cn('size-3.5', retrying && 'animate-spin')} strokeWidth={1.75} />
-          {retrying ? '重试中...' : '重新加载'}
+          {retrying ? '重试中…' : '重试'}
         </Button>
       )}
-    </div>
+    </motion.div>
   );
 }
 
@@ -1231,7 +1269,7 @@ export function WidgetSkeleton({
       aria-busy="true"
       aria-label={label}
       className={cn(
-        'w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg)]/50 p-4 flex flex-col justify-between animate-pulse',
+        'w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg)]/50 p-4 flex flex-col justify-between ui-skeleton',
         heightClass,
       )}
     >
@@ -1250,19 +1288,19 @@ export function WidgetSkeleton({
 
 export function ViewSkeleton() {
   return (
-    <div className="space-y-8" aria-busy="true" aria-label="正在加载遥测视图">
+    <div className="space-y-8" aria-busy="true" aria-label="加载中…">
       <div className="flex items-end justify-between gap-4">
         <div className="space-y-2">
-          <div className="h-7 w-36 rounded-lg bg-[var(--surface-subtle)] animate-pulse" />
-          <div className="h-4 w-72 max-w-[75vw] rounded-md bg-[var(--surface-subtle)] animate-pulse" />
+          <div className="h-7 w-36 rounded-lg bg-[var(--surface-subtle)] ui-skeleton" />
+          <div className="h-4 w-72 max-w-[75vw] rounded-md bg-[var(--surface-subtle)] ui-skeleton" />
         </div>
-        <div className="hidden sm:block h-4 w-44 rounded-md bg-[var(--surface-subtle)] animate-pulse" />
+        <div className="hidden sm:block h-4 w-44 rounded-md bg-[var(--surface-subtle)] ui-skeleton" />
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        <div className="lg:col-span-5 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
-        <div className="lg:col-span-7 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
+        <div className="lg:col-span-5 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] ui-skeleton" />
+        <div className="lg:col-span-7 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] ui-skeleton" />
       </div>
-      <div className="h-[420px] rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
+      <div className="h-[420px] rounded-2xl border border-[var(--border)] bg-[var(--surface)] ui-skeleton" />
     </div>
   );
 }
@@ -1316,22 +1354,59 @@ export function ConfirmAlertDialog({
   state: ConfirmModalState | null;
   onClose: () => void;
 }) {
+  const lastOpenStateRef = React.useRef<ConfirmModalState | null>(null);
+  if (state?.open) {
+    lastOpenStateRef.current = state;
+  }
+  const displayState = state?.open ? state : lastOpenStateRef.current;
+
   const [tokenInput, setTokenInput] = React.useState('');
+  const [tokenError, setTokenError] = React.useState(false);
+  const [shaking, setShaking] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
+  const shakeRafRef = React.useRef<number | null>(null);
 
   React.useEffect(() => {
+    if (!state?.open) return;
     setTokenInput('');
+    setTokenError(false);
+    setShaking(false);
     setBusy(false);
   }, [state?.open, state?.title, state?.requireToken]);
 
-  const tokenRequired = Boolean(state?.requireToken);
-  const canSubmit = !busy && (!tokenRequired || tokenInput.trim() === state?.requireToken);
+  React.useEffect(
+    () => () => {
+      if (shakeRafRef.current != null) {
+        window.cancelAnimationFrame(shakeRafRef.current);
+      }
+    },
+    [],
+  );
+
+  const tokenRequired = Boolean(displayState?.requireToken);
+  const canSubmit = !busy && (!tokenRequired || tokenInput.trim() === displayState?.requireToken);
+
+  const triggerShake = () => {
+    setShaking(false);
+    if (shakeRafRef.current != null) {
+      window.cancelAnimationFrame(shakeRafRef.current);
+    }
+    shakeRafRef.current = window.requestAnimationFrame(() => {
+      shakeRafRef.current = null;
+      setShaking(true);
+    });
+  };
 
   const handleConfirm = async () => {
-    if (!state || !canSubmit) return;
+    if (!state?.open || busy) return;
+    if (state.requireToken && tokenInput.trim() !== state.requireToken) {
+      setTokenError(true);
+      triggerShake();
+      return;
+    }
     setBusy(true);
     try {
-      await state.onConfirm(tokenRequired ? tokenInput.trim() : undefined);
+      await state.onConfirm(state.requireToken ? tokenInput.trim() : undefined);
       onClose();
     } finally {
       setBusy(false);
@@ -1345,38 +1420,54 @@ export function ConfirmAlertDialog({
         if (!open && !busy) onClose();
       }}
     >
-      <AlertDialogBackdrop className="ui-dialog-backdrop" />
+      <AlertDialogBackdrop className="ui-alert-backdrop" />
       <AlertDialogContent className="ui-alert-content">
         <AlertDialogTitle className="text-[16px] font-semibold tracking-tight text-[var(--ink)] text-balance">
-          {state?.title || '确认操作'}
+          {displayState?.title || '确认操作'}
         </AlertDialogTitle>
         <AlertDialogDescription className="mt-2 text-[13.5px] text-[var(--ink-muted)] leading-relaxed text-pretty">
-          {state?.description || ''}
+          {displayState?.description || ''}
         </AlertDialogDescription>
 
         {tokenRequired && (
-          <div className="mt-4 space-y-2">
+          <div
+            onAnimationEnd={() => setShaking(false)}
+            className={cn('mt-4 space-y-2', shaking && 'ui-shake')}
+          >
             <label className="block text-[13px] text-[var(--ink-muted)]">
-              {state?.requireTokenLabel || '高危操作二次确认'}：请输入{' '}
+              {displayState?.requireTokenLabel || '高危操作二次确认'}：请输入{' '}
               <code className="px-1.5 py-0.5 rounded-md bg-[var(--surface-subtle)] border border-[var(--border-subtle)] text-[var(--ink)] font-semibold">
-                {state?.requireToken}
-              </code>
+                {displayState?.requireToken}
+              </code>{' '}
+              以确认此操作
             </label>
             <input
               type="text"
               value={tokenInput}
-              onChange={(e) => setTokenInput(e.target.value)}
+              onChange={(e) => {
+                setTokenInput(e.target.value);
+                if (tokenError) setTokenError(false);
+              }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter' && canSubmit) {
+                if (e.key === 'Enter') {
                   e.preventDefault();
                   void handleConfirm();
                 }
               }}
-              placeholder={`输入 ${state?.requireToken} 以确认`}
+              placeholder={`输入 ${displayState?.requireToken ?? ''} 以确认`}
               autoComplete="off"
               autoFocus
-              className={cn('w-full h-9 px-3 font-mono', inputBaseClass)}
+              className={cn(
+                'w-full h-9 px-3 font-mono',
+                inputBaseClass,
+                tokenError && 'border-[var(--err-border)] bg-[var(--err-soft)]',
+              )}
             />
+            {tokenError && (
+              <p className="text-[12px] text-[var(--err)]">
+                确认口令不匹配，请核对后重试。
+              </p>
+            )}
           </div>
         )}
 
@@ -1389,12 +1480,12 @@ export function ConfirmAlertDialog({
             取消
           </AlertDialogClose>
           <Button
-            variant={state?.danger ? 'danger' : 'primary'}
+            variant={displayState?.danger ? 'danger' : 'primary'}
             size="md"
             disabled={!canSubmit}
-            onClick={handleConfirm}
+            onClick={() => void handleConfirm()}
           >
-            {busy ? '执行中...' : state?.confirmLabel || '确认执行'}
+            {busy ? '执行中…' : displayState?.confirmLabel || '确认执行'}
           </Button>
         </div>
       </AlertDialogContent>
@@ -1452,7 +1543,7 @@ export function CommandPalette({
               onClick={() => onOpenChange(false)}
               aria-label="关闭命令面板"
               className={cn(
-                'h-7 w-7 inline-flex items-center justify-center rounded-md text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out cursor-pointer shrink-0',
+                'ui-press-icon h-7 w-7 inline-flex items-center justify-center rounded-md text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] cursor-pointer shrink-0',
                 FOCUS_RING,
               )}
             >
@@ -1461,7 +1552,7 @@ export function CommandPalette({
           </div>
           <Cmdk.List className="max-h-[380px] overflow-y-auto p-2">
             <Cmdk.Empty className="py-10 text-center text-[13px] text-[var(--ink-subtle)]">
-              未匹配到相关视图、节点或运维操作
+              未找到匹配的视图、节点或操作
             </Cmdk.Empty>
             {groups.map(([groupName, items], idx) => (
               <React.Fragment key={groupName}>
@@ -1498,8 +1589,8 @@ export function CommandPalette({
             ))}
           </Cmdk.List>
           <div className="hidden sm:flex items-center justify-between px-4 py-2 border-t border-[var(--border-subtle)] bg-[var(--surface-subtle)]/50 text-[11.5px] text-[var(--ink-subtle)] select-none">
-            <span>↑ ↓ 切换条目 · Enter 确认执行</span>
-            <span className="font-mono">ESC 关闭</span>
+            <span>↑↓ 选择 · Enter 打开</span>
+            <span className="font-mono">Esc 关闭</span>
           </div>
         </Cmdk>
       </DialogContent>

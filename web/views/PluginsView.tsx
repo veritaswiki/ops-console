@@ -4,7 +4,6 @@ import { Switch, SwitchThumb } from '@ui-sdk/react/switch';
 import {
   Activity,
   CheckCircle2,
-  Copy,
   Download,
   ExternalLink,
   Plus,
@@ -37,6 +36,7 @@ import { buildPluginsExportPayload } from '../lib/module-helpers';
 import { ModuleFrame } from '../modules/ModuleFrame';
 import {
   Button,
+  CopyAction,
   type ConfirmModalState,
   EmptyState,
   ErrorState,
@@ -161,6 +161,9 @@ export function PluginsView({
 
   // Config Drawer state
   const [editingPlugin, setEditingPlugin] = React.useState<PluginCatalogItem | null>(null);
+  const lastEditingPluginRef = React.useRef<PluginCatalogItem | null>(null);
+  if (editingPlugin) lastEditingPluginRef.current = editingPlugin;
+  const activeEditingPlugin = editingPlugin ?? lastEditingPluginRef.current;
   const [configDraft, setConfigDraft] = React.useState<Record<string, unknown>>({});
   const [savingConfig, setSavingConfig] = React.useState(false);
 
@@ -479,13 +482,6 @@ export function PluginsView({
     });
   };
 
-  const handleCopyCmd = async (cmd: string) => {
-    const ok = await copyToClipboard(cmd);
-    if (ok) {
-      onToast('命令已复制到剪贴板', 'ok');
-    }
-  };
-
   const activeKindMeta = CUSTOM_KIND_OPTIONS.find((k) => k.value === addKind) || CUSTOM_KIND_OPTIONS[0];
   const healthyRatioPct = summary.enabled > 0 ? Math.round((summary.healthy / summary.enabled) * 100) : 100;
   const distinctCategories = new Set(items.filter((i) => i.enabled).map((i) => i.category)).size;
@@ -542,9 +538,9 @@ export function PluginsView({
 
       {/* Asymmetric KPI Strip */}
       {loading && !catalog ? (
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-          <div className="lg:col-span-5 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
-          <div className="lg:col-span-7 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-4" role="status" aria-label="正在加载插件概览">
+          <div className="lg:col-span-5 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] ui-skeleton" />
+          <div className="lg:col-span-7 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] ui-skeleton" />
         </div>
       ) : (
         <KpiStrip
@@ -632,11 +628,11 @@ export function PluginsView({
 
       {/* Plugin Catalog Grid */}
       {loading && items.length === 0 ? (
-        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-4" role="status" aria-label="正在加载插件目录">
           {[0, 1, 2, 3].map((idx) => (
             <div
               key={idx}
-              className="h-56 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse"
+              className="h-56 rounded-2xl border border-[var(--border)] bg-[var(--surface)] ui-skeleton"
             />
           ))}
         </div>
@@ -885,17 +881,14 @@ export function PluginsView({
                 <code className="font-mono text-[11.5px] text-[var(--ink)] truncate" title={snippet.cmd}>
                   {snippet.cmd}
                 </code>
-                <button
-                  type="button"
-                  onClick={() => void handleCopyCmd(snippet.cmd)}
-                  aria-label={`复制命令：${snippet.cmd}`}
-                  className={cn(
-                    'h-6 w-6 inline-flex items-center justify-center rounded text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors duration-150 shrink-0 cursor-pointer',
-                    FOCUS_RING,
-                  )}
-                >
-                  <Copy className="size-3.5" strokeWidth={1.75} />
-                </button>
+                <CopyAction
+                  variant="icon"
+                  size="xs"
+                  text={snippet.cmd}
+                  ariaLabel={`复制命令：${snippet.cmd}`}
+                  onCopied={() => onToast('命令已复制到剪贴板', 'ok')}
+                  onError={() => onToast('复制失败，请检查剪贴板权限', 'err')}
+                />
               </div>
             </div>
           ))}
@@ -917,15 +910,15 @@ export function PluginsView({
             data-testid="plugin-config-drawer"
             className="fixed inset-y-0 right-0 z-50 w-full max-w-[460px] bg-[var(--surface-elevated)] border-l border-[var(--border)] shadow-2xl flex flex-col focus:outline-none"
           >
-            {editingPlugin && (
+            {activeEditingPlugin && (
               <>
                 <div className="px-6 py-4 border-b border-[var(--border-subtle)] flex items-start justify-between gap-4 shrink-0">
                   <div className="min-w-0">
                     <Drawer.Title className="text-[16px] font-semibold tracking-tight text-[var(--ink)] truncate">
-                      配置 {editingPlugin.name}
+                      配置 {activeEditingPlugin.name}
                     </Drawer.Title>
                     <Drawer.Description className="mt-1 font-mono text-[12px] text-[var(--ink-subtle)] truncate">
-                      {editingPlugin.officialSpec?.protocol}
+                      {activeEditingPlugin.officialSpec?.protocol}
                     </Drawer.Description>
                   </div>
                   <button
@@ -933,7 +926,7 @@ export function PluginsView({
                     onClick={() => setEditingPlugin(null)}
                     aria-label="关闭配置面板"
                     className={cn(
-                      'h-8 w-8 inline-flex items-center justify-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] cursor-pointer shrink-0',
+                      'ui-press-icon h-8 w-8 inline-flex items-center justify-center rounded-lg text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)] cursor-pointer shrink-0',
                       FOCUS_RING,
                     )}
                   >
@@ -942,28 +935,28 @@ export function PluginsView({
                 </div>
 
                 <div data-vaul-no-drag className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
-                  {editingPlugin.officialSpec?.auth && (
+                  {activeEditingPlugin.officialSpec?.auth && (
                     <div className="rounded-lg bg-[var(--surface-subtle)]/75 px-3.5 py-2.5 text-[12px] text-[var(--ink-muted)] leading-relaxed">
                       <span className="font-medium text-[var(--ink)]">官方鉴权说明：</span>
-                      {editingPlugin.officialSpec.auth}
+                      {activeEditingPlugin.officialSpec.auth}
                     </div>
                   )}
 
-                  {(editingPlugin.configSchema || []).length === 0 ? (
+                  {(activeEditingPlugin.configSchema || []).length === 0 ? (
                     <p className="text-[13px] text-[var(--ink-subtle)]">
                       该插件无需额外连接参数，启用后即按默认官方协议采集。
                     </p>
                   ) : (
-                    (editingPlugin.configSchema || []).map((field) => {
+                    (activeEditingPlugin.configSchema || []).map((field) => {
                       const val = configDraft[field.key];
                       const existingSecret =
                         field.type === 'secret' &&
-                        typeof editingPlugin.config?.[field.key] === 'string' &&
-                        Boolean(editingPlugin.config?.[field.key]);
+                        typeof activeEditingPlugin.config?.[field.key] === 'string' &&
+                        Boolean(activeEditingPlugin.config?.[field.key]);
                       return (
                         <div key={field.key} className="space-y-1.5">
                           <label
-                            htmlFor={`cfg-${editingPlugin.id}-${field.key}`}
+                            htmlFor={`cfg-${activeEditingPlugin.id}-${field.key}`}
                             className="block text-[13px] font-medium text-[var(--ink)]"
                           >
                             {field.label}
@@ -971,7 +964,7 @@ export function PluginsView({
                           {field.type === 'boolean' ? (
                             <label className="inline-flex items-center gap-2 text-[13px] text-[var(--ink-muted)] cursor-pointer">
                               <input
-                                id={`cfg-${editingPlugin.id}-${field.key}`}
+                                id={`cfg-${activeEditingPlugin.id}-${field.key}`}
                                 type="checkbox"
                                 checked={Boolean(val)}
                                 onChange={(e) =>
@@ -985,7 +978,7 @@ export function PluginsView({
                             </label>
                           ) : (
                             <input
-                              id={`cfg-${editingPlugin.id}-${field.key}`}
+                              id={`cfg-${activeEditingPlugin.id}-${field.key}`}
                               type={field.type === 'number' ? 'number' : 'text'}
                               value={val == null ? '' : String(val)}
                               onChange={(e) =>

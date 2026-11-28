@@ -1,5 +1,12 @@
 import React from 'react';
 import {
+  Dialog,
+  DialogBackdrop,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from '@ui-sdk/react/dialog';
+import {
   Archive,
   Check,
   ChevronUp,
@@ -48,7 +55,15 @@ import {
 import { cn, FOCUS_RING } from '../lib/cn';
 import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import { formatDateTime } from '../utils/format';
-import { Button, EmptyState, inputBaseClass, ToggleSwitch } from './ui';
+import {
+  AnimatedCollapse,
+  Button,
+  EmptyState,
+  inputBaseClass,
+  PresenceBanner,
+  SegmentedControl,
+  ToggleSwitch,
+} from './ui';
 
 export interface AgentBtwDrawerProps {
   open: boolean;
@@ -225,17 +240,6 @@ function getSessionLabel(
   return session?.title || thread.sessionId;
 }
 
-function segmentedTabClass(active: boolean): string {
-  return cn(
-    'h-7 rounded-md px-2.5 text-[12px] font-medium transition-colors duration-150 ease-out cursor-pointer',
-    'disabled:opacity-45 disabled:pointer-events-none',
-    active
-      ? 'bg-[var(--surface-elevated)] text-[var(--ink)] shadow-[0_1px_2px_rgba(0,0,0,0.06)]'
-      : 'text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)]',
-    FOCUS_RING,
-  );
-}
-
 export function AgentBtwDrawer({
   open,
   onClose,
@@ -272,6 +276,8 @@ export function AgentBtwDrawer({
   const [archiving, setArchiving] = React.useState(false);
   const [merging, setMerging] = React.useState(false);
   const [mergeConfirm, setMergeConfirm] = React.useState<MergeConfirmState | null>(null);
+  const lastMergeConfirmRef = React.useRef<MergeConfirmState | null>(null);
+  if (mergeConfirm) lastMergeConfirmRef.current = mergeConfirm;
   const [refreshing, setRefreshing] = React.useState(false);
   const [errorMessage, setErrorMessage] = React.useState('');
   const [composerOpen, setComposerOpen] = React.useState(threads.length === 0);
@@ -291,25 +297,6 @@ export function AgentBtwDrawer({
     setErrorMessage(message);
     notify(message, 'err');
   };
-
-  React.useEffect(() => {
-    if (!open) return;
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-      }
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      window.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [open, onClose]);
 
   React.useEffect(() => {
     if (!open) {
@@ -585,8 +572,6 @@ export function AgentBtwDrawer({
     }
   };
 
-  if (!open) return null;
-
   const currentScopeLabel = activeSession?.id
     ? '当前会话'
     : activeTask?.id
@@ -601,22 +586,24 @@ export function AgentBtwDrawer({
     BTW_MODE_OPTIONS.find((option) => option.value === newMode)?.hint || '';
   const selectedSessionLabel = getSessionLabel(sessions, selectedThread);
   const hasFilters = Boolean(query.trim() || onlyAttention);
+  const activeMergeConfirm = mergeConfirm ?? lastMergeConfirmRef.current;
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end">
-      <div
+    <Dialog
+      open={open}
+      onOpenChange={(nextOpen) => {
+        if (!nextOpen) onClose();
+      }}
+    >
+      <DialogBackdrop
+        className="ui-dialog-backdrop"
         data-testid="agent-btw-drawer-overlay"
-        aria-hidden="true"
-        className="absolute inset-0 bg-zinc-950/60 backdrop-blur-[2px] transition-opacity duration-150 ease-out"
-        onClick={onClose}
       />
-
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label="支线讨论与审批"
+      <DialogContent
+        data-size="wide"
         data-testid="agent-btw-drawer"
-        className="relative z-10 flex h-full w-full max-w-[1080px] flex-col border-l border-[var(--border)] bg-[var(--surface-elevated)] shadow-[var(--shadow-modal)]"
+        aria-label="支线讨论与审批"
+        className="ui-drawer-content"
       >
         <div className="flex shrink-0 items-start justify-between gap-4 border-b border-[var(--border)] px-5 py-4 sm:px-6">
           <div className="flex min-w-0 items-start gap-3">
@@ -624,12 +611,12 @@ export function AgentBtwDrawer({
               <GitBranch className="size-4" strokeWidth={1.75} aria-hidden="true" />
             </div>
             <div className="min-w-0">
-              <h2 className="text-[16px] font-semibold tracking-tight text-[var(--ink)] text-balance">
+              <DialogTitle className="text-[16px] font-semibold tracking-tight text-[var(--ink)] text-balance">
                 支线讨论与审批
-              </h2>
-              <p className="mt-1 text-[12.5px] leading-relaxed text-[var(--ink-muted)] text-pretty">
+              </DialogTitle>
+              <DialogDescription className="mt-1 text-[12.5px] leading-relaxed text-[var(--ink-muted)] text-pretty">
                 在不打断主对话的前提下单独讨论或验证方案，审批确认后再并入主线。
-              </p>
+              </DialogDescription>
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-1.5">
@@ -679,31 +666,31 @@ export function AgentBtwDrawer({
           </div>
         )}
 
-        {errorMessage && (
-          <div
-            role="alert"
-            className="flex shrink-0 items-start gap-2 border-b border-[var(--err)]/25 bg-[var(--err)]/10 px-5 py-2.5 sm:px-6"
+        <PresenceBanner
+          open={Boolean(errorMessage)}
+          edge="inline"
+          role="alert"
+          className="flex shrink-0 items-start gap-2 border-b border-[var(--err-border)] bg-[var(--err-soft)] px-5 py-2.5 sm:px-6"
+        >
+          <ShieldAlert
+            className="mt-0.5 size-3.5 shrink-0 text-[var(--err)]"
+            strokeWidth={1.75}
+          />
+          <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-[var(--err)]">
+            {errorMessage}
+          </p>
+          <button
+            type="button"
+            onClick={() => setErrorMessage('')}
+            aria-label="关闭错误提示"
+            className={cn(
+              'ui-press-icon flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--err)] hover:bg-[var(--surface-hover)] cursor-pointer',
+              FOCUS_RING,
+            )}
           >
-            <ShieldAlert
-              className="mt-0.5 size-3.5 shrink-0 text-[var(--err)]"
-              strokeWidth={1.75}
-            />
-            <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-[var(--err)]">
-              {errorMessage}
-            </p>
-            <button
-              type="button"
-              onClick={() => setErrorMessage('')}
-              aria-label="关闭错误提示"
-              className={cn(
-                'flex h-5 w-5 shrink-0 items-center justify-center rounded text-[var(--err)] hover:bg-[var(--surface-hover)] transition-colors duration-150 ease-out cursor-pointer',
-                FOCUS_RING,
-              )}
-            >
-              <X className="size-3" strokeWidth={2} />
-            </button>
-          </div>
-        )}
+            <X className="size-3" strokeWidth={2} />
+          </button>
+        </PresenceBanner>
 
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-[var(--surface)] lg:overflow-hidden">
           <div className="shrink-0 space-y-3 border-b border-[var(--border-subtle)] px-5 py-4 sm:px-6">
@@ -742,30 +729,20 @@ export function AgentBtwDrawer({
                 </span>
               </div>
 
-              <div
-                role="group"
-                aria-label="支线范围"
-                className="inline-flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-subtle)] p-0.5"
-              >
-                <button
-                  type="button"
-                  aria-pressed={effectiveScopeMode === 'current'}
-                  disabled={!hasCurrentScope}
-                  title={hasCurrentScope ? currentScopeTitle : '当前未选中具体对话'}
-                  onClick={() => setScopeMode('current')}
-                  className={segmentedTabClass(effectiveScopeMode === 'current')}
-                >
-                  {currentScopeLabel}
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={effectiveScopeMode === 'all'}
-                  onClick={() => setScopeMode('all')}
-                  className={segmentedTabClass(effectiveScopeMode === 'all')}
-                >
-                  全部会话
-                </button>
-              </div>
+              <SegmentedControl<BtwScopeMode>
+                ariaLabel="支线范围"
+                value={effectiveScopeMode}
+                onChange={setScopeMode}
+                options={[
+                  {
+                    value: 'current',
+                    label: currentScopeLabel,
+                    disabled: !hasCurrentScope,
+                    title: hasCurrentScope ? currentScopeTitle : '当前未选中具体对话',
+                  },
+                  { value: 'all', label: '全部会话' },
+                ]}
+              />
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
@@ -794,7 +771,7 @@ export function AgentBtwDrawer({
             </div>
           </div>
 
-          {composerOpen && (
+          <AnimatedCollapse open={composerOpen}>
             <div className="shrink-0 border-b border-[var(--border-subtle)] bg-[var(--surface-subtle)]/45 px-5 py-4 sm:px-6">
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <h3 className="text-[13px] font-semibold text-[var(--ink)]">发起新支线讨论</h3>
@@ -817,24 +794,17 @@ export function AgentBtwDrawer({
                     <span className="block text-[11.5px] font-medium text-[var(--ink-muted)]">
                       方式
                     </span>
-                    <div
-                      role="group"
-                      aria-label="支线方式"
-                      className="inline-flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--surface-elevated)] p-0.5"
-                    >
-                      {BTW_MODE_OPTIONS.map((option) => (
-                        <button
-                          key={option.value}
-                          type="button"
-                          aria-pressed={newMode === option.value}
-                          disabled={readOnly}
-                          onClick={() => setNewMode(option.value)}
-                          className={segmentedTabClass(newMode === option.value)}
-                        >
-                          {option.label}
-                        </button>
-                      ))}
-                    </div>
+                    <SegmentedControl<A2ABtwMode>
+                      ariaLabel="支线方式"
+                      value={newMode}
+                      onChange={setNewMode}
+                      disabled={readOnly}
+                      options={BTW_MODE_OPTIONS.map((option) => ({
+                        value: option.value,
+                        label: option.label,
+                        title: option.hint,
+                      }))}
+                    />
                   </div>
 
                   <label className="block min-w-[180px] flex-1 space-y-1.5 text-[12px]">
@@ -871,7 +841,7 @@ export function AgentBtwDrawer({
                 <p className="text-[11.5px] leading-relaxed text-[var(--ink-subtle)]">{newModeHint}</p>
               </form>
             </div>
-          )}
+          </AnimatedCollapse>
 
           <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[340px_minmax(0,1fr)]">
             <aside className="min-h-0 border-b border-[var(--border-subtle)] lg:border-b-0 lg:overflow-y-auto">
@@ -1494,39 +1464,41 @@ export function AgentBtwDrawer({
                             )}
                           </div>
 
-                          {mergeConfirm && (
-                            <div
-                              role="alert"
-                              className="space-y-2.5 rounded-lg border border-[var(--warn)]/35 bg-[var(--warn)]/10 px-3 py-3"
-                            >
-                              <div className="flex items-start gap-2">
-                                <ShieldAlert
-                                  className="mt-0.5 size-3.5 shrink-0 text-[var(--warn)]"
-                                  strokeWidth={1.75}
-                                />
-                                <div className="min-w-0">
-                                  <p className="text-[12px] font-medium text-[var(--warn)]">
-                                    需要二次确认
-                                  </p>
-                                  <p className="mt-0.5 text-[11.5px] leading-relaxed text-[var(--ink-muted)]">
-                                    一次性确认令牌已签发，{mergeConfirm.expiresInSec} 秒内有效。再次点击将把旁支结论并入主线。
-                                  </p>
-                                  <p className="mt-1 font-mono text-[10.5px] text-[var(--ink-subtle)] tabular-nums">
-                                    到期 {formatTimestamp(mergeConfirm.expiresAt)}
-                                  </p>
-                                </div>
-                              </div>
-                              <Button
-                                variant="danger"
-                                size="sm"
-                                onClick={() => void handleMerge(mergeConfirm.token)}
-                                disabled={readOnly || merging}
+                          <AnimatedCollapse open={Boolean(mergeConfirm)}>
+                            {activeMergeConfirm && (
+                              <div
+                                role="alert"
+                                className="space-y-2.5 rounded-lg border border-[var(--warn-border)] bg-[var(--warn-soft)] px-3 py-3"
                               >
-                                <GitMerge className="size-3.5" strokeWidth={1.75} />
-                                {merging ? '并入中...' : '二次确认并入主线'}
-                              </Button>
-                            </div>
-                          )}
+                                <div className="flex items-start gap-2">
+                                  <ShieldAlert
+                                    className="mt-0.5 size-3.5 shrink-0 text-[var(--warn)]"
+                                    strokeWidth={1.75}
+                                  />
+                                  <div className="min-w-0">
+                                    <p className="text-[12px] font-medium text-[var(--warn)]">
+                                      需要二次确认
+                                    </p>
+                                    <p className="mt-0.5 text-[11.5px] leading-relaxed text-[var(--ink-muted)]">
+                                      一次性确认令牌已签发，{activeMergeConfirm.expiresInSec} 秒内有效。再次点击将把旁支结论并入主线。
+                                    </p>
+                                    <p className="mt-1 font-mono text-[10.5px] text-[var(--ink-subtle)] tabular-nums">
+                                      到期 {formatTimestamp(activeMergeConfirm.expiresAt)}
+                                    </p>
+                                  </div>
+                                </div>
+                                <Button
+                                  variant="danger"
+                                  size="sm"
+                                  onClick={() => void handleMerge(activeMergeConfirm.token)}
+                                  disabled={readOnly || merging}
+                                >
+                                  <GitMerge className="size-3.5" strokeWidth={1.75} />
+                                  {merging ? '并入中...' : '二次确认并入主线'}
+                                </Button>
+                              </div>
+                            )}
+                          </AnimatedCollapse>
                         </div>
                       )}
                     </section>
@@ -1536,7 +1508,7 @@ export function AgentBtwDrawer({
             </section>
           </div>
         </div>
-      </div>
-    </div>
+      </DialogContent>
+    </Dialog>
   );
 }

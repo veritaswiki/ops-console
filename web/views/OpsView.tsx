@@ -1,9 +1,7 @@
 import React from 'react';
 import {
   Archive,
-  Check,
   CheckCircle2,
-  Copy,
   Download,
   GitBranch,
   History,
@@ -63,6 +61,7 @@ import { ModuleFrame } from '../modules/ModuleFrame';
 import { formatDateTime, statusLabel } from '../utils/format';
 import {
   Button,
+  CopyAction,
   EmptyState,
   inputBaseClass,
   Panel,
@@ -143,7 +142,6 @@ export function OpsView({
   } | null>(null);
   const [validating, setValidating] = React.useState(false);
   const [promText, setPromText] = React.useState('');
-  const [copiedKey, setCopiedKey] = React.useState('');
 
   // Incremental Update & Hot Reload state
   const [updateStatus, setUpdateStatus] = React.useState<UpdateStatusResponse | null>(null);
@@ -371,15 +369,6 @@ export function OpsView({
     });
   };
 
-  const handleCopy = async (key: string, text: string) => {
-    const ok = await copyToClipboard(text);
-    if (ok) {
-      setCopiedKey(key);
-      onToast('已复制到剪贴板', 'ok');
-      window.setTimeout(() => setCopiedKey(''), 1800);
-    }
-  };
-
   const executeOpsAction = async (action: 'health-check' | 'backup', label: string) => {
     setOpsBusy(action);
     try {
@@ -393,7 +382,6 @@ export function OpsView({
       setOpsBusy(null);
     }
   };
-
   const handleRunOps = (action: 'health-check' | 'backup') => {
     const label = action === 'health-check' ? '全栈健康巡检' : '配置与状态快照备份';
     if (guardReadOnly(readOnly, onToast, `执行${label}`)) {
@@ -990,18 +978,15 @@ export function OpsView({
                 description="仅授予白名单 systemd 单元的 NOPASSWD 启停权限。"
                 actions={
                   studio?.sudoersPreview ? (
-                    <Button
-                      variant="secondary"
+                    <CopyAction
+                      variant="button"
                       size="sm"
-                      onClick={() => void handleCopy('sudoers', studio.sudoersPreview)}
-                    >
-                      {copiedKey === 'sudoers' ? (
-                        <Check className="size-3.5 text-[var(--ok)]" strokeWidth={1.75} />
-                      ) : (
-                        <Copy className="size-3.5" strokeWidth={1.75} />
-                      )}
-                      复制规则
-                    </Button>
+                      text={studio.sudoersPreview}
+                      label="复制规则"
+                      copiedLabel="已复制"
+                      onCopied={() => onToast('已复制 sudoers 规则到剪贴板', 'ok')}
+                      onError={() => onToast('复制失败，请检查剪贴板权限', 'err')}
+                    />
                   ) : undefined
                 }
               >
@@ -1017,18 +1002,15 @@ export function OpsView({
             description="可直接被 Grafana Alloy / Prometheus 拉取的原生指标输出（GET /api/metrics）。"
             actions={
               promText ? (
-                <Button
-                  variant="secondary"
+                <CopyAction
+                  variant="button"
                   size="sm"
-                  onClick={() => void handleCopy('prom', promText)}
-                >
-                  {copiedKey === 'prom' ? (
-                    <Check className="size-3.5 text-[var(--ok)]" strokeWidth={1.75} />
-                  ) : (
-                    <Copy className="size-3.5" strokeWidth={1.75} />
-                  )}
-                  复制指标文本
-                </Button>
+                  text={promText}
+                  label="复制指标文本"
+                  copiedLabel="已复制"
+                  onCopied={() => onToast('已复制指标文本到剪贴板', 'ok')}
+                  onError={() => onToast('复制失败，请检查剪贴板权限', 'err')}
+                />
               ) : undefined
             }
           >

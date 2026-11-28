@@ -26,6 +26,7 @@ import { formatRemainingSilence } from '../lib/module-helpers';
 import { ModuleFrame } from '../modules/ModuleFrame';
 import { formatDateTime, statusLabel } from '../utils/format';
 import {
+  AnimatedCollapse,
   Button,
   EmptyState,
   ErrorState,
@@ -510,38 +511,40 @@ export function AlertsView({
         </Panel>
       )}
 
-      {state?.silenced && state.silenceUntil && (
-        <div
-          data-testid="silence-active-banner"
-          className="rounded-xl bg-[var(--warn)]/[0.08] px-4 py-3 space-y-2 text-[13px] text-[var(--warn)]"
-        >
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <span className="font-medium">
-              全局维护静默生效中 · 剩余{' '}
-              <span className="font-mono tabular-nums font-semibold">
-                {silenceCountdown.label}
-              </span>{' '}
-              <span className="font-mono text-[12px] opacity-80 tabular-nums">
-                （直至 {formatDateTime(state.silenceUntil)}）
+      <AnimatedCollapse open={Boolean(state?.silenced && state.silenceUntil)}>
+        {state?.silenced && state.silenceUntil && (
+          <div
+            data-testid="silence-active-banner"
+            className="rounded-xl bg-[var(--warn-soft)] border border-[var(--warn-border)] px-4 py-3 space-y-2 text-[13px] text-[var(--warn)]"
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-medium">
+                全局维护静默生效中 · 剩余{' '}
+                <span className="font-mono tabular-nums font-semibold">
+                  {silenceCountdown.label}
+                </span>{' '}
+                <span className="font-mono text-[12px] opacity-80 tabular-nums">
+                  （直至 {formatDateTime(state.silenceUntil)}）
+                </span>
               </span>
-            </span>
-            <Button variant="ghost" size="sm" onClick={() => void handleSilence(0)} disabled={readOnly}>
-              立即恢复通知
-            </Button>
+              <Button variant="ghost" size="sm" onClick={() => void handleSilence(0)} disabled={readOnly}>
+                立即恢复通知
+              </Button>
+            </div>
+            <div className="h-[3px] w-full rounded-full bg-[var(--warn)]/15 overflow-hidden">
+              <div
+                className="h-full w-full origin-left rounded-full bg-[var(--warn)] ui-meter-indicator"
+                style={{ transform: `scaleX(${Math.max(0, Math.min(1, silenceCountdown.progressPct / 100))})` }}
+              />
+            </div>
           </div>
-          <div className="h-[3px] w-full rounded-full bg-[var(--warn)]/15 overflow-hidden">
-            <div
-              className="h-full rounded-full bg-[var(--warn)] transition-[width] duration-500 ease-out"
-              style={{ width: `${silenceCountdown.progressPct}%` }}
-            />
-          </div>
-        </div>
-      )}
+        )}
+      </AnimatedCollapse>
 
       {loading && !state ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-4" aria-busy="true">
-          <div className="lg:col-span-5 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
-          <div className="lg:col-span-7 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] animate-pulse" />
+          <div className="lg:col-span-5 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] ui-skeleton" />
+          <div className="lg:col-span-7 h-32 rounded-2xl border border-[var(--border)] bg-[var(--surface)] ui-skeleton" />
         </div>
       ) : (
         <KpiStrip
@@ -580,7 +583,7 @@ export function AlertsView({
         />
       )}
 
-      {showCreate && (
+      <AnimatedCollapse open={showCreate}>
         <Panel
           title="新建声明式告警规则"
           description="所有外发 Webhook 地址均强制 HTTPS 并阻断内网回环与元数据地址（SSRF 防护）。"
@@ -709,7 +712,7 @@ export function AlertsView({
             </div>
           </form>
         </Panel>
-      )}
+      </AnimatedCollapse>
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
         <Panel

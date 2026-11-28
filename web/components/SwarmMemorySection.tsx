@@ -906,10 +906,10 @@ export function SwarmMemorySection({
             <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--surface-subtle)]">
               <div
                 className={cn(
-                  'h-full rounded-full transition-[width] duration-200 ease-out',
+                  'h-full w-full origin-left rounded-full ui-meter-indicator',
                   spillStats.overBudget ? 'bg-[var(--warn-dot)]' : 'bg-[var(--accent)]',
                 )}
-                style={{ width: `${Math.max(4, inlineBudgetPct)}%` }}
+                style={{ transform: `scaleX(${Math.max(0.04, Math.min(1, inlineBudgetPct / 100))})` }}
               />
             </div>
           </div>

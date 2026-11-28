@@ -37,6 +37,7 @@ import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import { formatDateTime, formatRelativeAge } from '../utils/format';
 import { ModuleFrame } from '../modules/ModuleFrame';
 import {
+  AnimatedCollapse,
   Button,
   EmptyState,
   ErrorState,
@@ -417,15 +418,15 @@ export function GithubView({
         </div>
       </div>
 
-      {overview?.warning && (
+      <AnimatedCollapse open={Boolean(overview?.warning)}>
         <div className="rounded-xl border border-[var(--warn)]/30 bg-[var(--warn)]/8 px-4 py-2.5 flex items-center gap-2.5 text-[12.5px] text-[var(--warn)]">
           <AlertCircle className="size-4 shrink-0" strokeWidth={1.75} />
-          <span>{overview.warning}</span>
+          <span>{overview?.warning}</span>
         </div>
-      )}
+      </AnimatedCollapse>
 
       {/* Collapsible Repo Sync Config Panel (tucked away unless toggled) */}
-      {configOpen && (
+      <AnimatedCollapse open={configOpen}>
         <Panel
           title="仓库同步配置"
           description="仅在需要自定义同步目标或 Token 环境变量名时修改；访问令牌仅从服务端环境变量读取。"
@@ -529,7 +530,7 @@ export function GithubView({
             </div>
           </form>
         </Panel>
-      )}
+      </AnimatedCollapse>
 
       {/* Main Orca / T3 Tabbed Workspace */}
       <Panel bodyClassName="p-0">

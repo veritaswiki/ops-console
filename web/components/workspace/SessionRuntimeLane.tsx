@@ -1,4 +1,5 @@
 import React from 'react';
+import { motion, useReducedMotion } from 'motion/react';
 import {
   ArrowUpRight,
   GitBranch,
@@ -11,13 +12,14 @@ import type { A2AAgentPeer, A2ATaskRecord, LinearIssueItem } from '../../types';
 import { formatInlineOutputPreview } from '../../lib/workspace-controls';
 import { cn, FOCUS_RING } from '../../lib/cn';
 import { extractErrorMessage } from '../../lib/ux-errors';
+import { SPRING_SNAPPY } from '../../lib/motion';
 import {
   contextBudgetPercent as calcBudgetPercent,
   formatRelativeAge,
   taskStateLabel,
   taskStateTone,
 } from '../../utils/format';
-import { Button } from '../ui';
+import { Button, LiveNumber } from '../ui';
 
 const PAGE_SIZE = 15;
 
@@ -381,6 +383,7 @@ export function SessionRuntimeLane({
 }: SessionRuntimeLaneProps) {
   const [filter, setFilter] = React.useState<RuntimeFilter>('all');
   const [visibleCount, setVisibleCount] = React.useState(PAGE_SIZE);
+  const reduced = useReducedMotion();
 
   const nodeNameById = React.useMemo(() => {
     const map = new Map<string, string>();
@@ -445,12 +448,12 @@ export function SessionRuntimeLane({
               type="button"
               onClick={onOpenProjectsBoard}
               className={cn(
-                'inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11.5px] text-[var(--ink-subtle)] transition-colors duration-150 ease-out hover:bg-[var(--surface-hover)] hover:text-[var(--accent)] cursor-pointer touch-manipulation',
+                'group ui-press inline-flex items-center gap-1 rounded-md px-1.5 py-1 text-[11.5px] text-[var(--ink-subtle)] hover:bg-[var(--surface-hover)] hover:text-[var(--accent)] cursor-pointer touch-manipulation',
                 FOCUS_RING,
               )}
             >
               完整 Projects 看板
-              <ArrowUpRight className="size-3" strokeWidth={1.75} />
+              <ArrowUpRight className="size-3 ui-hover-nudge" strokeWidth={1.75} />
             </button>
           ) : null}
         </div>
@@ -461,28 +464,39 @@ export function SessionRuntimeLane({
         aria-label="会话运行时过滤器"
         className="flex items-center gap-4 overflow-x-auto border-b border-[var(--border-subtle)]"
       >
-        {FILTERS.map((item) => (
-          <button
-            key={item.id}
-            type="button"
-            role="tab"
-            data-filter={item.id}
-            aria-selected={filter === item.id}
-            onClick={() => setFilter(item.id)}
-            className={cn(
-              '-mb-px inline-flex shrink-0 items-center gap-1.5 border-b-2 py-1.5 text-[12px] font-medium transition-colors duration-150 ease-out cursor-pointer touch-manipulation',
-              filter === item.id
-                ? 'border-[var(--accent)] text-[var(--ink)]'
-                : 'border-transparent text-[var(--ink-subtle)] hover:text-[var(--ink)]',
-              FOCUS_RING,
-            )}
-          >
-            {item.label}
-            <span className="font-mono text-[10.5px] text-[var(--ink-subtle)] tabular-nums">
-              {counts[item.id]}
-            </span>
-          </button>
-        ))}
+        {FILTERS.map((item) => {
+          const selected = filter === item.id;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              role="tab"
+              data-filter={item.id}
+              aria-selected={selected}
+              onClick={() => setFilter(item.id)}
+              className={cn(
+                'relative -mb-px inline-flex shrink-0 items-center gap-1.5 py-1.5 text-[12px] font-medium transition-colors duration-150 ease-out cursor-pointer touch-manipulation',
+                selected
+                  ? 'text-[var(--ink)]'
+                  : 'text-[var(--ink-subtle)] hover:text-[var(--ink)]',
+                FOCUS_RING,
+              )}
+            >
+              <span>{item.label}</span>
+              <span className="font-mono text-[10.5px] text-[var(--ink-subtle)] tabular-nums">
+                <LiveNumber value={counts[item.id]} />
+              </span>
+              {selected && (
+                <motion.span
+                  layoutId="session-runtime-filter-indicator"
+                  aria-hidden="true"
+                  transition={reduced ? { duration: 0 } : SPRING_SNAPPY}
+                  className="pointer-events-none absolute inset-x-0 bottom-0 h-[2px] rounded-t-sm bg-[var(--accent)]"
+                />
+              )}
+            </button>
+          );
+        })}
       </div>
 
       {focusTask ? (
@@ -525,7 +539,9 @@ export function SessionRuntimeLane({
                 )}
               >
                 {isActive ? (
-                  <span
+                  <motion.span
+                    layoutId="session-runtime-active-rail"
+                    transition={reduced ? { duration: 0 } : SPRING_SNAPPY}
                     aria-hidden="true"
                     className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-[var(--accent)]"
                   />

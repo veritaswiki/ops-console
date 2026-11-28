@@ -3,14 +3,13 @@ import {
   AlertTriangle,
   ArrowRight,
   Check,
-  ChevronDown,
-  ChevronUp,
   Clock3,
   GitBranch,
 } from 'lucide-react';
 import type { NeedsYouItem } from '../../lib/workspace-controls';
 import { cn, FOCUS_RING } from '../../lib/cn';
 import { formatRelativeAge } from '../../utils/format';
+import { AnimatedCollapse, Disclosure, DisclosureChevron } from '../ui';
 
 export interface MobileNeedsYouStreamProps {
   items: NeedsYouItem[];
@@ -48,7 +47,7 @@ function kindLabel(kind: NeedsYouItem['kind']): string {
 
 function triageButtonClass(danger = false): string {
   return cn(
-    'inline-flex min-h-[44px] items-center justify-center gap-1 rounded-md px-2.5 text-[12px] font-medium transition-colors duration-150 ease-out cursor-pointer touch-manipulation disabled:opacity-45 disabled:pointer-events-none sm:min-h-[32px] sm:text-[11.5px]',
+    'ui-press inline-flex min-h-[44px] items-center justify-center gap-1 rounded-md px-2.5 text-[12px] font-medium cursor-pointer touch-manipulation disabled:opacity-45 disabled:pointer-events-none sm:min-h-[32px] sm:text-[11.5px]',
     danger
       ? 'text-[var(--err)] hover:bg-[var(--err-dot)]/10'
       : 'text-[var(--ink-muted)] hover:bg-[var(--surface-hover)] hover:text-[var(--ink)]',
@@ -73,8 +72,6 @@ export function MobileNeedsYouStream({
     }
   });
 
-  if (items.length === 0) return null;
-
   const topSeverity = items.reduce<NeedsYouItem['severity']>(
     (worst, item) =>
       severityRank(item.severity) > severityRank(worst) ? item.severity : worst,
@@ -85,11 +82,12 @@ export function MobileNeedsYouStream({
   const failed = items.filter((item) => item.kind === 'task_failed').length;
 
   return (
+    <AnimatedCollapse open={items.length > 0}>
     <section
       data-testid="mobile-needs-you-stream"
       aria-label="待你处理"
       className={cn(
-        'overflow-hidden rounded-xl border bg-[var(--surface)]',
+        'overflow-hidden rounded-xl border bg-[var(--surface)] transition-colors duration-150 ease-out',
         topSeverity === 'err'
           ? 'border-[var(--err-dot)]/30'
           : topSeverity === 'warn'
@@ -134,14 +132,10 @@ export function MobileNeedsYouStream({
           {btwPending > 0 ? <span>{btwPending} 项待审</span> : null}
           {failed > 0 ? <span>{failed} 项失败</span> : null}
         </span>
-        {expanded ? (
-          <ChevronUp className="size-3.5 shrink-0 text-[var(--ink-subtle)]" strokeWidth={1.75} />
-        ) : (
-          <ChevronDown className="size-3.5 shrink-0 text-[var(--ink-subtle)]" strokeWidth={1.75} />
-        )}
+        <DisclosureChevron open={expanded} className="text-[var(--ink-subtle)]" />
       </button>
 
-      {expanded ? (
+      <Disclosure open={expanded}>
         <ul className="divide-y divide-[var(--border-subtle)]">
           {items.map((item) => {
             const hasTask = Boolean(item.taskId);
@@ -226,8 +220,9 @@ export function MobileNeedsYouStream({
             );
           })}
         </ul>
-      ) : null}
+      </Disclosure>
     </section>
+    </AnimatedCollapse>
   );
 }
 

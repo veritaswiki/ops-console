@@ -36,6 +36,7 @@ import {
   statusTone,
 } from '../utils/format';
 import {
+  AnimatedCollapse,
   Button,
   EmptyState,
   KpiStrip,
@@ -373,7 +374,7 @@ export function OverviewView({
         </Button>
       }
     >
-      {customizeOpen && (
+      <AnimatedCollapse open={customizeOpen}>
         <div
           data-testid="overview-customize-bar"
           className="rounded-xl bg-[var(--surface-subtle)]/75 px-4 py-3 flex flex-wrap items-center justify-between gap-3"
@@ -392,7 +393,7 @@ export function OverviewView({
                   data-testid={`overview-toggle-${item.key}`}
                   aria-pressed={active}
                   className={cn(
-                    'inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[12px] font-medium transition-colors duration-150 ease-out cursor-pointer select-none',
+                    'ui-press inline-flex items-center gap-1.5 h-7 px-2.5 rounded-lg text-[12px] font-medium cursor-pointer select-none',
                     FOCUS_RING,
                     active
                       ? 'bg-[var(--surface)] text-[var(--ink)] shadow-[var(--shadow-card)]'
@@ -400,7 +401,10 @@ export function OverviewView({
                   )}
                 >
                   <Check
-                    className={cn('size-3', active ? 'text-[var(--accent)] opacity-100' : 'opacity-20')}
+                    className={cn(
+                      'size-3 transition-[opacity,transform] duration-150',
+                      active ? 'text-[var(--accent)] opacity-100 scale-100' : 'opacity-20 scale-90',
+                    )}
                     strokeWidth={2}
                   />
                   {item.label}
@@ -415,7 +419,7 @@ export function OverviewView({
             </Button>
           )}
         </div>
-      )}
+      </AnimatedCollapse>
 
       <KpiStrip
         asymmetric

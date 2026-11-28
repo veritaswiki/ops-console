@@ -4,8 +4,6 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
-  Check,
-  Copy,
   Crown,
   ExternalLink,
   Search,
@@ -20,7 +18,6 @@ import type {
   ToastHandler,
 } from '../types';
 import {
-  copyToClipboard,
   enqueueProbeCommand,
   enrollProbe,
   fetchProbeCommands,
@@ -48,6 +45,7 @@ import {
 } from '../utils/format';
 import {
   Button,
+  CopyAction,
   EmptyState,
   inputBaseClass,
   KpiStrip,
@@ -113,7 +111,6 @@ export function FleetView({
   const [nodeQuery, setNodeQuery] = React.useState('');
   const [sortField, setSortField] = React.useState<FleetSortField>('status');
   const [sortDir, setSortDir] = React.useState<SortDir>('asc');
-  const [copiedKey, setCopiedKey] = React.useState('');
   const [nodeCommands, setNodeCommands] = React.useState<ProbeCommandItem[]>([]);
   const [cmdBusy, setCmdBusy] = React.useState<string | null>(null);
 
@@ -272,15 +269,6 @@ export function FleetView({
     }
     return max;
   }, [enrichedNodes]);
-
-  const handleCopy = async (key: string, text: string) => {
-    const ok = await copyToClipboard(text);
-    if (ok) {
-      setCopiedKey(key);
-      onToast('已复制到剪贴板', 'ok');
-      window.setTimeout(() => setCopiedKey(''), 1800);
-    }
-  };
 
   const handleCheckinSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -504,22 +492,18 @@ export function FleetView({
                       <dt className="text-[12px] text-[var(--ink-subtle)]">Tailscale IP</dt>
                       <dd className="mt-0.5 font-mono text-[var(--ink)] tabular-nums truncate">
                         {selectedNode.tailscaleIp ? (
-                          <button
-                            type="button"
-                            onClick={() => void handleCopy(`inspector-ip-${selectedNode.id}`, selectedNode.tailscaleIp!)}
-                            className={cn(
-                              'inline-flex items-center gap-1.5 hover:text-[var(--accent)] transition-colors duration-150 cursor-pointer rounded',
-                              FOCUS_RING,
-                            )}
+                          <CopyAction
+                            variant="inline"
+                            size="xs"
+                            text={selectedNode.tailscaleIp}
+                            label={selectedNode.tailscaleIp}
+                            copiedLabel={selectedNode.tailscaleIp}
                             title="点击复制 Tailscale IP"
-                          >
-                            <span>{selectedNode.tailscaleIp}</span>
-                            {copiedKey === `inspector-ip-${selectedNode.id}` ? (
-                              <Check className="size-3.5 text-[var(--ok)] shrink-0" strokeWidth={1.75} />
-                            ) : (
-                              <Copy className="size-3 text-[var(--ink-subtle)] shrink-0" strokeWidth={1.75} />
-                            )}
-                          </button>
+                            ariaLabel={`复制 Tailscale IP ${selectedNode.tailscaleIp}`}
+                            className="font-mono text-[13px] text-[var(--ink)] tabular-nums -mx-1.5"
+                            onCopied={() => onToast('已复制到剪贴板', 'ok')}
+                            onError={() => onToast('复制失败，请检查剪贴板权限', 'err')}
+                          />
                         ) : (
                           '-'
                         )}
@@ -984,25 +968,18 @@ export function FleetView({
                       </td>
                       <td className="py-3 px-3 font-mono text-[12.5px] text-[var(--ink-muted)] tabular-nums whitespace-nowrap">
                         {n.tailscaleIp ? (
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              void handleCopy(ipCopyKey, n.tailscaleIp!);
-                            }}
+                          <CopyAction
+                            variant="inline"
+                            size="xs"
+                            text={n.tailscaleIp}
+                            label={n.tailscaleIp}
+                            copiedLabel={n.tailscaleIp}
                             title="点击复制 Tailscale IP"
-                            className={cn(
-                              'inline-flex items-center gap-1.5 hover:text-[var(--ink)] transition-colors cursor-pointer rounded',
-                              FOCUS_RING,
-                            )}
-                          >
-                            <span>{n.tailscaleIp}</span>
-                            {copiedKey === ipCopyKey ? (
-                              <Check className="size-3 text-[var(--ok)]" strokeWidth={2} />
-                            ) : (
-                              <Copy className="size-3 opacity-45" strokeWidth={1.75} />
-                            )}
-                          </button>
+                            ariaLabel={`复制 Tailscale IP ${n.tailscaleIp}`}
+                            className="font-mono text-[12.5px] tabular-nums -mx-1.5"
+                            onCopied={() => onToast('已复制到剪贴板', 'ok')}
+                            onError={() => onToast('复制失败，请检查剪贴板权限', 'err')}
+                          />
                         ) : (
                           '-'
                         )}
@@ -1157,18 +1134,15 @@ export function FleetView({
                       {enrollResult.token}
                     </code>
                   </div>
-                  <Button
-                    variant="secondary"
+                  <CopyAction
+                    variant="button"
                     size="sm"
-                    onClick={() => handleCopy('token', enrollResult.token!)}
-                  >
-                    {copiedKey === 'token' ? (
-                      <Check className="size-4 text-[var(--ok)]" strokeWidth={1.75} />
-                    ) : (
-                      <Copy className="size-4" strokeWidth={1.75} />
-                    )}
-                    复制令牌
-                  </Button>
+                    text={enrollResult.token!}
+                    label="复制令牌"
+                    copiedLabel="已复制"
+                    onCopied={() => onToast('已复制探针令牌到剪贴板', 'ok')}
+                    onError={() => onToast('复制失败，请检查剪贴板权限', 'err')}
+                  />
                 </div>
 
                 {enrollResult.snippets && (
@@ -1184,21 +1158,16 @@ export function FleetView({
                       return (
                         <TabsPanel key={k} value={k}>
                           <div className="relative rounded-xl bg-[var(--terminal-bg)] text-[var(--terminal-ink)] border border-white/[0.08] p-4 font-mono text-[12px] overflow-x-auto">
-                            <button
-                              type="button"
-                              onClick={() => handleCopy(k, snippet)}
-                              className={cn(
-                                'absolute top-2.5 right-2.5 inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11.5px] bg-white/10 hover:bg-white/15 text-white transition-colors duration-150 ease-out active:scale-[0.97] cursor-pointer select-none',
-                                FOCUS_RING,
-                              )}
-                            >
-                              {copiedKey === k ? (
-                                <Check className="size-3.5 text-emerald-400" strokeWidth={1.75} />
-                              ) : (
-                                <Copy className="size-3.5" strokeWidth={1.75} />
-                              )}
-                              复制
-                            </button>
+                            <CopyAction
+                              variant="ghost"
+                              size="xs"
+                              text={snippet}
+                              label="复制"
+                              copiedLabel="已复制"
+                              className="absolute top-2.5 right-2.5 bg-white/10 hover:bg-white/15 text-white border-white/10"
+                              onCopied={() => onToast('已复制安装脚本到剪贴板', 'ok')}
+                              onError={() => onToast('复制失败，请检查剪贴板权限', 'err')}
+                            />
                             <pre className="m-0 pr-16 whitespace-pre-wrap">{snippet}</pre>
                           </div>
                         </TabsPanel>

@@ -8,6 +8,7 @@ import {
   type SlashCommandDef,
 } from '../lib/agent-console';
 import { cn, FOCUS_RING } from '../lib/cn';
+import { PresencePopover } from './ui';
 
 const CATEGORY_LABELS: Record<SlashCommandCategory, string> = {
   dispatch: '调度',
@@ -51,18 +52,18 @@ export function AgentSlashMenu({
     }
   }, [open, activeIndex, mode]);
 
-  if (!open) return null;
-
   const itemCount = mode === 'slash' ? commands.length : agents.length;
 
   return (
-    <div
+    <PresencePopover
+      open={open}
+      side="top"
       role="listbox"
-      aria-label={mode === 'slash' ? '斜杠命令列表' : '可路由的 Agent 列表'}
-      data-testid="agent-slash-menu"
-      onMouseDown={(event) => event.preventDefault()}
+      ariaLabel={mode === 'slash' ? '斜杠命令列表' : '可路由的 Agent 列表'}
+      testId="agent-slash-menu"
       className="absolute bottom-full left-0 right-0 mb-2 z-30 rounded-xl border border-[var(--border-strong)] bg-[var(--surface-elevated)] shadow-[var(--shadow-modal)] overflow-hidden"
     >
+      <div onMouseDown={(event) => event.preventDefault()}>
       <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-[var(--border-subtle)] bg-[var(--surface-subtle)]/60">
         <div className="flex items-center gap-2 min-w-0 text-[12px] text-[var(--ink-muted)]">
           {mode === 'slash' ? (
@@ -234,7 +235,8 @@ export function AgentSlashMenu({
           {mode === 'slash' ? '支持 @agent 快捷路由' : '自动切换目标执行节点'}
         </span>
       </div>
-    </div>
+      </div>
+    </PresencePopover>
   );
 }
 

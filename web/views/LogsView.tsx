@@ -1,7 +1,5 @@
 import React from 'react';
 import {
-  ChevronDown,
-  ChevronRight,
   Eye,
   Radar,
   RefreshCw,
@@ -34,6 +32,8 @@ import { formatBytes, formatClock, formatDateTime } from '../utils/format';
 import { LogStreamPanel } from '../components/LogStreamPanel';
 import {
   Button,
+  Disclosure,
+  DisclosureChevron,
   InspectorDrawer,
   Panel,
   StatusIndicator,
@@ -293,7 +293,12 @@ export function LogsView({
         data-testid="logs-observability-panel"
         className="rounded-2xl border border-[var(--border)] bg-[var(--surface)] shadow-[var(--shadow-card)] overflow-hidden"
       >
-        <div className="px-5 py-3 flex flex-wrap items-center justify-between gap-3 border-b border-[var(--border-subtle)]">
+        <div
+          className={cn(
+            'px-5 py-3 flex flex-wrap items-center justify-between gap-3 transition-colors duration-150',
+            obsOpen && 'border-b border-[var(--border-subtle)]',
+          )}
+        >
           <button
             type="button"
             onClick={() => setObsOpen((prev) => !prev)}
@@ -304,11 +309,7 @@ export function LogsView({
               FOCUS_RING,
             )}
           >
-            {obsOpen ? (
-              <ChevronDown className="size-4 text-[var(--ink-subtle)]" strokeWidth={1.75} />
-            ) : (
-              <ChevronRight className="size-4 text-[var(--ink-subtle)]" strokeWidth={1.75} />
-            )}
+            <DisclosureChevron open={obsOpen} className="size-4 text-[var(--ink-subtle)]" />
             <Radar className="size-4 text-[var(--accent)]" strokeWidth={1.75} />
             <span className="text-[13.5px] font-semibold tracking-tight text-[var(--ink)]">
               异常趋势与智能标注
@@ -337,7 +338,7 @@ export function LogsView({
           </div>
         </div>
 
-        {obsOpen && (
+        <Disclosure open={obsOpen}>
           <div className="p-4 sm:p-5 space-y-4">
             <div className="rounded-xl border border-[var(--border-subtle)] bg-[var(--surface-subtle)]/45 px-3.5 py-2.5">
               {chartSeries.hasData ? (
@@ -545,7 +546,7 @@ export function LogsView({
               </div>
             )}
           </div>
-        )}
+        </Disclosure>
       </section>
 
       <Panel bodyClassName="p-0">

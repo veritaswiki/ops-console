@@ -17,6 +17,7 @@ import {
 } from '../../lib/model-catalog';
 import { cn, FOCUS_RING } from '../../lib/cn';
 import {
+  AnimatedCollapse,
   CommandCombobox,
   NativeSelect,
   type CommandComboboxOption,
@@ -230,7 +231,7 @@ export function NodeAgentModelSelector({
         disabled={locked}
         onClick={() => onSelectNodeId(ALL_NODES_VALUE)}
         className={cn(
-          'h-7 rounded-md border px-2 text-[11.5px] font-medium transition-colors duration-150 ease-out cursor-pointer',
+          'ui-press h-7 rounded-md border px-2 text-[11.5px] font-medium cursor-pointer',
           selectedNodeId === ALL_NODES_VALUE || selectedNodeId === ''
             ? 'border-[var(--accent)]/45 bg-[var(--accent-soft)] text-[var(--accent)]'
             : 'border-[var(--border-subtle)] text-[var(--ink-muted)] hover:border-[var(--border-strong)] hover:text-[var(--ink)]',
@@ -248,7 +249,7 @@ export function NodeAgentModelSelector({
           data-testid={`agent-node-quick-${node.nodeId}`}
           onClick={() => onSelectNodeId(node.nodeId)}
           className={cn(
-            'h-7 inline-flex items-center gap-1.5 rounded-md border px-2 text-[11.5px] font-medium transition-colors duration-150 ease-out cursor-pointer',
+            'ui-press h-7 inline-flex items-center gap-1.5 rounded-md border px-2 text-[11.5px] font-medium cursor-pointer',
             selectedNodeId === node.nodeId
               ? 'border-[var(--accent)]/45 bg-[var(--accent-soft)] text-[var(--accent)]'
               : 'border-[var(--border-subtle)] text-[var(--ink-muted)] hover:border-[var(--border-strong)] hover:text-[var(--ink)]',
@@ -267,15 +268,17 @@ export function NodeAgentModelSelector({
 
   return (
     <div className="space-y-2.5 min-w-0">
-      {offlineNotice ? (
-        <div
-          role="status"
-          className="flex items-start gap-2 rounded-lg border border-[var(--warn-dot)]/25 bg-[var(--warn-dot)]/5 px-3 py-2 text-[12px] leading-relaxed text-[var(--warn)]"
-        >
-          <AlertTriangle className="mt-0.5 size-3.5 shrink-0" strokeWidth={1.75} />
-          <span className="text-pretty">{offlineNotice}</span>
-        </div>
-      ) : null}
+      <AnimatedCollapse open={Boolean(offlineNotice)}>
+        {offlineNotice ? (
+          <div
+            role="status"
+            className="flex items-start gap-2 rounded-lg border border-[var(--warn-dot)]/25 bg-[var(--warn-dot)]/5 px-3 py-2 text-[12px] leading-relaxed text-[var(--warn)]"
+          >
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" strokeWidth={1.75} />
+            <span className="text-pretty">{offlineNotice}</span>
+          </div>
+        ) : null}
+      </AnimatedCollapse>
 
       <div className="grid grid-cols-2 gap-2.5 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.3fr)]">
         <label className="min-w-0 space-y-1">

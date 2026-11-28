@@ -156,7 +156,11 @@ export function MetricsChart({
           className="h-[248px] w-full rounded-xl border border-[var(--border-subtle)] bg-[var(--bg)]/60 px-2 pt-3 pb-1"
         >
           {loading ? (
-            <div className="h-full w-full flex flex-col justify-between p-4 animate-pulse">
+            <div
+              className="ui-skeleton h-full w-full flex flex-col justify-between p-4 rounded-lg"
+              role="status"
+              aria-label="正在加载历史指标趋势"
+            >
               <div className="h-3 w-40 rounded bg-[var(--surface-subtle)]" />
               <div className="h-32 w-full rounded-lg bg-[var(--surface-subtle)]/70" />
               <div className="flex justify-between">

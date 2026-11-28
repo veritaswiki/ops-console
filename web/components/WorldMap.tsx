@@ -2,6 +2,13 @@ import React from 'react';
 import { Minus, Plus, Crosshair } from 'lucide-react';
 import type { FleetLink, FleetNode } from '../types';
 import {
+  DURATION_MS,
+  easeOutCraft,
+  lerpViewBox,
+  prefersReducedMotion,
+  viewBoxNearlyEqual,
+} from '../lib/motion';
+import {
   LAND_PATHS,
   MAP_HEIGHT,
   MAP_WIDTH,
@@ -45,6 +52,8 @@ export function WorldMap({
   const [viewBox, setViewBox] = React.useState<MapViewBox>(() => computeFitViewBox(nodes));
   const [isPanning, setIsPanning] = React.useState(false);
   const hasAutoFitted = React.useRef(false);
+  const vbRef = React.useRef<MapViewBox>(viewBox);
+  const animRafRef = React.useRef<number | null>(null);
   const dragRef = React.useRef<{
     startX: number;
     startY: number;
@@ -54,30 +63,74 @@ export function WorldMap({
   } | null>(null);
   const containerRef = React.useRef<HTMLDivElement>(null);
 
+  const cancelCameraAnimation = React.useCallback(() => {
+    if (animRafRef.current != null) {
+      window.cancelAnimationFrame(animRafRef.current);
+      animRafRef.current = null;
+    }
+  }, []);
+
+  const commitViewBox = React.useCallback((next: MapViewBox) => {
+    const clamped = clampViewBox(next);
+    vbRef.current = clamped;
+    setViewBox(clamped);
+  }, []);
+
+  const animateViewBoxTo = React.useCallback(
+    (target: MapViewBox, durationMs: number = DURATION_MS.emphasis) => {
+      cancelCameraAnimation();
+      const to = clampViewBox(target);
+      const from = vbRef.current;
+      if (prefersReducedMotion() || durationMs <= 0 || viewBoxNearlyEqual(from, to)) {
+        commitViewBox(to);
+        return;
+      }
+      const startTime = performance.now();
+      const step = (now: number) => {
+        const rawT = Math.min(1, (now - startTime) / durationMs);
+        const eased = easeOutCraft(rawT);
+        const current = clampViewBox(lerpViewBox(from, to, eased));
+        vbRef.current = current;
+        setViewBox(current);
+        if (rawT < 1) {
+          animRafRef.current = window.requestAnimationFrame(step);
+        } else {
+          animRafRef.current = null;
+        }
+      };
+      animRafRef.current = window.requestAnimationFrame(step);
+    },
+    [cancelCameraAnimation, commitViewBox],
+  );
+
+  React.useEffect(() => () => cancelCameraAnimation(), [cancelCameraAnimation]);
+
   React.useEffect(() => {
     if (!hasAutoFitted.current && nodes.length > 0) {
       hasAutoFitted.current = true;
-      setViewBox(computeFitViewBox(nodes));
+      commitViewBox(computeFitViewBox(nodes));
     }
-  }, [nodes]);
+  }, [nodes, commitViewBox]);
 
   const handleRegionChange = (next: RegionPresetKey) => {
     setPreset(next);
     if (next === 'fit') {
-      setViewBox(computeFitViewBox(nodes));
+      animateViewBoxTo(computeFitViewBox(nodes), DURATION_MS.emphasis);
     } else if (REGION_PRESETS[next]) {
-      setViewBox(clampViewBox(REGION_PRESETS[next]));
+      animateViewBoxTo(REGION_PRESETS[next], DURATION_MS.emphasis);
     }
   };
 
   const handleZoom = (factor: number) => {
-    setViewBox((prev) => {
-      const cx = prev.x + prev.w / 2;
-      const cy = prev.y + prev.h / 2;
-      const nextW = prev.w * factor;
-      const nextH = nextW / (MAP_WIDTH / MAP_HEIGHT);
-      return clampViewBox({ x: cx - nextW / 2, y: cy - nextH / 2, w: nextW, h: nextH });
-    });
+    const prev = vbRef.current;
+    const cx = prev.x + prev.w / 2;
+    const cy = prev.y + prev.h / 2;
+    const nextW = prev.w * factor;
+    const nextH = nextW / (MAP_WIDTH / MAP_HEIGHT);
+    animateViewBoxTo(
+      { x: cx - nextW / 2, y: cy - nextH / 2, w: nextW, h: nextH },
+      DURATION_MS.standard,
+    );
   };
 
   const vb = clampViewBox(viewBox);
@@ -96,12 +149,13 @@ export function WorldMap({
 
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || (e.target as HTMLElement).closest('[data-node-id]')) return;
+    cancelCameraAnimation();
     const rect = containerRef.current?.getBoundingClientRect();
     if (!rect?.width) return;
     dragRef.current = {
       startX: e.clientX,
       startY: e.clientY,
-      origVb: vb,
+      origVb: vbRef.current,
       width: rect.width,
       height: rect.height,
     };
@@ -116,14 +170,12 @@ export function WorldMap({
     const dy = e.clientY - drag.startY;
     const scaleX = drag.origVb.w / drag.width;
     const scaleY = drag.origVb.h / drag.height;
-    setViewBox(
-      clampViewBox({
-        x: drag.origVb.x - dx * scaleX,
-        y: drag.origVb.y - dy * scaleY,
-        w: drag.origVb.w,
-        h: drag.origVb.h,
-      }),
-    );
+    commitViewBox({
+      x: drag.origVb.x - dx * scaleX,
+      y: drag.origVb.y - dy * scaleY,
+      w: drag.origVb.w,
+      h: drag.origVb.h,
+    });
   };
 
   const stopPan = () => {

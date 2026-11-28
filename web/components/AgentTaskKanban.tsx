@@ -6,7 +6,6 @@ import {
   Plus,
   Search,
   Server,
-  X,
 } from 'lucide-react';
 import type { A2AAgentPeer, A2ATaskRecord } from '../types';
 import {
@@ -21,7 +20,7 @@ import {
 } from '../lib/agent-console';
 import { cn, FOCUS_RING } from '../lib/cn';
 import { formatDateTime, formatDurationMs, formatRelativeAge } from '../utils/format';
-import { Button, inputBaseClass } from './ui';
+import { Button, ClearInputButton, inputBaseClass, LiveNumber } from './ui';
 
 function columnAccentClasses(tone: 'muted' | 'warn' | 'ok' | 'err'): {
   topBar: string;
@@ -87,6 +86,27 @@ export function AgentTaskKanban({
 }: AgentTaskKanbanProps) {
   const [draggingTaskId, setDraggingTaskId] = React.useState<string | null>(null);
   const [dragOverColumn, setDragOverColumn] = React.useState<KanbanLifecycleColumnId | null>(null);
+  const [settledTaskId, setSettledTaskId] = React.useState<string | null>(null);
+  const settleTimerRef = React.useRef<number | null>(null);
+
+  React.useEffect(() => {
+    return () => {
+      if (settleTimerRef.current !== null) {
+        window.clearTimeout(settleTimerRef.current);
+      }
+    };
+  }, []);
+
+  const markTaskSettled = React.useCallback((taskId: string) => {
+    setSettledTaskId(taskId);
+    if (settleTimerRef.current !== null) {
+      window.clearTimeout(settleTimerRef.current);
+    }
+    settleTimerRef.current = window.setTimeout(() => {
+      setSettledTaskId((prev) => (prev === taskId ? null : prev));
+      settleTimerRef.current = null;
+    }, 650);
+  }, []);
 
   const nodeNameById = React.useMemo(() => {
     const lookup = new Map<string, string>();
@@ -153,6 +173,7 @@ export function AgentTaskKanban({
     const currentCol = taskStateToKanbanColumn(task.state);
     if (currentCol === columnId) return;
 
+    markTaskSettled(task.id);
     void onMoveTaskState(task.id, kanbanColumnToTaskState(columnId));
   };
 
@@ -178,19 +199,12 @@ export function AgentTaskKanban({
               data-testid="kanban-search-input"
               className={cn(inputBaseClass, 'h-8 w-full pl-8 pr-7 text-[16px] sm:text-[13px]')}
             />
-            {hasQuery && (
-              <button
-                type="button"
-                onClick={() => onSearchQueryChange('')}
-                aria-label="清空搜索"
-                className={cn(
-                  'absolute right-1.5 top-1/2 -translate-y-1/2 inline-flex h-5 w-5 items-center justify-center rounded-md text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] transition-colors cursor-pointer',
-                  FOCUS_RING,
-                )}
-              >
-                <X className="size-3.5" strokeWidth={1.75} />
-              </button>
-            )}
+            <ClearInputButton
+              visible={hasQuery}
+              onClear={() => onSearchQueryChange('')}
+              ariaLabel="清空搜索"
+              placement="overlay"
+            />
           </div>
 
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums">
@@ -288,7 +302,7 @@ export function AgentTaskKanban({
                       accent.countText,
                     )}
                   >
-                    {items.length}
+                    <LiveNumber value={items.length} />
                   </span>
                 </div>
 
@@ -337,12 +351,14 @@ export function AgentTaskKanban({
                           }}
                           className={cn(
                             'group rounded-xl border bg-[var(--surface-elevated)] p-3 space-y-2',
-                            'transition-[border-color,opacity,transform] duration-150 ease-out',
+                            'transition-[border-color,background-color,opacity,transform] duration-150 ease-out',
                             !readOnly && 'cursor-grab active:cursor-grabbing',
                             isSelected
                               ? 'border-[var(--accent)]/70 ring-1 ring-[var(--accent)]/25'
                               : 'border-[var(--border)] hover:border-[var(--border-strong)]',
-                            (isDragging || isMoving) && 'opacity-55',
+                            isDragging && 'opacity-55 scale-[0.985]',
+                            isMoving && 'opacity-55',
+                            settledTaskId === task.id && 'ui-card-settled',
                           )}
                         >
                           <div className="flex items-center justify-between gap-2 text-[11px] text-[var(--ink-subtle)] tabular-nums">
@@ -425,12 +441,12 @@ export function AgentTaskKanban({
                               type="button"
                               onClick={() => onOpenTask(task.id)}
                               className={cn(
-                                'inline-flex items-center gap-1 text-[11.5px] font-medium text-[var(--ink-muted)] hover:text-[var(--accent)] transition-colors cursor-pointer rounded-md',
+                                'ui-press inline-flex items-center gap-1 text-[11.5px] font-medium text-[var(--ink-muted)] hover:text-[var(--accent)] cursor-pointer rounded-md',
                                 FOCUS_RING,
                               )}
                             >
                               查看对话
-                              <ArrowUpRight className="size-3" strokeWidth={1.75} />
+                              <ArrowUpRight className="size-3 ui-hover-nudge" strokeWidth={1.75} />
                             </button>
 
                             <select
@@ -442,6 +458,7 @@ export function AgentTaskKanban({
                               onChange={(event) => {
                                 const nextCol = event.target.value as KanbanLifecycleColumnId;
                                 if (nextCol !== currentColId) {
+                                  markTaskSettled(task.id);
                                   void onMoveTaskState(task.id, kanbanColumnToTaskState(nextCol));
                                 }
                               }}

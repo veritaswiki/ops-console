@@ -1,6 +1,6 @@
 import React from 'react';
-import { Download, WifiOff, X } from 'lucide-react';
-import { Button } from '../components/ui';
+import { Download, WifiOff } from 'lucide-react';
+import { Button, ModalShell, PresenceBanner } from '../components/ui';
 
 interface BeforeInstallPromptEvent extends Event {
   prompt: () => Promise<void>;
@@ -117,35 +117,25 @@ export function PWAInstallButton() {
           <Download className="size-3.5 text-[var(--accent)]" strokeWidth={1.75} />
           添加到主屏幕 (iOS)
         </Button>
-        {showIOSGuide && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-[2px] p-4">
-            <div className="w-full max-w-sm rounded-2xl border border-[var(--border)] bg-[var(--surface-elevated)] p-6 shadow-[var(--shadow-modal)]">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-[15px] font-semibold tracking-tight text-[var(--ink)] text-balance">
-                  安装到 iPhone / iPad 主屏幕
-                </h3>
-                <button
-                  type="button"
-                  onClick={() => setShowIOSGuide(false)}
-                  aria-label="关闭安装指引"
-                  className="h-7 w-7 inline-flex items-center justify-center rounded-md text-[var(--ink-subtle)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)] cursor-pointer"
-                >
-                  <X className="size-4" strokeWidth={1.75} />
-                </button>
-              </div>
-              <ol className="mt-3 space-y-2 text-[13px] text-[var(--ink-muted)] leading-relaxed list-decimal pl-4">
-                <li>点击 Safari 底部工具栏的「分享」图标。</li>
-                <li>向下滑动并选择「添加到主屏幕」。</li>
-                <li>点击右上角「添加」，即可独立全屏运行 Ops Console。</li>
-              </ol>
-              <div className="mt-5 flex justify-end">
-                <Button variant="secondary" size="md" onClick={() => setShowIOSGuide(false)}>
-                  知道了
-                </Button>
-              </div>
+        <ModalShell
+          open={showIOSGuide}
+          onOpenChange={setShowIOSGuide}
+          size="sm"
+          title="安装到 iPhone / iPad 主屏幕"
+        >
+          <div className="p-5">
+            <ol className="space-y-2 text-[13px] text-[var(--ink-muted)] leading-relaxed list-decimal pl-4">
+              <li>点击 Safari 底部工具栏的「分享」图标。</li>
+              <li>向下滑动并选择「添加到主屏幕」。</li>
+              <li>点击右上角「添加」，即可独立全屏运行 Ops Console。</li>
+            </ol>
+            <div className="mt-5 flex justify-end">
+              <Button variant="secondary" size="md" onClick={() => setShowIOSGuide(false)}>
+                知道了
+              </Button>
             </div>
           </div>
-        )}
+        </ModalShell>
       </>
     );
   }
@@ -155,15 +145,17 @@ export function PWAInstallButton() {
 
 export function OfflineIndicator() {
   const isOnline = useOnlineStatus();
-  if (isOnline) return null;
 
   return (
-    <div
+    <PresenceBanner
+      open={!isOnline}
+      edge="bottom"
       role="status"
-      className="fixed bottom-4 left-4 z-50 flex items-center gap-2 rounded-lg border border-[var(--warn)]/35 bg-[var(--surface-elevated)] px-3.5 py-2 text-[12.5px] font-medium text-[var(--warn)] shadow-[var(--shadow-modal)] select-none"
+      ariaLive="polite"
+      className="fixed bottom-4 left-4 z-50 flex items-center gap-2 rounded-lg border border-[var(--warn-border)] bg-[var(--surface-elevated)] px-3.5 py-2 text-[12.5px] font-medium text-[var(--warn)] shadow-[var(--shadow-modal)] select-none"
     >
       <WifiOff className="size-4 shrink-0" strokeWidth={1.75} />
       <span>离线模式 · 正在展示缓存的界面外壳</span>
-    </div>
+    </PresenceBanner>
   );
 }

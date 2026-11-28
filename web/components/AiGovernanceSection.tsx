@@ -2,7 +2,6 @@ import React from 'react';
 import {
   AlertTriangle,
   CheckCircle2,
-  Copy,
   FileCode2,
   GitBranch,
   Layers,
@@ -14,7 +13,7 @@ import {
   Terminal,
 } from 'lucide-react';
 import type { AiOpsContextResponse, AiPreflightResponse } from '../types';
-import { copyToClipboard, fetchAiOpsContext, runAiPreflight } from '../api';
+import { fetchAiOpsContext, runAiPreflight } from '../api';
 import {
   AI_PREFLIGHT_PRESETS,
   filterBoundariesByLayer,
@@ -25,6 +24,7 @@ import {
 import { cn, FOCUS_RING } from '../lib/cn';
 import {
   Button,
+  CopyAction,
   EmptyState,
   inputBaseClass,
   KpiStrip,
@@ -170,16 +170,6 @@ export function AiGovernanceSection({
     void executePreflight(preset.payload);
   };
 
-  const handleCopyContext = async () => {
-    if (!context) return;
-    const text = formatAiContextClipboardPayload(context);
-    const ok = await copyToClipboard(text);
-    onToast?.(
-      ok ? '已复制压缩版 AI 运维上下文 JSON（可直接贴给 Codex / Claude / T3 / Orca）' : '复制失败，请检查剪贴板权限',
-      ok ? 'ok' : 'err',
-    );
-  };
-
   const filteredBoundaries = React.useMemo(
     () => filterBoundariesByLayer(context?.boundaries || [], layerFilter),
     [context?.boundaries, layerFilter],
@@ -257,15 +247,18 @@ export function AiGovernanceSection({
         description="让外部 AI 在修改服务、配置、代码或同步 MCP 前先调用 POST /api/ai/preflight：确定性输出放行/确认/拦截判定、耦合文件提醒与回滚路径，防止改乱。"
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            <Button
-              variant="secondary"
+            <CopyAction
+              testId="copy-ai-context-btn"
+              variant="button"
               size="sm"
-              onClick={() => void handleCopyContext()}
-              data-testid="copy-ai-context-btn"
-            >
-              <Copy className="size-3.5" strokeWidth={1.75} />
-              复制 AI 运维上下文 JSON
-            </Button>
+              text={() => formatAiContextClipboardPayload(context)}
+              label="复制 AI 运维上下文 JSON"
+              copiedLabel="已复制 JSON"
+              onCopied={() =>
+                onToast?.('已复制压缩版 AI 运维上下文 JSON（可直接贴给 Codex / Claude / T3 / Orca）', 'ok')
+              }
+              onError={() => onToast?.('复制失败，请检查剪贴板权限', 'err')}
+            />
             <Button
               variant="ghost"
               size="sm"

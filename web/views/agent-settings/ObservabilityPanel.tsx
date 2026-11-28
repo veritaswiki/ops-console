@@ -2,9 +2,7 @@ import React from 'react';
 import {
   AlertTriangle,
   ArrowUpRight,
-  Check,
   ChevronRight,
-  Copy,
   Eye,
   HardDrive,
   Radar,
@@ -29,7 +27,6 @@ import type {
   StatusTone,
 } from '../../types';
 import {
-  copyToClipboard,
   fetchObservabilityFingerprints,
   fetchObservabilityMetrics,
   fetchObservabilityStatus,
@@ -60,6 +57,7 @@ import {
   Button,
   CommandCombobox,
   type CommandComboboxOption,
+  CopyAction,
   EmptyState,
   ErrorState,
   inputBaseClass,
@@ -362,7 +360,6 @@ export function ObservabilityPanel({
     data: ObservabilityLogsReadResponse | null;
     activeKey: string;
   }>({ loading: false, error: null, data: null, activeKey: '' });
-  const [copiedCmdKey, setCopiedCmdKey] = React.useState<string | null>(null);
 
   const draftDirtyRef = React.useRef(false);
 
@@ -634,19 +631,6 @@ export function ObservabilityPanel({
       onToast?.(`分片裁剪失败：${(err as Error).message}`, 'err');
     } finally {
       setBusyAction(null);
-    }
-  };
-
-  const handleCopyCommand = async (cmdKey: string, text: string) => {
-    const ok = await copyToClipboard(text);
-    if (ok) {
-      setCopiedCmdKey(cmdKey);
-      onToast?.('只读参考命令已复制（未自动执行）', 'ok');
-      window.setTimeout(() => {
-        setCopiedCmdKey((prev) => (prev === cmdKey ? null : prev));
-      }, 1800);
-    } else {
-      onToast?.('复制失败，请手动选中复制', 'err');
     }
   };
 
@@ -1167,7 +1151,7 @@ export function ObservabilityPanel({
                   type="button"
                   onClick={() => openAnnotationInspector(ann)}
                   className={cn(
-                    'w-full text-left py-2.5 px-1 flex items-center justify-between gap-3 hover:bg-[var(--surface-hover)] transition-colors duration-150 cursor-pointer rounded-lg',
+                    'group ui-press w-full text-left py-2.5 px-1 flex items-center justify-between gap-3 hover:bg-[var(--surface-hover)] cursor-pointer rounded-lg',
                     FOCUS_RING,
                   )}
                 >
@@ -1186,7 +1170,7 @@ export function ObservabilityPanel({
                     <span className="font-mono text-[11.5px] text-[var(--ink-subtle)] tabular-nums">
                       {formatDateTime(ann.isoTs)}
                     </span>
-                    <ChevronRight className="size-4 text-[var(--ink-subtle)]" strokeWidth={1.75} />
+                    <ChevronRight className="ui-hover-nudge size-4 text-[var(--ink-subtle)]" strokeWidth={1.75} />
                   </div>
                 </button>
               ))}
@@ -1874,19 +1858,16 @@ export function ObservabilityPanel({
                               <pre className="flex-1 rounded-lg bg-[var(--surface-subtle)] px-2.5 py-1.5 text-[11.5px] font-mono text-[var(--ink-muted)] overflow-x-auto whitespace-pre-wrap break-all">
                                 {action.commandHint}
                               </pre>
-                              <Button
+                              <CopyAction
                                 variant="ghost"
                                 size="sm"
-                                onClick={() => void handleCopyCommand(cmdKey, action.commandHint || '')}
+                                text={action.commandHint || ''}
+                                label="复制命令"
+                                copiedLabel="已复制"
                                 title="复制只读参考命令"
-                              >
-                                {copiedCmdKey === cmdKey ? (
-                                  <Check className="size-3.5 text-[var(--ok)]" strokeWidth={1.75} />
-                                ) : (
-                                  <Copy className="size-3.5" strokeWidth={1.75} />
-                                )}
-                                复制命令
-                              </Button>
+                                onCopied={() => onToast?.('只读参考命令已复制（未自动执行）', 'ok')}
+                                onError={() => onToast?.('复制失败，请手动选中复制', 'err')}
+                              />
                             </div>
                           )}
                         </div>

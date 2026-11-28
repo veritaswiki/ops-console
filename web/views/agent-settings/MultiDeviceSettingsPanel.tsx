@@ -13,6 +13,7 @@ import {
   Button,
   CommandCombobox,
   EmptyState,
+  IconSwap,
   InspectorDrawer,
   NativeSelect,
   SegmentedControl,
@@ -225,14 +226,29 @@ export function MultiDeviceSettingsPanel({
                 <Button
                   variant="ghost"
                   size="sm"
+                  className={cn(
+                    'border',
+                    copiedKey === 'hub-card'
+                      ? 'bg-[var(--ok-soft)] text-[var(--ok)] border-[var(--ok-border)] hover:bg-[var(--ok-soft)] hover:text-[var(--ok)]'
+                      : 'border-transparent',
+                  )}
                   onClick={() => void onCopy('hub-card', connectProfiles.hubAgentCardUrl, 'AgentCard URL')}
                 >
-                  {copiedKey === 'hub-card' ? (
-                    <Check className="size-3.5 text-[var(--ok)]" strokeWidth={2} />
-                  ) : (
-                    <Copy className="size-3.5" strokeWidth={1.75} />
-                  )}
-                  {copiedKey === 'hub-card' ? '已复制' : '复制'}
+                  <IconSwap iconKey={copiedKey === 'hub-card' ? 'copied' : 'copy'}>
+                    {copiedKey === 'hub-card' ? (
+                      <Check className="size-3.5 text-[var(--ok)]" strokeWidth={2.2} />
+                    ) : (
+                      <Copy className="size-3.5" strokeWidth={1.75} />
+                    )}
+                  </IconSwap>
+                  <span className="inline-grid text-left">
+                    <span className={cn('col-start-1 row-start-1', copiedKey === 'hub-card' && 'invisible')}>
+                      复制
+                    </span>
+                    <span className={cn('col-start-1 row-start-1', copiedKey !== 'hub-card' && 'invisible')}>
+                      已复制
+                    </span>
+                  </span>
                 </Button>
               }
             />
@@ -247,14 +263,29 @@ export function MultiDeviceSettingsPanel({
                 <Button
                   variant="ghost"
                   size="sm"
+                  className={cn(
+                    'border',
+                    copiedKey === 'hub-rpc'
+                      ? 'bg-[var(--ok-soft)] text-[var(--ok)] border-[var(--ok-border)] hover:bg-[var(--ok-soft)] hover:text-[var(--ok)]'
+                      : 'border-transparent',
+                  )}
                   onClick={() => void onCopy('hub-rpc', connectProfiles.hubRpcUrl, 'JSON-RPC 端点')}
                 >
-                  {copiedKey === 'hub-rpc' ? (
-                    <Check className="size-3.5 text-[var(--ok)]" strokeWidth={2} />
-                  ) : (
-                    <Copy className="size-3.5" strokeWidth={1.75} />
-                  )}
-                  {copiedKey === 'hub-rpc' ? '已复制' : '复制'}
+                  <IconSwap iconKey={copiedKey === 'hub-rpc' ? 'copied' : 'copy'}>
+                    {copiedKey === 'hub-rpc' ? (
+                      <Check className="size-3.5 text-[var(--ok)]" strokeWidth={2.2} />
+                    ) : (
+                      <Copy className="size-3.5" strokeWidth={1.75} />
+                    )}
+                  </IconSwap>
+                  <span className="inline-grid text-left">
+                    <span className={cn('col-start-1 row-start-1', copiedKey === 'hub-rpc' && 'invisible')}>
+                      复制
+                    </span>
+                    <span className={cn('col-start-1 row-start-1', copiedKey !== 'hub-rpc' && 'invisible')}>
+                      已复制
+                    </span>
+                  </span>
                 </Button>
               }
             />
@@ -574,30 +605,16 @@ export function MultiDeviceSettingsPanel({
           </SettingsField>
         </form>
 
-        {connectProfiles && connectProfiles.profiles.length > 1 && (
-          <div className="flex flex-wrap items-center gap-1.5" role="tablist" aria-label="切换接入方案">
-            {connectProfiles.profiles.map((profile) => {
-              const active = activeConnectProfile?.id === profile.id;
-              return (
-                <button
-                  key={profile.id}
-                  type="button"
-                  role="tab"
-                  aria-selected={active}
-                  onClick={() => onSelectProfileId(profile.id)}
-                  className={cn(
-                    'h-8 px-3 rounded-lg text-[12.5px] font-medium cursor-pointer transition-colors duration-150 ease-out',
-                    active
-                      ? 'bg-[var(--accent-soft)] text-[var(--accent)]'
-                      : 'text-[var(--ink-muted)] hover:text-[var(--ink)] hover:bg-[var(--surface-hover)]',
-                    FOCUS_RING,
-                  )}
-                >
-                  {profile.name}
-                </button>
-              );
-            })}
-          </div>
+        {connectProfiles && connectProfiles.profiles.length > 1 && activeConnectProfile && (
+          <SegmentedControl
+            ariaLabel="切换接入方案"
+            value={activeConnectProfile.id}
+            onChange={(nextId) => onSelectProfileId(nextId)}
+            options={connectProfiles.profiles.map((profile) => ({
+              value: profile.id,
+              label: profile.name,
+            }))}
+          />
         )}
 
         {activeConnectProfile ? (

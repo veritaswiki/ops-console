@@ -1,8 +1,6 @@
 import React from 'react';
 import { Drawer } from 'vaul';
 import {
-  ChevronDown,
-  ChevronRight,
   Plus,
   RefreshCw,
   Search,
@@ -30,6 +28,8 @@ import { extractErrorMessage, guardReadOnly } from '../lib/ux-errors';
 import { formatRelativeAge } from '../utils/format';
 import {
   Button,
+  Disclosure,
+  DisclosureChevron,
   EmptyState,
   inputBaseClass,
   KpiStrip,
@@ -91,6 +91,9 @@ export function McpView({
 
   // Sync drawer state
   const [syncTarget, setSyncTarget] = React.useState<FleetMcpServer | null>(null);
+  const lastSyncTargetRef = React.useRef<FleetMcpServer | null>(null);
+  if (syncTarget) lastSyncTargetRef.current = syncTarget;
+  const activeSyncTarget = syncTarget ?? lastSyncTargetRef.current;
   const [syncNodeIds, setSyncNodeIds] = React.useState<string[]>([]);
   const [syncBusy, setSyncBusy] = React.useState(false);
 
@@ -473,16 +476,13 @@ export function McpView({
                         <button
                           type="button"
                           onClick={() => toggleExpand(item.id)}
+                          aria-expanded={expanded}
                           className={cn(
                             'inline-flex items-center gap-1.5 text-[14px] font-medium text-[var(--ink)] hover:text-[var(--accent)] transition-colors cursor-pointer rounded',
                             FOCUS_RING,
                           )}
                         >
-                          {expanded ? (
-                            <ChevronDown className="size-4 text-[var(--ink-subtle)]" strokeWidth={1.75} />
-                          ) : (
-                            <ChevronRight className="size-4 text-[var(--ink-subtle)]" strokeWidth={1.75} />
-                          )}
+                          <DisclosureChevron open={expanded} className="size-4 text-[var(--ink-subtle)]" />
                           <span>{item.name}</span>
                         </button>
                         <StatusIndicator status={item.enabled ? item.status : 'standby'} />
@@ -554,7 +554,7 @@ export function McpView({
                     </div>
                   </div>
 
-                  {expanded && (
+                  <Disclosure open={expanded}>
                     <div className="mt-3 pl-5.5 pt-3 border-t border-[var(--border-subtle)] space-y-2.5 text-[12.5px]">
                       {item.description && (
                         <p className="text-[var(--ink-muted)]">{item.description}</p>
@@ -583,7 +583,7 @@ export function McpView({
                         </div>
                       )}
                     </div>
-                  )}
+                  </Disclosure>
                 </li>
               );
             })}
@@ -768,7 +768,7 @@ export function McpView({
                   跨设备同步 MCP 配置
                 </Drawer.Title>
                 <Drawer.Description className="text-[12px] text-[var(--ink-subtle)] mt-0.5">
-                  将 {syncTarget?.name} 的声明复制至其他节点，并自动下发 Pull-only mcp-sync 指令。
+                  将 {activeSyncTarget?.name} 的声明复制至其他节点，并自动下发 Pull-only mcp-sync 指令。
                 </Drawer.Description>
               </div>
               <Button variant="ghost" size="icon" onClick={() => setSyncTarget(null)} aria-label="关闭同步抽屉">
@@ -777,11 +777,11 @@ export function McpView({
             </div>
             <form onSubmit={handleSyncSubmit} className="flex-1 overflow-y-auto px-6 py-5 space-y-4">
               <div className="text-[12.5px] text-[var(--ink-muted)] font-mono">
-                源节点：{syncTarget?.nodeName} ({syncTarget?.nodeId})
+                源节点：{activeSyncTarget?.nodeName} ({activeSyncTarget?.nodeId})
               </div>
               <div className="divide-y divide-[var(--border-subtle)] border-y border-[var(--border-subtle)]">
                 {fleetNodes
-                  .filter((n) => n.id !== syncTarget?.nodeId)
+                  .filter((n) => n.id !== activeSyncTarget?.nodeId)
                   .map((node) => {
                     const checked = syncNodeIds.includes(node.id);
                     return (

@@ -2,8 +2,6 @@ import React from 'react';
 import { Drawer } from 'vaul';
 import {
   ArrowRight,
-  ChevronDown,
-  ChevronRight,
   Crown,
   GitBranch,
   Layers,
@@ -66,6 +64,8 @@ import { EFFORT_OPTIONS, MODEL_PRESETS } from './AgentOrchestrationCanvas';
 import {
   Button,
   CommandCombobox,
+  Disclosure,
+  DisclosureChevron,
   EmptyState,
   inputBaseClass,
   KpiStrip,
@@ -993,10 +993,12 @@ export function A2AOrchestratorSection({
                     const expanded = Boolean(expandedTaskIds[task.id]);
                     const canCancel = task.state === 'submitted' || task.state === 'working';
                     return (
-                      <li key={task.id} className="py-3.5 first:pt-0 space-y-2">
+                      <li key={task.id} className="py-3.5 first:pt-0">
+                        <div className="space-y-2">
                         <div className="flex items-start justify-between gap-2">
                           <button
                             type="button"
+                            aria-expanded={expanded}
                             onClick={() =>
                               setExpandedTaskIds((prev) => ({ ...prev, [task.id]: !prev[task.id] }))
                             }
@@ -1005,11 +1007,7 @@ export function A2AOrchestratorSection({
                               FOCUS_RING,
                             )}
                           >
-                            {expanded ? (
-                              <ChevronDown className="size-3.5 mt-0.5 text-[var(--ink-subtle)] shrink-0" />
-                            ) : (
-                              <ChevronRight className="size-3.5 mt-0.5 text-[var(--ink-subtle)] shrink-0" />
-                            )}
+                            <DisclosureChevron open={expanded} className="mt-0.5 text-[var(--ink-subtle)]" />
                             <span className="text-[13.5px] font-medium text-[var(--ink)] line-clamp-2">
                               {task.prompt}
                             </span>
@@ -1054,9 +1052,10 @@ export function A2AOrchestratorSection({
                             </button>
                           )}
                         </div>
+                        </div>
 
-                        {expanded && (
-                          <div className="pl-5 pt-2 space-y-3 text-[12px]">
+                        <Disclosure open={expanded}>
+                          <div className="pl-5 pt-3 space-y-3 text-[12px]">
                             <div className="font-mono text-[11px] text-[var(--ink-subtle)] flex flex-wrap gap-x-2 gap-y-0.5">
                               <span>{task.id}</span>
                               {task.contextId && <span>· contextId: {task.contextId}</span>}
@@ -1131,7 +1130,7 @@ export function A2AOrchestratorSection({
                               </div>
                             )}
                           </div>
-                        )}
+                        </Disclosure>
                       </li>
                     );
                   })}
